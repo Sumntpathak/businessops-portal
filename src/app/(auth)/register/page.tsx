@@ -3,11 +3,35 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { AuthTestPanel } from "@/components/auth/AuthTestPanel";
 import { Button, Card, CardBody, Input } from "@/components/ui";
 import { APP_NAME } from "@/lib/constants";
 import { registerSchema, type RegisterInput } from "@/lib/schemas/auth";
 
 type FieldErrors = Partial<Record<keyof RegisterInput, string>>;
+
+const registerTestCases = [
+  {
+    label: "Missing full name",
+    description: "Fails name validation before the API call.",
+    values: { name: "", email: "new.agent@example.com", password: "Agent@1234" },
+  },
+  {
+    label: "Invalid email format",
+    description: "Checks email format validation.",
+    values: { name: "Test Agent", email: "not-an-email", password: "Agent@1234" },
+  },
+  {
+    label: "Short password",
+    description: "Checks the minimum 8 character password rule.",
+    values: { name: "Test Agent", email: "new.agent@example.com", password: "short" },
+  },
+  {
+    label: "Duplicate seeded user",
+    description: "Passes form validation, then checks the server duplicate-email error.",
+    values: { name: "Admin User", email: "admin@businessops.dev", password: "Admin@1234" },
+  },
+] satisfies Array<{ label: string; description: string; values: RegisterInput }>;
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -15,6 +39,12 @@ export default function RegisterPage() {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  function loadTestValues(values: RegisterInput) {
+    setForm(values);
+    setError("");
+    setFieldErrors({});
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -119,6 +149,12 @@ export default function RegisterPage() {
                 Sign in
               </Link>
             </p>
+
+            <AuthTestPanel
+              title="Sign-up tester"
+              testCases={registerTestCases}
+              onSelect={loadTestValues}
+            />
           </CardBody>
         </Card>
       </div>

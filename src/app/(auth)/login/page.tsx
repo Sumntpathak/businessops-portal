@@ -3,11 +3,41 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { AuthTestPanel } from "@/components/auth/AuthTestPanel";
 import { Button, Card, CardBody, Input } from "@/components/ui";
 import { APP_NAME } from "@/lib/constants";
 import { loginSchema, type LoginInput } from "@/lib/schemas/auth";
 
 type FieldErrors = Partial<Record<keyof LoginInput, string>>;
+
+const loginTestCases = [
+  {
+    label: "Invalid email format",
+    description: "Fails before API call because email is not valid.",
+    values: { email: "admin", password: "Admin@1234" },
+  },
+  {
+    label: "Missing password",
+    description: "Shows required password validation.",
+    values: { email: "admin@businessops.dev", password: "" },
+  },
+  {
+    label: "Wrong password",
+    description: "Passes form validation, then checks the server error state.",
+    values: { email: "admin@businessops.dev", password: "WrongPass123" },
+  },
+] satisfies Array<{ label: string; description: string; values: LoginInput }>;
+
+const demoCredentials = [
+  { role: "admin", email: "admin@businessops.dev", password: "Admin@1234" },
+  { role: "manager", email: "manager@businessops.dev", password: "Manager@1234" },
+  { role: "agent", email: "agent1@businessops.dev", password: "Agent@1234" },
+  { role: "agent", email: "agent2@businessops.dev", password: "Agent@1234" },
+  { role: "finance", email: "finance@businessops.dev", password: "Finance@1234" },
+].map((credential) => ({
+  ...credential,
+  values: { email: credential.email, password: credential.password },
+}));
 
 export default function LoginPage() {
   const router = useRouter();
@@ -15,6 +45,12 @@ export default function LoginPage() {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  function loadTestValues(values: LoginInput) {
+    setForm(values);
+    setError("");
+    setFieldErrors({});
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -127,6 +163,13 @@ export default function LoginPage() {
                 Create an account
               </Link>
             </p>
+
+            <AuthTestPanel
+              title="Login tester"
+              testCases={loginTestCases}
+              demoCredentials={demoCredentials}
+              onSelect={loadTestValues}
+            />
           </CardBody>
         </Card>
       </div>
