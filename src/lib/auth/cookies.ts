@@ -1,24 +1,25 @@
 import { cookies } from "next/headers";
+import { AUTH } from "@/lib/constants";
 
-export const COOKIE_NAME = "bops_token";
+const MAX_AGE_SECONDS = 60 * 60 * 8;
 
 export async function setAuthCookie(token: string) {
   const cookieStore = await cookies();
-  cookieStore.set(COOKIE_NAME, token, {
+  cookieStore.set(AUTH.COOKIE_NAME, token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
-    maxAge: 60 * 60 * 8, // 8 hours — matches JWT expiry
     path: "/",
+    maxAge: MAX_AGE_SECONDS,
   });
 }
 
 export async function clearAuthCookie() {
   const cookieStore = await cookies();
-  cookieStore.delete(COOKIE_NAME);
+  cookieStore.delete(AUTH.COOKIE_NAME);
 }
 
-export async function getAuthCookie(): Promise<string | undefined> {
+export async function getAuthToken() {
   const cookieStore = await cookies();
-  return cookieStore.get(COOKIE_NAME)?.value;
+  return cookieStore.get(AUTH.COOKIE_NAME)?.value;
 }

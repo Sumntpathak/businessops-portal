@@ -2,24 +2,24 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-
-type Role = "admin" | "manager" | "agent" | "finance";
+import { APP_NAME, type Role } from "@/lib/constants";
+import { Badge, Button } from "@/components/ui";
 
 interface NavItem {
   href: string;
   label: string;
-  icon: string;
+  shortLabel: string;
   roles: Role[];
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { href: "/dashboard", label: "Dashboard", icon: "📊", roles: ["admin", "manager", "agent", "finance"] },
-  { href: "/leads", label: "Leads", icon: "🎯", roles: ["admin", "manager", "agent", "finance"] },
-  { href: "/followups", label: "Follow-ups", icon: "🔔", roles: ["admin", "manager", "agent", "finance"] },
-  { href: "/invoices", label: "Invoices", icon: "🧾", roles: ["admin", "manager", "finance"] },
-  { href: "/users", label: "Users", icon: "👥", roles: ["admin", "manager"] },
-  { href: "/audit-logs", label: "Audit Logs", icon: "📋", roles: ["admin", "manager"] },
-  { href: "/settings", label: "Settings", icon: "⚙️", roles: ["admin", "manager", "agent", "finance"] },
+  { href: "/dashboard", label: "Dashboard", shortLabel: "DB", roles: ["admin", "manager", "agent", "finance"] },
+  { href: "/leads", label: "Leads", shortLabel: "LD", roles: ["admin", "manager", "agent", "finance"] },
+  { href: "/followups", label: "Follow-ups", shortLabel: "FU", roles: ["admin", "manager", "agent", "finance"] },
+  { href: "/invoices", label: "Invoices", shortLabel: "IN", roles: ["admin", "manager", "finance"] },
+  { href: "/users", label: "Users", shortLabel: "US", roles: ["admin", "manager"] },
+  { href: "/audit-logs", label: "Audit logs", shortLabel: "AL", roles: ["admin", "manager"] },
+  { href: "/settings", label: "Settings", shortLabel: "ST", roles: ["admin", "manager", "agent", "finance"] },
 ];
 
 interface Props {
@@ -31,6 +31,12 @@ export default function Sidebar({ user }: Props) {
   const router = useRouter();
 
   const visibleNav = NAV_ITEMS.filter((item) => item.roles.includes(user.role));
+  const initials = user.name
+    .split(" ")
+    .map((part) => part[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
 
   async function handleLogout() {
     await fetch("/api/auth/logout", { method: "POST" });
@@ -39,49 +45,62 @@ export default function Sidebar({ user }: Props) {
   }
 
   return (
-    <aside className="w-64 bg-gray-900 flex flex-col h-full">
-      {/* Logo */}
-      <div className="px-6 py-5 border-b border-gray-700">
-        <h1 className="text-white font-bold text-lg">BusinessOps</h1>
-        <p className="text-gray-400 text-xs mt-0.5">Portal</p>
+    <aside className="flex h-full w-72 flex-col border-r border-slate-200 bg-white">
+      <div className="px-5 py-5">
+        <Link href="/dashboard" className="flex items-center gap-3">
+          <span className="grid size-10 place-items-center rounded-lg bg-slate-950 text-sm font-semibold text-white">
+            BO
+          </span>
+          <span>
+            <span className="block text-base font-semibold text-slate-950">{APP_NAME}</span>
+            <span className="block text-xs text-slate-500">Operations portal</span>
+          </span>
+        </Link>
       </div>
 
-      {/* Nav */}
-      <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
+      <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-2">
         {visibleNav.map((item) => {
           const isActive = pathname === item.href || pathname.startsWith(item.href + "/");
+
           return (
             <Link
               key={item.href}
               href={item.href}
-              className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+              className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition ${
                 isActive
-                  ? "bg-indigo-600 text-white"
-                  : "text-gray-300 hover:bg-gray-800 hover:text-white"
+                  ? "bg-slate-950 text-white shadow-sm"
+                  : "text-slate-600 hover:bg-slate-100 hover:text-slate-950"
               }`}
             >
-              <span>{item.icon}</span>
+              <span
+                className={`grid size-7 place-items-center rounded-md text-[11px] font-semibold ${
+                  isActive ? "bg-white/15 text-white" : "bg-slate-100 text-slate-500"
+                }`}
+              >
+                {item.shortLabel}
+              </span>
               {item.label}
             </Link>
           );
         })}
       </nav>
 
-      {/* User + Logout */}
-      <div className="px-4 py-4 border-t border-gray-700">
-        <div className="mb-3">
-          <p className="text-white text-sm font-medium truncate">{user.name}</p>
-          <p className="text-gray-400 text-xs truncate">{user.email}</p>
-          <span className="inline-block mt-1 px-2 py-0.5 text-xs rounded-full bg-indigo-500/20 text-indigo-300 capitalize">
-            {user.role}
-          </span>
+      <div className="border-t border-slate-200 p-4">
+        <div className="mb-4 flex items-center gap-3">
+          <div className="grid size-10 place-items-center rounded-full bg-slate-100 text-sm font-semibold text-slate-700">
+            {initials}
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-semibold text-slate-950">{user.name}</p>
+            <p className="truncate text-xs text-slate-500">{user.email}</p>
+          </div>
         </div>
-        <button
-          onClick={handleLogout}
-          className="w-full text-left text-sm text-gray-400 hover:text-red-400 transition-colors"
-        >
-          → Sign out
-        </button>
+        <div className="mb-4">
+          <Badge className="capitalize">{user.role}</Badge>
+        </div>
+        <Button variant="ghost" onClick={handleLogout} className="w-full justify-start px-3">
+          Sign out
+        </Button>
       </div>
     </aside>
   );

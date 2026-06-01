@@ -1,21 +1,21 @@
 import { SignJWT, jwtVerify } from "jose";
+import { AUTH, type Role } from "@/lib/constants";
 
 export interface JWTPayload {
-  sub: string;       // userId
+  sub: string;
   email: string;
-  role: "admin" | "manager" | "agent" | "finance";
+  role: Role;
   name: string;
 }
 
 const secret = new TextEncoder().encode(process.env.JWT_SECRET!);
 const ALGORITHM = "HS256";
-const EXPIRES_IN = "8h";
 
 export async function signToken(payload: JWTPayload): Promise<string> {
   return new SignJWT({ ...payload })
     .setProtectedHeader({ alg: ALGORITHM })
     .setIssuedAt()
-    .setExpirationTime(EXPIRES_IN)
+    .setExpirationTime(AUTH.JWT_EXPIRES_IN)
     .sign(secret);
 }
 
