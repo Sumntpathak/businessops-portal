@@ -17,6 +17,36 @@ const loginTestCases = [
     values: { email: "admin", password: "Admin@1234" },
   },
   {
+    label: "Whitespace in email",
+    description: "Email cannot contain spaces, tabs, or line breaks.",
+    values: { email: "admin @businessops.dev", password: "Admin@1234" },
+  },
+  {
+    label: "Two @ symbols",
+    description: "Checks that only one @ symbol is allowed.",
+    values: { email: "admin@@businessops.dev", password: "Admin@1234" },
+  },
+  {
+    label: "Consecutive dots",
+    description: "Blocks addresses like user..name@domain.com.",
+    values: { email: "admin..user@businessops.dev", password: "Admin@1234" },
+  },
+  {
+    label: "Leading dot",
+    description: "Blocks local parts that start with a dot.",
+    values: { email: ".admin@businessops.dev", password: "Admin@1234" },
+  },
+  {
+    label: "Bad domain label",
+    description: "Blocks domains that start or end with a hyphen.",
+    values: { email: "admin@-businessops.dev", password: "Admin@1234" },
+  },
+  {
+    label: "Provider typo",
+    description: "Shows a did-you-mean message for common provider typos.",
+    values: { email: "admin@gmial.com", password: "Admin@1234" },
+  },
+  {
     label: "Missing password",
     description: "Shows required password validation.",
     values: { email: "admin@businessops.dev", password: "" },

@@ -22,6 +22,46 @@ const registerTestCases = [
     values: { name: "Test Agent", email: "not-an-email", password: "Agent@1234" },
   },
   {
+    label: "Whitespace in email",
+    description: "Email cannot contain spaces, tabs, or line breaks.",
+    values: { name: "Test Agent", email: "test @company.com", password: "Agent@1234" },
+  },
+  {
+    label: "Two @ symbols",
+    description: "Checks that only one @ symbol is allowed.",
+    values: { name: "Test Agent", email: "test@@company.com", password: "Agent@1234" },
+  },
+  {
+    label: "Consecutive dots",
+    description: "Blocks addresses like user..name@company.com.",
+    values: { name: "Test Agent", email: "test..agent@company.com", password: "Agent@1234" },
+  },
+  {
+    label: "Leading dot",
+    description: "Blocks local parts that start with a dot.",
+    values: { name: "Test Agent", email: ".agent@company.com", password: "Agent@1234" },
+  },
+  {
+    label: "Bad domain label",
+    description: "Blocks domain labels that start or end with a hyphen.",
+    values: { name: "Test Agent", email: "agent@company-.com", password: "Agent@1234" },
+  },
+  {
+    label: "Disposable domain",
+    description: "Blocks throwaway email providers during sign-up.",
+    values: { name: "Test Agent", email: "agent@mailinator.com", password: "Agent@1234" },
+  },
+  {
+    label: "Role-based email",
+    description: "Blocks shared inboxes like support@ or sales@.",
+    values: { name: "Test Agent", email: "support@company.com", password: "Agent@1234" },
+  },
+  {
+    label: "Provider typo",
+    description: "Prompts for common domain typos before sign-up.",
+    values: { name: "Test Agent", email: "agent@gmial.com", password: "Agent@1234" },
+  },
+  {
     label: "Short password",
     description: "Checks the minimum 8 character password rule.",
     values: { name: "Test Agent", email: "new.agent@example.com", password: "short" },
@@ -29,7 +69,7 @@ const registerTestCases = [
   {
     label: "Duplicate seeded user",
     description: "Passes form validation, then checks the server duplicate-email error.",
-    values: { name: "Admin User", email: "admin@businessops.dev", password: "Admin@1234" },
+    values: { name: "Agent One", email: "agent1@businessops.dev", password: "Agent@1234" },
   },
 ] satisfies Array<{ label: string; description: string; values: RegisterInput }>;
 

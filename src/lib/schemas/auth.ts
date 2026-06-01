@@ -1,13 +1,14 @@
 import { z } from "zod";
+import { buildEmailSchema } from "@/lib/validation/email";
 
 export const loginSchema = z.object({
-  email: z.string().trim().email("Enter a valid email address"),
+  email: buildEmailSchema(),
   password: z.string().min(1, "Password is required"),
 });
 
 export const registerSchema = z.object({
   name: z.string().trim().min(2, "Name must be at least 2 characters").max(255),
-  email: z.string().trim().email("Enter a valid email address"),
+  email: buildEmailSchema({ blockDisposable: true, blockRoleBased: true }),
   password: z.string().min(8, "Password must be at least 8 characters"),
 });
 
