@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Card, CardBody } from "@/components/ui";
+import { Card, CardBody } from "@/shared/ui";
 
 export default function NotFoundPage() {
   return (

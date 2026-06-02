@@ -1,6 +1,6 @@
 "use client";
 
-import { Button, Card, CardBody } from "@/components/ui";
+import { Button, Card, CardBody } from "@/shared/ui";
 
 export default function ErrorPage({
   error,

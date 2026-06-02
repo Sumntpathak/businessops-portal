@@ -3,71 +3,11 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { AuthTestPanel } from "@/components/auth/AuthTestPanel";
-import { Button, Card, CardBody, Input } from "@/components/ui";
-import { APP_NAME } from "@/lib/constants";
-import { loginSchema, type LoginInput } from "@/lib/schemas/auth";
+import { Button, Card, CardBody, Input } from "@/shared/ui";
+import { APP_NAME } from "@/shared/constants";
+import { loginSchema, type LoginInput } from "@/features/auth/auth.schema";
 
 type FieldErrors = Partial<Record<keyof LoginInput, string>>;
-
-const loginTestCases = [
-  {
-    label: "Invalid email format",
-    description: "Fails before API call because email is not valid.",
-    values: { email: "admin", password: "Admin@1234" },
-  },
-  {
-    label: "Whitespace in email",
-    description: "Email cannot contain spaces, tabs, or line breaks.",
-    values: { email: "admin @businessops.dev", password: "Admin@1234" },
-  },
-  {
-    label: "Two @ symbols",
-    description: "Checks that only one @ symbol is allowed.",
-    values: { email: "admin@@businessops.dev", password: "Admin@1234" },
-  },
-  {
-    label: "Consecutive dots",
-    description: "Blocks addresses like user..name@domain.com.",
-    values: { email: "admin..user@businessops.dev", password: "Admin@1234" },
-  },
-  {
-    label: "Leading dot",
-    description: "Blocks local parts that start with a dot.",
-    values: { email: ".admin@businessops.dev", password: "Admin@1234" },
-  },
-  {
-    label: "Bad domain label",
-    description: "Blocks domains that start or end with a hyphen.",
-    values: { email: "admin@-businessops.dev", password: "Admin@1234" },
-  },
-  {
-    label: "Provider typo",
-    description: "Shows a did-you-mean message for common provider typos.",
-    values: { email: "admin@gmial.com", password: "Admin@1234" },
-  },
-  {
-    label: "Missing password",
-    description: "Shows required password validation.",
-    values: { email: "admin@businessops.dev", password: "" },
-  },
-  {
-    label: "Wrong password",
-    description: "Passes form validation, then checks the server error state.",
-    values: { email: "admin@businessops.dev", password: "WrongPass123" },
-  },
-] satisfies Array<{ label: string; description: string; values: LoginInput }>;
-
-const demoCredentials = [
-  { role: "admin", email: "admin@businessops.dev", password: "Admin@1234" },
-  { role: "manager", email: "manager@businessops.dev", password: "Manager@1234" },
-  { role: "agent", email: "agent1@businessops.dev", password: "Agent@1234" },
-  { role: "agent", email: "agent2@businessops.dev", password: "Agent@1234" },
-  { role: "finance", email: "finance@businessops.dev", password: "Finance@1234" },
-].map((credential) => ({
-  ...credential,
-  values: { email: credential.email, password: credential.password },
-}));
 
 export default function LoginPage() {
   const router = useRouter();
@@ -75,12 +15,6 @@ export default function LoginPage() {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-
-  function loadTestValues(values: LoginInput) {
-    setForm(values);
-    setError("");
-    setFieldErrors({});
-  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -169,7 +103,7 @@ export default function LoginPage() {
                 autoComplete="email"
                 value={form.email}
                 onChange={(e) => setForm({ ...form, email: e.target.value })}
-                placeholder="admin@businessops.dev"
+                placeholder="you@company.com"
                 error={fieldErrors.email}
               />
               <Input
@@ -193,13 +127,6 @@ export default function LoginPage() {
                 Create an account
               </Link>
             </p>
-
-            <AuthTestPanel
-              title="Login tester"
-              testCases={loginTestCases}
-              demoCredentials={demoCredentials}
-              onSelect={loadTestValues}
-            />
           </CardBody>
         </Card>
       </div>

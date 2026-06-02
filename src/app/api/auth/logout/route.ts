@@ -1,5 +1,5 @@
-import { clearAuthCookie } from "@/lib/auth/cookies";
-import { ok } from "@/lib/api/response";
+import { clearAuthCookie } from "@/server/auth/cookies";
+import { ok } from "@/server/http/response";
 
 export async function POST() {
   await clearAuthCookie();

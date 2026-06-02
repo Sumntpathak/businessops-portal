@@ -3,75 +3,11 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { AuthTestPanel } from "@/components/auth/AuthTestPanel";
-import { Button, Card, CardBody, Input } from "@/components/ui";
-import { APP_NAME } from "@/lib/constants";
-import { registerSchema, type RegisterInput } from "@/lib/schemas/auth";
+import { Button, Card, CardBody, Input } from "@/shared/ui";
+import { APP_NAME } from "@/shared/constants";
+import { registerSchema, type RegisterInput } from "@/features/auth/auth.schema";
 
 type FieldErrors = Partial<Record<keyof RegisterInput, string>>;
-
-const registerTestCases = [
-  {
-    label: "Missing full name",
-    description: "Fails name validation before the API call.",
-    values: { name: "", email: "new.agent@example.com", password: "Agent@1234" },
-  },
-  {
-    label: "Invalid email format",
-    description: "Checks email format validation.",
-    values: { name: "Test Agent", email: "not-an-email", password: "Agent@1234" },
-  },
-  {
-    label: "Whitespace in email",
-    description: "Email cannot contain spaces, tabs, or line breaks.",
-    values: { name: "Test Agent", email: "test @company.com", password: "Agent@1234" },
-  },
-  {
-    label: "Two @ symbols",
-    description: "Checks that only one @ symbol is allowed.",
-    values: { name: "Test Agent", email: "test@@company.com", password: "Agent@1234" },
-  },
-  {
-    label: "Consecutive dots",
-    description: "Blocks addresses like user..name@company.com.",
-    values: { name: "Test Agent", email: "test..agent@company.com", password: "Agent@1234" },
-  },
-  {
-    label: "Leading dot",
-    description: "Blocks local parts that start with a dot.",
-    values: { name: "Test Agent", email: ".agent@company.com", password: "Agent@1234" },
-  },
-  {
-    label: "Bad domain label",
-    description: "Blocks domain labels that start or end with a hyphen.",
-    values: { name: "Test Agent", email: "agent@company-.com", password: "Agent@1234" },
-  },
-  {
-    label: "Disposable domain",
-    description: "Blocks throwaway email providers during sign-up.",
-    values: { name: "Test Agent", email: "agent@mailinator.com", password: "Agent@1234" },
-  },
-  {
-    label: "Role-based email",
-    description: "Blocks shared inboxes like support@ or sales@.",
-    values: { name: "Test Agent", email: "support@company.com", password: "Agent@1234" },
-  },
-  {
-    label: "Provider typo",
-    description: "Prompts for common domain typos before sign-up.",
-    values: { name: "Test Agent", email: "agent@gmial.com", password: "Agent@1234" },
-  },
-  {
-    label: "Short password",
-    description: "Checks the minimum 8 character password rule.",
-    values: { name: "Test Agent", email: "new.agent@example.com", password: "short" },
-  },
-  {
-    label: "Duplicate seeded user",
-    description: "Passes form validation, then checks the server duplicate-email error.",
-    values: { name: "Agent One", email: "agent1@businessops.dev", password: "Agent@1234" },
-  },
-] satisfies Array<{ label: string; description: string; values: RegisterInput }>;
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -79,12 +15,6 @@ export default function RegisterPage() {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-
-  function loadTestValues(values: RegisterInput) {
-    setForm(values);
-    setError("");
-    setFieldErrors({});
-  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -189,12 +119,6 @@ export default function RegisterPage() {
                 Sign in
               </Link>
             </p>
-
-            <AuthTestPanel
-              title="Sign-up tester"
-              testCases={registerTestCases}
-              onSelect={loadTestValues}
-            />
           </CardBody>
         </Card>
       </div>

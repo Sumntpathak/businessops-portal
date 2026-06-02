@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
-import { Badge, Button, Card, CardBody, CardHeader } from "@/components/ui";
-import { getSession } from "@/lib/auth/session";
+import { Badge, Button, Card, CardBody, CardHeader } from "@/shared/ui";
+import { getSession } from "@/server/auth/session";
 
 const metrics = [
   { label: "Leads in motion", value: "Connect data", detail: "Ready for /api/dashboard" },

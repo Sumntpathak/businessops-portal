@@ -1,70 +1,75 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jwtVerify } from "jose";
-import { AUTH, type Role } from "@/lib/constants";
+import { z } from "zod";
+import { ROLES, type Role } from "@/shared/constants";
+import { COOKIE_NAME } from "@/server/auth/cookies";
 
-const secret = new TextEncoder().encode(process.env.JWT_SECRET!);
+function loadSecret() {
+  const s = process.env.JWT_SECRET;
+  if (!s || s.length < 32) throw new Error("JWT_SECRET missing or too short");
+  return new TextEncoder().encode(s);
+}
+const secret = loadSecret();
 
-const PUBLIC_PATHS = ["/login", "/register", "/api/auth/login", "/api/auth/register"];
+// Exact match set — startsWith was a foot-gun for future routes like /login-sso
+const PUBLIC_EXACT = new Set(["/login", "/register"]);
+const PUBLIC_PREFIX = ["/api/auth/login", "/api/auth/register", "/api/auth/logout"];
 
-const ROLE_ALLOWED_PREFIXES: Record<Role, string[]> = {
-  admin: ["/dashboard", "/leads", "/invoices", "/users", "/followups", "/settings", "/audit-logs", "/api"],
-  manager: ["/dashboard", "/leads", "/invoices", "/followups", "/users", "/api"],
-  agent: ["/dashboard", "/leads", "/followups", "/api/leads", "/api/followups", "/api/dashboard", "/api/auth"],
-  finance: ["/dashboard", "/leads", "/invoices", "/followups", "/api/leads", "/api/invoices", "/api/payments", "/api/dashboard", "/api/auth"],
+const ROLE_PREFIXES: Record<Role, string[]> = {
+  admin:   ["/dashboard", "/leads", "/invoices", "/users", "/followups", "/settings", "/audit-logs", "/api"],
+  manager: ["/dashboard", "/leads", "/invoices", "/followups", "/users", "/settings", "/api/leads", "/api/followups", "/api/invoices", "/api/dashboard", "/api/users", "/api/auth"],
+  agent:   ["/dashboard", "/leads", "/followups", "/api/leads", "/api/followups", "/api/dashboard", "/api/auth"],
+  finance: ["/dashboard", "/leads", "/invoices", "/followups", "/settings", "/api/leads", "/api/invoices", "/api/payments", "/api/dashboard", "/api/auth"],
 };
+
+const ClaimsSchema = z.object({
+  sub: z.string(),
+  role: z.enum(ROLES),
+  email: z.string(),
+  name: z.string(),
+});
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  if (PUBLIC_PATHS.some((p) => pathname.startsWith(p))) {
-    return NextResponse.next();
-  }
+  if (pathname.startsWith("/_next") || pathname.startsWith("/favicon")) return NextResponse.next();
+  if (PUBLIC_EXACT.has(pathname)) return NextResponse.next();
+  if (PUBLIC_PREFIX.some((p) => pathname.startsWith(p))) return NextResponse.next();
 
-  if (pathname.startsWith("/_next") || pathname.startsWith("/favicon")) {
-    return NextResponse.next();
-  }
-
-  const token = request.cookies.get(AUTH.COOKIE_NAME)?.value;
+  const token = request.cookies.get(COOKIE_NAME)?.value;
+  const isApi = pathname.startsWith("/api");
 
   if (!token) {
-    return isApiRoute(pathname)
+    return isApi
       ? NextResponse.json({ error: "Unauthenticated" }, { status: 401 })
       : NextResponse.redirect(new URL("/login", request.url));
   }
 
   try {
     const { payload } = await jwtVerify(token, secret);
-    const role = payload.role as Role;
-    const userId = payload.sub as string;
+    const claims = ClaimsSchema.parse(payload); // throws if malformed
+    const { sub: userId, role, email, name } = claims;
 
-    const headers = new Headers(request.headers);
-    headers.set("x-user-id", userId);
-    headers.set("x-user-role", role);
-    headers.set("x-user-email", payload.email as string);
-    headers.set("x-user-name", payload.name as string);
-
-    const allowed = ROLE_ALLOWED_PREFIXES[role] ?? [];
-    const hasAccess = allowed.some((prefix) => pathname.startsWith(prefix));
-
-    if (!hasAccess) {
-      return isApiRoute(pathname)
+    const allowed = ROLE_PREFIXES[role] ?? [];
+    if (!allowed.some((p) => pathname.startsWith(p))) {
+      return isApi
         ? NextResponse.json({ error: "Forbidden" }, { status: 403 })
         : NextResponse.redirect(new URL("/dashboard", request.url));
     }
 
+    const headers = new Headers(request.headers);
+    headers.set("x-user-id", userId);
+    headers.set("x-user-role", role);
+    headers.set("x-user-email", email);
+    headers.set("x-user-name", name);
     return NextResponse.next({ request: { headers } });
   } catch {
-    const response = isApiRoute(pathname)
+    const res = isApi
       ? NextResponse.json({ error: "Unauthenticated" }, { status: 401 })
       : NextResponse.redirect(new URL("/login", request.url));
-
-    response.cookies.delete(AUTH.COOKIE_NAME);
-    return response;
+    res.cookies.delete(COOKIE_NAME);
+    return res;
   }
-}
-
-function isApiRoute(pathname: string) {
-  return pathname.startsWith("/api");
 }
 
 export const config = {
