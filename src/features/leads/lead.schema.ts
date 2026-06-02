@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { LEAD_STATUSES } from "@/shared/constants";
+import { buildEmailSchema } from "@/shared/validation/email";
+import { lettersOnlySchema, optionalDigitsOnlySchema, optionalLettersOnlySchema } from "@/shared/validation/text";
 
 export const leadStatusEnum = z.enum(LEAD_STATUSES);
 
@@ -14,10 +16,10 @@ export const leadSourceEnum = z.enum([
 ]);
 
 export const createLeadSchema = z.object({
-  name: z.string().trim().min(1, "Name is required").max(255),
-  email: z.string().trim().email("Invalid email address"),
-  phone: z.string().trim().max(50).optional(),
-  company: z.string().trim().max(255).optional(),
+  name: lettersOnlySchema("Name"),
+  email: buildEmailSchema(),
+  phone: optionalDigitsOnlySchema("Phone"),
+  company: optionalLettersOnlySchema("Company"),
   source: leadSourceEnum.default("Other"),
   status: leadStatusEnum.default("New"),
   assignedTo: z.string().uuid("Invalid user ID").nullable().optional(),

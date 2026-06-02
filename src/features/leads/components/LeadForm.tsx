@@ -6,6 +6,7 @@ import { Button, Card, CardBody, CardHeader, Input } from "@/shared/ui";
 import { useToast } from "@/shared/hooks/useToast";
 import { Toast } from "@/shared/ui";
 import { LEAD_STATUSES } from "@/shared/constants";
+import { createLeadSchema, updateLeadSchema } from "@/features/leads/lead.schema";
 
 const SOURCES = ["Website","Referral","Cold Call","Social Media","Email Campaign","Walk-In","Other"];
 
@@ -38,12 +39,21 @@ export function LeadForm({ initialValues, leadId, cancelHref }: LeadFormProps) {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setErrors({});
+    const parsed = (isEdit ? updateLeadSchema : createLeadSchema).safeParse(form);
+    if (!parsed.success) {
+      setErrors(Object.fromEntries(
+        Object.entries(parsed.error.flatten().fieldErrors).map(([key, value]) => [key, value?.[0] ?? "Invalid value"]),
+      ));
+      showToast("Please fix the highlighted fields", "error");
+      return;
+    }
+
     setLoading(true);
     try {
       const res = await fetch(isEdit ? `/api/leads/${leadId}` : "/api/leads", {
         method: isEdit ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        body: JSON.stringify(parsed.data),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -69,10 +79,10 @@ export function LeadForm({ initialValues, leadId, cancelHref }: LeadFormProps) {
         <CardHeader><h2 className="text-sm font-semibold text-slate-800">Lead details</h2></CardHeader>
         <CardBody>
           <form onSubmit={handleSubmit} className="space-y-4">
-            <Input label="Full name *" name="name" value={form.name} onChange={set("name")} placeholder="Arjun Mehta" error={errors.name} />
+            <Input label="Full name *" name="name" value={form.name} onChange={set("name")} placeholder="Arjun Mehta" hint="Letters and spaces only" error={errors.name} />
             <Input label="Email *" name="email" type="email" value={form.email} onChange={set("email")} placeholder="arjun@company.com" error={errors.email} />
-            <Input label="Phone" name="phone" value={form.phone} onChange={set("phone")} placeholder="+91 98765 43210" />
-            <Input label="Company" name="company" value={form.company} onChange={set("company")} placeholder="TechCorp" />
+            <Input label="Phone" name="phone" value={form.phone} onChange={set("phone")} placeholder="9876543210" hint="Digits only" error={errors.phone} />
+            <Input label="Company" name="company" value={form.company} onChange={set("company")} placeholder="TechCorp" hint="Letters and spaces only" error={errors.company} />
 
             <div className="grid grid-cols-2 gap-4">
               {(["source", "status"] as const).map((field) => (
