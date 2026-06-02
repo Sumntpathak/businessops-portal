@@ -6,6 +6,7 @@ import { useState } from "react";
 import { Button, Card, CardBody, Input } from "@/shared/ui";
 import { APP_NAME } from "@/shared/constants";
 import { loginSchema, type LoginInput } from "@/features/auth/auth.schema";
+import { DEMO_ACCOUNTS } from "@/features/auth/demo-accounts";
 
 type FieldErrors = Partial<Record<keyof LoginInput, string>>;
 
@@ -15,6 +16,12 @@ export default function LoginPage() {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  function fillDemoAccount(account: (typeof DEMO_ACCOUNTS)[number]) {
+    setForm({ email: account.email, password: account.password });
+    setError("");
+    setFieldErrors({});
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -127,6 +134,27 @@ export default function LoginPage() {
                 Create an account
               </Link>
             </p>
+
+            <div className="mt-7 rounded-lg border border-slate-200 bg-slate-50 p-4">
+              <div className="mb-3">
+                <p className="text-sm font-semibold text-slate-800">Demo accounts</p>
+                <p className="mt-0.5 text-xs text-slate-500">Click any account to fill the login form.</p>
+              </div>
+              <div className="space-y-2">
+                {DEMO_ACCOUNTS.map((account) => (
+                  <button
+                    key={account.email}
+                    type="button"
+                    onClick={() => fillDemoAccount(account)}
+                    className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-left text-xs transition hover:border-slate-300 hover:bg-slate-100"
+                  >
+                    <span className="block font-semibold text-slate-800">{account.role}</span>
+                    <span className="block text-slate-600">{account.email}</span>
+                    <span className="block font-mono text-slate-500">{account.password}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
           </CardBody>
         </Card>
       </div>

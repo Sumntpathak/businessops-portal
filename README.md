@@ -24,6 +24,20 @@ src/
 
 See `PROJECT_STRUCTURE.md` for folder and naming conventions.
 
+## Demo Login
+
+These demo users are intentionally available for product walkthroughs:
+
+| Role | Email | Password |
+|---|---|---|
+| Admin | admin@businessops.dev | Admin@1234 |
+| Manager | manager@businessops.dev | Manager@1234 |
+| Agent 1 | agent1@businessops.dev | Agent@1234 |
+| Agent 2 | agent2@businessops.dev | Agent@1234 |
+| Finance | finance@businessops.dev | Finance@1234 |
+
+Keep these accounts limited to demo data only. Do not reuse these passwords for private or production operator accounts.
+
 ## Environment
 
 Copy `.env.example` to `.env.local` and fill values from your private providers.

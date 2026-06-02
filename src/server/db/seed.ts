@@ -6,6 +6,7 @@ import { neon } from "@neondatabase/serverless";
 import { drizzle } from "drizzle-orm/neon-http";
 import bcrypt from "bcryptjs";
 import * as schema from "./schema";
+import { DEMO_ACCOUNTS } from "@/features/auth/demo-accounts";
 
 const sql = neon(process.env.DATABASE_URL!);
 const db = drizzle(sql, { schema });
@@ -18,18 +19,16 @@ const addDays = (d: Date, n: number) => {
   return r;
 };
 
-function requiredEnv(name: string) {
-  const value = process.env[name];
-  if (!value) throw new Error(`${name} is required to seed users`);
-  return value;
+function optionalEnv(name: string) {
+  return process.env[name];
 }
 
 const seedPasswords = {
-  admin: requiredEnv("SEED_ADMIN_PASSWORD"),
-  manager: requiredEnv("SEED_MANAGER_PASSWORD"),
-  agentOne: requiredEnv("SEED_AGENT_ONE_PASSWORD"),
-  agentTwo: requiredEnv("SEED_AGENT_TWO_PASSWORD"),
-  finance: requiredEnv("SEED_FINANCE_PASSWORD"),
+  admin: optionalEnv("SEED_ADMIN_PASSWORD") ?? DEMO_ACCOUNTS[0].password,
+  manager: optionalEnv("SEED_MANAGER_PASSWORD") ?? DEMO_ACCOUNTS[1].password,
+  agentOne: optionalEnv("SEED_AGENT_ONE_PASSWORD") ?? DEMO_ACCOUNTS[2].password,
+  agentTwo: optionalEnv("SEED_AGENT_TWO_PASSWORD") ?? DEMO_ACCOUNTS[3].password,
+  finance: optionalEnv("SEED_FINANCE_PASSWORD") ?? DEMO_ACCOUNTS[4].password,
 };
 
 async function seed() {

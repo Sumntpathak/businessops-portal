@@ -6,10 +6,6 @@
    - File: `src/middleware.ts`
    - Fix: Store a session id/user version in the JWT and validate it against durable server state on every protected request.
 
-2. Demo credentials are rendered in the production login UI.
-   - File: `src/app/(auth)/login/page.tsx`
-   - Fix: Hide demo credentials unless an explicit demo-mode environment flag is enabled.
-
 ## High
 
 1. Login has no rate limiting, lockout, or abuse protection.
