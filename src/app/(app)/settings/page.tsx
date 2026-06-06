@@ -93,12 +93,6 @@ export default function SettingsPage() {
   const [loadingProfile, setLoadingProfile] = useState(true);
   const { toast, showToast, clearToast } = useToast();
 
-  // Profile Form State
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [updatingProfile, setUpdatingProfile] = useState(false);
-  const [profileErrors, setProfileErrors] = useState<Record<string, string>>({});
-
   // Password Form State
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -191,8 +185,6 @@ export default function SettingsPage() {
           const json = await res.json();
           const user = json.data as UserProfile;
           setProfile(user);
-          setName(user.name);
-          setEmail(user.email);
         } else {
           showToast("Failed to fetch session info", "error");
         }
@@ -495,39 +487,6 @@ export default function SettingsPage() {
     }
   }
 
-  async function handleProfileSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setUpdatingProfile(true);
-    setProfileErrors({});
-
-    try {
-      const res = await fetch("/api/auth/me", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, email }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        if (data.details) {
-          setProfileErrors(
-            Object.fromEntries(
-              Object.entries(data.details as Record<string, string[]>).map(([k, v]) => [k, v[0]])
-            )
-          );
-        }
-        showToast(data.error ?? "Failed to update profile", "error");
-      } else {
-        showToast("Profile updated successfully");
-        setProfile((prev) => (prev ? { ...prev, name, email } : null));
-        // Force window refresh to sync sidebar user details
-        window.location.reload();
-      }
-    } catch {
-      showToast("Network error during update", "error");
-    } finally {
-      setUpdatingProfile(false);
-    }
-  }
 
   async function handlePasswordSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -1429,7 +1388,7 @@ export default function SettingsPage() {
                                   }}
                                   disabled={updatingUserId === user.id || user.id === profile.id}
                                 >
-                                  {user.isActive ? "Deactivate" : "Activate"}
+                                  {updatingUserId === user.id ? (user.isActive ? "Deactivating..." : "Activating...") : (user.isActive ? "Deactivate" : "Activate")}
                                 </Button>
                               </TableCell>
                             </TableRow>

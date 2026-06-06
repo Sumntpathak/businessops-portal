@@ -45,6 +45,7 @@ export default function UsersPage() {
   const [permissionRows, setPermissionRows] = useState<UserPermissionRow[]>([]);
   const [loadingPermissions, setLoadingPermissions] = useState(false);
   const [savingPermission, setSavingPermission] = useState<string | null>(null);
+  const [updatingUserId, setUpdatingUserId] = useState<string | null>(null);
 
   useEffect(() => {
     async function loadMe() {
@@ -69,17 +70,24 @@ export default function UsersPage() {
   const isAdmin = role === "admin";
 
   async function handleToggleActive(user: User) {
-    const res = await fetch(`/api/users/${user.id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ isActive: !user.isActive }),
-    });
-    if (res.ok) {
-      showToast(`User ${user.isActive ? "deactivated" : "activated"}`);
-      refetch();
-    } else {
-      const data = await res.json();
-      showToast(data.error ?? "Update failed", "error");
+    setUpdatingUserId(user.id);
+    try {
+      const res = await fetch(`/api/users/${user.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isActive: !user.isActive }),
+      });
+      if (res.ok) {
+        showToast(`User ${user.isActive ? "deactivated" : "activated"}`);
+        refetch();
+      } else {
+        const data = await res.json();
+        showToast(data.error ?? "Update failed", "error");
+      }
+    } catch {
+      showToast("Network error", "error");
+    } finally {
+      setUpdatingUserId(null);
     }
   }
 
@@ -325,8 +333,13 @@ export default function UsersPage() {
                           <Button variant="secondary" size="sm" onClick={() => loadPermissions(user)}>
                             Permissions
                           </Button>
-                          <Button variant={user.isActive ? "danger" : "secondary"} size="sm" onClick={() => handleToggleActive(user)}>
-                            {user.isActive ? "Deactivate" : "Activate"}
+                          <Button
+                            variant={user.isActive ? "danger" : "secondary"}
+                            size="sm"
+                            disabled={updatingUserId === user.id}
+                            onClick={() => void handleToggleActive(user)}
+                          >
+                            {updatingUserId === user.id ? (user.isActive ? "Deactivating..." : "Activating...") : (user.isActive ? "Deactivate" : "Activate")}
                           </Button>
                         </div>
                       )}

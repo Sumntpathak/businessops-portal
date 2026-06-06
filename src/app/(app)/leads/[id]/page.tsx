@@ -69,6 +69,7 @@ export default function LeadDetailPage() {
   const [addingFU, setAddingFU] = useState(false);
   const [showAddFU, setShowAddFU] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: ToastType } | null>(null);
+  const [updatingFUId, setUpdatingFUId] = useState<string | null>(null);
   const [integrationStatus, setIntegrationStatus] = useState<IntegrationStatus>({ email: null, whatsapp: null, payment: null });
   const [showMessageMenu, setShowMessageMenu] = useState(false);
   const [messageChannel, setMessageChannel] = useState<MessageChannel | null>(null);
@@ -158,16 +159,23 @@ export default function LeadDetailPage() {
   }
 
   async function updateFUStatus(fuId: string, status: string) {
-    const res = await fetch(`/api/followups/${fuId}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status }),
-    });
-    if (res.ok) {
-      setFollowUps((prev) => prev.map((f) => (f.id === fuId ? { ...f, status } : f)));
-      showToast(`Marked as ${status}`);
-    } else {
-      showToast("Update failed", "error");
+    setUpdatingFUId(`${fuId}:${status}`);
+    try {
+      const res = await fetch(`/api/followups/${fuId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      if (res.ok) {
+        setFollowUps((prev) => prev.map((f) => (f.id === fuId ? { ...f, status } : f)));
+        showToast(`Marked as ${status}`);
+      } else {
+        showToast("Update failed", "error");
+      }
+    } catch {
+      showToast("Network error updating status", "error");
+    } finally {
+      setUpdatingFUId(null);
     }
   }
 
@@ -500,18 +508,20 @@ export default function LeadDetailPage() {
                               <Button
                                 variant="secondary"
                                 size="sm"
+                                disabled={updatingFUId !== null}
                                 onClick={() => updateFUStatus(fu.id, "Completed")}
                                 className="bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 hover:text-emerald-800 h-8 text-xs font-semibold"
                               >
-                                Done
+                                {updatingFUId === `${fu.id}:Completed` ? "Saving..." : "Done"}
                               </Button>
                               <Button
                                 variant="secondary"
                                 size="sm"
+                                disabled={updatingFUId !== null}
                                 onClick={() => updateFUStatus(fu.id, "Cancelled")}
                                 className="text-gray-500 border-gray-200 hover:bg-gray-50 h-8 text-xs font-semibold"
                               >
-                                Cancel
+                                {updatingFUId === `${fu.id}:Cancelled` ? "Cancelling..." : "Cancel"}
                               </Button>
                             </div>
                           )}

@@ -60,6 +60,7 @@ export default function InvoiceDetailPage() {
   const [signatureEnabled, setSignatureEnabled] = useState(true);
   const [signatureName, setSignatureName] = useState("");
   const [signatureDesignation, setSignatureDesignation] = useState("");
+  const [actionPending, setActionPending] = useState(false);
   const invoiceUrl = typeof window === "undefined" ? "" : window.location.href;
 
   useEffect(() => {
@@ -87,43 +88,90 @@ export default function InvoiceDetailPage() {
   }, []);
 
   async function changeStatus(newStatus: string) {
-    const res = await fetch(`/api/invoices/${id}/status`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status: newStatus }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      showToast(data.error ?? "Update failed", "error");
-      return;
+    setActionPending(true);
+    try {
+      const res = await fetch(`/api/invoices/${id}/status`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: newStatus }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(data.error ?? "Update failed", "error");
+        return;
+      }
+      showToast(`Invoice marked as ${newStatus}`);
+      refetch();
+    } catch {
+      showToast("Network error", "error");
+    } finally {
+      setActionPending(false);
     }
-    showToast(`Invoice marked as ${newStatus}`);
-    refetch();
   }
 
   async function sendInvoice() {
-    const res = await fetch(`/api/invoices/${id}/send`, { method: "POST" });
-    const data = await res.json();
-    if (!res.ok) {
-      showToast(data.error ?? "Send failed", "error");
-      return;
+    setActionPending(true);
+    try {
+      const res = await fetch(`/api/invoices/${id}/send`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(data.error ?? "Send failed", "error");
+        return;
+      }
+      showToast("Invoice sent");
+      refetch();
+    } catch {
+      showToast("Network error", "error");
+    } finally {
+      setActionPending(false);
     }
-    showToast("Invoice sent");
-    refetch();
   }
 
   async function triggerPayment() {
-    const res = await fetch("/api/payments/mock-create", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ invoiceId: id }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      showToast(data.error ?? "Payment initiation failed", "error");
-      return;
+    setActionPending(true);
+    try {
+      const res = await fetch("/api/payments/mock-create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ invoiceId: id }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(data.error ?? "Payment initiation failed", "error");
+        return;
+      }
+      showToast(`Payment initiated: ${data.data.transactionId}`);
+    } catch {
+      showToast("Network error", "error");
+    } finally {
+      setActionPending(false);
     }
-    showToast(`Payment initiated: ${data.data.transactionId}`);
+  }
+
+  async function simulatePayment(status: "Success" | "Failed") {
+    setActionPending(true);
+    try {
+      const res = await fetch("/api/payments/mock-webhook-test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ invoiceId: id, status }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(data.error ?? "Webhook failed", "error");
+      } else {
+        if (status === "Success") {
+          showToast("Payment marked paid");
+        } else {
+          showToast("Payment logged as failed", "error");
+        }
+        refetch();
+      }
+    } catch {
+      showToast("Network error", "error");
+    } finally {
+      setActionPending(false);
+    }
   }
 
   const openMessageForm = (channel: MessageChannel) => {
@@ -261,10 +309,10 @@ export default function InvoiceDetailPage() {
               )}
             </div>
           )}
-          {invoice.status === "Draft" && <Button variant="secondary" size="sm" onClick={sendInvoice}><Icon name="send" />Send</Button>}
-          {invoice.status === "Draft" && <Button variant="danger" size="sm" onClick={() => changeStatus("Cancelled")}>Cancel</Button>}
-          {invoice.status === "Sent" && <Button size="sm" onClick={triggerPayment}><Icon name="creditCard" />Process payment</Button>}
-          {invoice.status === "Sent" && <Button variant="danger" size="sm" onClick={() => changeStatus("Cancelled")}>Cancel</Button>}
+          {invoice.status === "Draft" && <Button variant="secondary" size="sm" onClick={sendInvoice} disabled={actionPending}><Icon name="send" />{actionPending ? "Sending..." : "Send"}</Button>}
+          {invoice.status === "Draft" && <Button variant="danger" size="sm" onClick={() => changeStatus("Cancelled")} disabled={actionPending}>{actionPending ? "Cancelling..." : "Cancel"}</Button>}
+          {invoice.status === "Sent" && <Button size="sm" onClick={triggerPayment} disabled={actionPending}><Icon name="creditCard" />{actionPending ? "Processing..." : "Process payment"}</Button>}
+          {invoice.status === "Sent" && <Button variant="danger" size="sm" onClick={() => changeStatus("Cancelled")} disabled={actionPending}>{actionPending ? "Cancelling..." : "Cancel"}</Button>}
         </div>
       }
     >
@@ -451,26 +499,12 @@ export default function InvoiceDetailPage() {
               Simulate a payment callback to test the paid and failed invoice states.
             </p>
             <div className="flex gap-2">
-              <Button size="sm" onClick={async () => {
-                const res = await fetch("/api/payments/mock-webhook-test", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ invoiceId: id, status: "Success" }),
-                });
-                const data = await res.json();
-                if (!res.ok) showToast(data.error ?? "Webhook failed", "error");
-                else { showToast("Payment marked paid"); refetch(); }
-              }}>Simulate success</Button>
-              <Button size="sm" variant="danger" onClick={async () => {
-                const res = await fetch("/api/payments/mock-webhook-test", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ invoiceId: id, status: "Failed" }),
-                });
-                const data = await res.json();
-                if (!res.ok) showToast(data.error ?? "Webhook failed", "error");
-                else { showToast("Payment logged as failed", "error"); refetch(); }
-              }}>Simulate failure</Button>
+              <Button size="sm" disabled={actionPending} onClick={() => simulatePayment("Success")}>
+                {actionPending ? "Simulating..." : "Simulate success"}
+              </Button>
+              <Button size="sm" variant="danger" disabled={actionPending} onClick={() => simulatePayment("Failed")}>
+                {actionPending ? "Simulating..." : "Simulate failure"}
+              </Button>
             </div>
           </CardBody>
         </Card>

@@ -54,6 +54,7 @@ export default function FollowUpsPage() {
   const [followUps, setFollowUps] = useState<FollowUp[]>([]);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<{ message: string; type: ToastType } | null>(null);
+  const [actionId, setActionId] = useState<string | null>(null);
 
   // Search input state
   const [searchQuery, setSearchQuery] = useState("");
@@ -273,6 +274,7 @@ export default function FollowUpsPage() {
   }, [selectedIndex, followUps, router]);
 
   async function updateStatus(id: string, status: "Completed" | "Cancelled") {
+    setActionId(`${id}:${status}`);
     try {
       const res = await fetch(`/api/followups/${id}`, {
         method: "PUT",
@@ -288,10 +290,13 @@ export default function FollowUpsPage() {
       }
     } catch {
       showToast("Network error updating status", "error");
+    } finally {
+      setActionId(null);
     }
   }
 
   async function rescheduleFollowUp(id: string, newDate: string) {
+    setActionId(`${id}:reschedule`);
     try {
       const res = await fetch(`/api/followups/${id}`, {
         method: "PUT",
@@ -308,6 +313,8 @@ export default function FollowUpsPage() {
       }
     } catch {
       showToast("Network error rescheduling follow-up", "error");
+    } finally {
+      setActionId(null);
     }
   }
 
@@ -566,17 +573,19 @@ export default function FollowUpsPage() {
                                 <Button
                                   variant="primary"
                                   size="sm"
+                                  disabled={actionId !== null}
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     void updateStatus(fu.id, "Completed");
                                   }}
                                   className="bg-emerald-600 hover:bg-emerald-700 h-8 text-xs font-semibold shrink-0"
                                 >
-                                  Done
+                                  {actionId === `${fu.id}:Completed` ? "Saving..." : "Done"}
                                 </Button>
                                 <Button
                                   variant="secondary"
                                   size="sm"
+                                  disabled={actionId !== null}
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     setActiveRescheduleId((prev) => (prev === fu.id ? null : fu.id));
@@ -584,18 +593,19 @@ export default function FollowUpsPage() {
                                   className="h-8 text-xs font-semibold shrink-0 flex items-center gap-1"
                                 >
                                   <Icon name="calendar" className="size-3.5" />
-                                  Reschedule
+                                  {actionId === `${fu.id}:reschedule` ? "Rescheduling..." : "Reschedule"}
                                 </Button>
                                 <Button
                                   variant="danger"
                                   size="sm"
+                                  disabled={actionId !== null}
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     void updateStatus(fu.id, "Cancelled");
                                   }}
                                   className="h-8 text-xs font-semibold shrink-0"
                                 >
-                                  Cancel
+                                  {actionId === `${fu.id}:Cancelled` ? "Cancelling..." : "Cancel"}
                                 </Button>
                               </>
                             )}
@@ -736,20 +746,22 @@ export default function FollowUpsPage() {
                                   <Button
                                     variant="primary"
                                     size="sm"
+                                    disabled={actionId !== null}
                                     onClick={() => void updateStatus(fu.id, "Completed")}
                                     className="bg-emerald-600 hover:bg-emerald-700 h-7 text-[11px] px-2.5 font-semibold shrink-0"
                                   >
-                                    Done
+                                    {actionId === `${fu.id}:Completed` ? "Saving..." : "Done"}
                                   </Button>
                                   <div className="relative">
                                     <Button
                                       variant="secondary"
                                       size="sm"
+                                      disabled={actionId !== null}
                                       onClick={() => setActiveRescheduleId((prev) => (prev === fu.id ? null : fu.id))}
                                       className="h-7 text-[11px] px-2.5 font-semibold shrink-0 flex items-center gap-1"
                                     >
                                       <Icon name="calendar" className="size-3" />
-                                      Reschedule
+                                      {actionId === `${fu.id}:reschedule` ? "Rescheduling..." : "Reschedule"}
                                     </Button>
 
                                     {activeRescheduleId === fu.id && (
@@ -759,22 +771,25 @@ export default function FollowUpsPage() {
                                         </div>
                                         <button
                                           type="button"
+                                          disabled={actionId !== null}
                                           onClick={() => rescheduleFollowUp(fu.id, getRelativeDateStr(1))}
-                                          className="flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-xs text-gray-700 hover:bg-gray-100/70 font-medium transition"
+                                          className="flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-xs text-gray-700 hover:bg-gray-100/70 font-medium transition disabled:opacity-50"
                                         >
                                           Tomorrow (+1d)
                                         </button>
                                         <button
                                           type="button"
+                                          disabled={actionId !== null}
                                           onClick={() => rescheduleFollowUp(fu.id, getRelativeDateStr(3))}
-                                          className="flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-xs text-gray-700 hover:bg-gray-100/70 font-medium transition"
+                                          className="flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-xs text-gray-700 hover:bg-gray-100/70 font-medium transition disabled:opacity-50"
                                         >
                                           In 3 Days (+3d)
                                         </button>
                                         <button
                                           type="button"
+                                          disabled={actionId !== null}
                                           onClick={() => rescheduleFollowUp(fu.id, getRelativeDateStr(7))}
-                                          className="flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-xs text-gray-700 hover:bg-gray-100/70 font-medium transition"
+                                          className="flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-xs text-gray-700 hover:bg-gray-100/70 font-medium transition disabled:opacity-50"
                                         >
                                           Next Week (+7d)
                                         </button>
@@ -788,6 +803,7 @@ export default function FollowUpsPage() {
                                             className="w-full text-xs border border-gray-200 rounded px-1.5 py-1 focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-500"
                                             value={fu.followUpDate}
                                             min={new Date().toISOString().split("T")[0]}
+                                            disabled={actionId !== null}
                                             onChange={(e) => {
                                               if (e.target.value) {
                                                 void rescheduleFollowUp(fu.id, e.target.value);
@@ -801,10 +817,11 @@ export default function FollowUpsPage() {
                                   <Button
                                     variant="danger"
                                     size="sm"
+                                    disabled={actionId !== null}
                                     onClick={() => void updateStatus(fu.id, "Cancelled")}
                                     className="h-7 text-[11px] px-2.5 font-semibold shrink-0"
                                   >
-                                    Cancel
+                                    {actionId === `${fu.id}:Cancelled` ? "Cancelling..." : "Cancel"}
                                   </Button>
                                 </>
                               )}
@@ -921,18 +938,20 @@ export default function FollowUpsPage() {
                                               <Button
                                                 variant="primary"
                                                 size="sm"
+                                                disabled={actionId !== null}
                                                 onClick={(e) => {
                                                   e.stopPropagation();
                                                   void updateStatus(item.id, "Completed");
                                                 }}
                                                 className="bg-emerald-600 hover:bg-emerald-700 h-8 text-xs font-semibold shrink-0"
                                               >
-                                                Done
+                                                {actionId === `${item.id}:Completed` ? "Saving..." : "Done"}
                                               </Button>
                                               <div className="relative">
                                                 <Button
                                                   variant="secondary"
                                                   size="sm"
+                                                  disabled={actionId !== null}
                                                   onClick={(e) => {
                                                     e.stopPropagation();
                                                     setActiveRescheduleId((prev) => (prev === item.id ? null : item.id));
@@ -940,9 +959,9 @@ export default function FollowUpsPage() {
                                                   className="h-8 text-xs font-semibold shrink-0 flex items-center gap-1"
                                                 >
                                                   <Icon name="calendar" className="size-3.5" />
-                                                  Reschedule
+                                                  {actionId === `${item.id}:reschedule` ? "Rescheduling..." : "Reschedule"}
                                                 </Button>
-
+ 
                                                 {activeRescheduleId === item.id && (
                                                   <div
                                                     onClick={(e) => e.stopPropagation()}
@@ -953,22 +972,25 @@ export default function FollowUpsPage() {
                                                     </div>
                                                     <button
                                                       type="button"
+                                                      disabled={actionId !== null}
                                                       onClick={() => rescheduleFollowUp(item.id, getRelativeDateStr(1))}
-                                                      className="flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-xs text-gray-700 hover:bg-gray-100/70 font-medium transition"
+                                                      className="flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-xs text-gray-700 hover:bg-gray-100/70 font-medium transition disabled:opacity-50"
                                                     >
                                                       Tomorrow (+1d)
                                                     </button>
                                                     <button
                                                       type="button"
+                                                      disabled={actionId !== null}
                                                       onClick={() => rescheduleFollowUp(item.id, getRelativeDateStr(3))}
-                                                      className="flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-xs text-gray-700 hover:bg-gray-100/70 font-medium transition"
+                                                      className="flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-xs text-gray-700 hover:bg-gray-100/70 font-medium transition disabled:opacity-50"
                                                     >
                                                       In 3 Days (+3d)
                                                     </button>
                                                     <button
                                                       type="button"
+                                                      disabled={actionId !== null}
                                                       onClick={() => rescheduleFollowUp(item.id, getRelativeDateStr(7))}
-                                                      className="flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-xs text-gray-700 hover:bg-gray-100/70 font-medium transition"
+                                                      className="flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-xs text-gray-700 hover:bg-gray-100/70 font-medium transition disabled:opacity-50"
                                                     >
                                                       Next Week (+7d)
                                                     </button>
@@ -982,6 +1004,7 @@ export default function FollowUpsPage() {
                                                         className="w-full text-xs border border-gray-200 rounded px-1.5 py-1 focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-500"
                                                         value={item.followUpDate}
                                                         min={new Date().toISOString().split("T")[0]}
+                                                        disabled={actionId !== null}
                                                         onChange={(e) => {
                                                           if (e.target.value) {
                                                             void rescheduleFollowUp(item.id, e.target.value);
@@ -995,13 +1018,14 @@ export default function FollowUpsPage() {
                                               <Button
                                                 variant="danger"
                                                 size="sm"
+                                                disabled={actionId !== null}
                                                 onClick={(e) => {
                                                   e.stopPropagation();
                                                   void updateStatus(item.id, "Cancelled");
                                                 }}
                                                 className="h-8 text-xs font-semibold shrink-0"
                                               >
-                                                Cancel
+                                                {actionId === `${item.id}:Cancelled` ? "Cancelling..." : "Cancel"}
                                               </Button>
                                             </>
                                           )}
