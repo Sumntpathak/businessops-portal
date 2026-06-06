@@ -14,7 +14,7 @@ BusinessOps Portal is a production-style operations dashboard for a small servic
 
 ## Live Links
 
-- Live Vercel URL: https://businessops-portal-c8rhiaazr-pathaksumnt4u-gmailcoms-projects.vercel.app
+- Live Vercel URL: https://businessops-portal.vercel.app
 - GitHub repository URL: https://github.com/Sumntpathak/businessops-portal
 
 ## Demo Login
