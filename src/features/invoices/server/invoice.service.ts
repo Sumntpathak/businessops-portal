@@ -1,6 +1,6 @@
 import { db } from "@/server/db/client";
 import { invoices, leads, paymentLogs } from "@/server/db/schema";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import crypto from "crypto";
 import { invoiceRepository } from "./invoice.repository";
 import { writeAuditLog } from "@/server/audit/audit-log";
@@ -9,12 +9,29 @@ import { requireRole } from "@/server/auth/rbac";
 import type { JWTPayload } from "@/server/auth/jwt";
 import type { CreateInvoiceInput, InvoiceQuery, UpdateInvoiceStatusInput } from "@/features/invoices/invoice.schema";
 
-/** Generates a unique invoice number without a count-based race. */
-function generateInvoiceNumber(): string {
+/** Generates a unique invoice number sequentially in the format INV-YYYY-NNNN. */
+async function generateInvoiceNumber(): Promise<string> {
   const year = new Date().getFullYear();
-  const stamp = Date.now().toString(36).toUpperCase();
-  const suffix = crypto.randomUUID().slice(0, 4).toUpperCase();
-  return `INV-${year}-${stamp}-${suffix}`;
+  const prefix = `INV-${year}-`;
+  
+  // Find invoices with this prefix using SQL LIKE query
+  const results = await db
+    .select({ invoiceNumber: invoices.invoiceNumber })
+    .from(invoices)
+    .where(sql`${invoices.invoiceNumber} LIKE ${prefix} || '%'`);
+    
+  let maxSeq = 0;
+  for (const r of results) {
+    const part = r.invoiceNumber.slice(prefix.length);
+    const seq = parseInt(part, 10);
+    if (!isNaN(seq) && seq > maxSeq) {
+      maxSeq = seq;
+    }
+  }
+  
+  const nextSeq = maxSeq + 1;
+  const padded = String(nextSeq).padStart(4, "0");
+  return `${prefix}${padded}`;
 }
 
 /**
@@ -71,7 +88,7 @@ export const invoiceService = {
 
   create: async (data: CreateInvoiceInput, ctx: JWTPayload) => {
     requireRole(ctx, ["admin", "manager", "finance"]);
-    const invoiceNumber = generateInvoiceNumber();
+    const invoiceNumber = await generateInvoiceNumber();
     const normalizedItems = data.items.map((item) => ({
       ...item,
       description: toDisplayCase(item.description),

@@ -193,7 +193,7 @@ async function seed() {
   console.log("✅ Follow-ups seeded (10: 3 today, 2 overdue, 5 upcoming)");
 
   // ─── INVOICES (8) ─────────────────────────────────────────────────────────
-  const makeInvNum = (n: number) => `INV-2025-${String(n).padStart(4, "0")}`;
+  const makeInvNum = (n: number) => `INV-${today.getFullYear()}-${String(n).padStart(4, "0")}`;
 
   // Invoice 1: Draft, single item
   const [inv1] = await db.insert(schema.invoices).values({
