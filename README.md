@@ -175,8 +175,4 @@ Optional production variables:
 - Automated Playwright smoke tests cover admin workflows plus manager, agent, and finance dashboard/navigation checks. Broader API contract and negative authorization tests would be added with more time.
 - **Rate limiter is in-memory only.** `src/server/http/rate-limit.ts` uses a module-scope `Map`. On Vercel each serverless instance has its own memory, so login/register throttling is best-effort, not a hard cap. With one more week the upgrade would be Upstash Redis (free tier) with `rl:{scope}:{key}` keys and a TTL matching the existing window, swapping the `Map` for an atomic `INCR + EXPIRE` pipeline so limits hold across instances.
 
-See `TASK_AUDIT.md` for the final checklist against the original PDF task.
 
-## AI Tools Used
-
-AI assistance was used for code review, issue identification, implementation support, and documentation drafting. The application logic, schema, and security behavior should still be reviewed manually before final submission.
