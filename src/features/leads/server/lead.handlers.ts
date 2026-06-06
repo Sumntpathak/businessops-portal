@@ -1,7 +1,13 @@
 import { withAuth } from "@/server/http/with-auth";
 import { ok, paginated, err } from "@/server/http/response";
 import { leadService } from "@/features/leads/server/lead.service";
-import { createLeadSchema, leadQuerySchema, updateLeadSchema } from "@/features/leads/lead.schema";
+import {
+  bulkLeadDeleteSchema,
+  bulkLeadUpdateSchema,
+  createLeadSchema,
+  leadQuerySchema,
+  updateLeadSchema,
+} from "@/features/leads/lead.schema";
 
 export const leadHandlers = {
   list: withAuth(async (req, ctx) => {
@@ -17,6 +23,20 @@ export const leadHandlers = {
     const parsed = createLeadSchema.safeParse(body);
     if (!parsed.success) return err("Validation failed", 400, parsed.error.flatten().fieldErrors);
     return ok(await leadService.create(parsed.data, ctx), 201);
+  }),
+
+  bulkUpdate: withAuth(async (req, ctx) => {
+    const body = await req.json();
+    const parsed = bulkLeadUpdateSchema.safeParse(body);
+    if (!parsed.success) return err("Validation failed", 400, parsed.error.flatten().fieldErrors);
+    return ok(await leadService.bulkUpdate(parsed.data, ctx));
+  }),
+
+  bulkDelete: withAuth(async (req, ctx) => {
+    const body = await req.json();
+    const parsed = bulkLeadDeleteSchema.safeParse(body);
+    if (!parsed.success) return err("Validation failed", 400, parsed.error.flatten().fieldErrors);
+    return ok(await leadService.bulkDelete(parsed.data, ctx));
   }),
 
   getById: withAuth(async (req, ctx, params) => {

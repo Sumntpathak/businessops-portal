@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, ilike, or, SQL } from "drizzle-orm";
+import { and, asc, count, desc, eq, ilike, inArray, or, SQL } from "drizzle-orm";
 import { db } from "@/server/db/client";
 import { leads, users } from "@/server/db/schema";
 import type { NewLead } from "@/server/db/schema";
@@ -50,6 +50,22 @@ export const leadRepository = {
   update: (id: string, data: Partial<NewLead>) =>
     db.update(leads).set({ ...data, updatedAt: new Date() }).where(eq(leads.id, id)).returning().then((r) => r[0] ?? null),
 
+  updateForAgent: (id: string, agentId: string, data: Partial<NewLead>) =>
+    db.update(leads)
+      .set({ ...data, updatedAt: new Date() })
+      .where(and(eq(leads.id, id), eq(leads.assignedTo, agentId)))
+      .returning()
+      .then((r) => r[0] ?? null),
+
+  bulkUpdate: (ids: string[], data: Partial<NewLead>, agentId?: string) =>
+    db.update(leads)
+      .set({ ...data, updatedAt: new Date() })
+      .where(and(inArray(leads.id, ids), agentId ? eq(leads.assignedTo, agentId) : undefined))
+      .returning({ id: leads.id }),
+
   delete: (id: string) =>
     db.delete(leads).where(eq(leads.id, id)),
+
+  bulkDelete: (ids: string[]) =>
+    db.delete(leads).where(inArray(leads.id, ids)).returning({ id: leads.id }),
 };

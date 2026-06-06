@@ -12,7 +12,7 @@ export async function setAuthCookie(token: string) {
   jar.set(COOKIE_NAME, token, {
     httpOnly: true,
     secure: IS_PROD,
-    sameSite: "lax",
+    sameSite: "strict",
     path: "/",
     maxAge: MAX_AGE,
   });

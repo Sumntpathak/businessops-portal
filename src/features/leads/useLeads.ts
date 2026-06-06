@@ -27,6 +27,7 @@ interface Filters {
   status?: string;
   sort?: "asc" | "desc";
   page?: number;
+  limit?: number;
 }
 
 export function useLeads(filters: Filters = {}) {
@@ -40,7 +41,8 @@ export function useLeads(filters: Filters = {}) {
     setError(null);
 
     try {
-      const params = new URLSearchParams({ page: String(page), limit: "10", sort: filters.sort ?? "desc" });
+      const limitVal = filters.limit ? String(filters.limit) : "10";
+      const params = new URLSearchParams({ page: String(page), limit: limitVal, sort: filters.sort ?? "desc" });
       if (filters.search) params.set("search", filters.search);
       if (filters.status) params.set("status", filters.status);
 
@@ -65,7 +67,7 @@ export function useLeads(filters: Filters = {}) {
     } finally {
       if (!signal?.aborted) setLoading(false);
     }
-  }, [filters.page, filters.search, filters.status, filters.sort]);
+  }, [filters.page, filters.search, filters.status, filters.sort, filters.limit]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -84,5 +86,25 @@ export function useLeads(filters: Filters = {}) {
     return res;
   };
 
-  return { leads, pagination, loading, error, fetchLeads, deleteLead };
+  const bulkUpdateLeads = async (payload: { ids: string[]; status?: string; assignedTo?: string | null }) => {
+    const res = await fetch("/api/leads", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (res.ok) await fetchLeads(pagination.page);
+    return res;
+  };
+
+  const bulkDeleteLeads = async (ids: string[]) => {
+    const res = await fetch("/api/leads", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    });
+    if (res.ok) await fetchLeads(pagination.page);
+    return res;
+  };
+
+  return { leads, pagination, loading, error, fetchLeads, deleteLead, bulkUpdateLeads, bulkDeleteLeads };
 }

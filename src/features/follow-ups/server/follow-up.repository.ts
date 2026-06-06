@@ -1,4 +1,4 @@
-import { and, eq, gt, inArray, lt, SQL } from "drizzle-orm";
+import { and, count, eq, gt, ilike, inArray, lt, or, SQL } from "drizzle-orm";
 import { db } from "@/server/db/client";
 import { followups, leads } from "@/server/db/schema";
 import type { NewFollowUp } from "@/server/db/schema";
@@ -14,7 +14,7 @@ export const followUpRepository = {
     db.select().from(followups).where(eq(followups.id, id)).limit(1).then((r) => r[0] ?? null),
 
   findMany: async (query: FollowUpQuery, agentId?: string) => {
-    const { status, due, page, limit } = query;
+    const { status, due, search, page, limit } = query;
     const today = todayUTC();
     const offset = (page - 1) * limit;
     const conditions: SQL[] = [];
@@ -23,6 +23,17 @@ export const followUpRepository = {
     if (due === "today")    conditions.push(eq(followups.followUpDate, today));
     if (due === "overdue")  { conditions.push(lt(followups.followUpDate, today)); conditions.push(eq(followups.status, "Pending")); }
     if (due === "upcoming") conditions.push(gt(followups.followUpDate, today));
+
+    if (search) {
+      const q = `%${search.replace(/[\\%_]/g, "\\$&")}%`;
+      conditions.push(
+        or(
+          ilike(followups.message, q),
+          ilike(leads.name, q),
+          ilike(leads.email, q)
+        )!
+      );
+    }
 
     if (agentId) {
       const agentLeads = await db.select({ id: leads.id }).from(leads).where(eq(leads.assignedTo, agentId));
@@ -33,9 +44,30 @@ export const followUpRepository = {
 
     const where = conditions.length ? and(...conditions) : undefined;
 
-    const [rows, total] = await Promise.all([
-      db.select().from(followups).where(where).orderBy(followups.followUpDate).limit(limit).offset(offset),
-      db.$count(followups, where),
+    const [rows, [{ value: total }]] = await Promise.all([
+      db.select({
+        id: followups.id,
+        leadId: followups.leadId,
+        followUpDate: followups.followUpDate,
+        message: followups.message,
+        status: followups.status,
+        createdBy: followups.createdBy,
+        createdAt: followups.createdAt,
+        updatedAt: followups.updatedAt,
+        leadName: leads.name,
+        leadEmail: leads.email,
+        leadStatus: leads.status,
+      })
+      .from(followups)
+      .innerJoin(leads, eq(followups.leadId, leads.id))
+      .where(where)
+      .orderBy(followups.followUpDate)
+      .limit(limit)
+      .offset(offset),
+      db.select({ value: count() })
+        .from(followups)
+        .innerJoin(leads, eq(followups.leadId, leads.id))
+        .where(where),
     ]);
 
     return { rows, total };
@@ -44,8 +76,25 @@ export const followUpRepository = {
   create: (data: NewFollowUp) =>
     db.insert(followups).values(data).returning().then((r) => r[0]),
 
-  updateStatus: (id: string, status: "Pending" | "Completed" | "Cancelled") =>
-    db.update(followups).set({ status, updatedAt: new Date() }).where(eq(followups.id, id)).returning().then((r) => r[0] ?? null),
+  update: (id: string, data: Partial<typeof followups.$inferInsert>) =>
+    db.update(followups)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(followups.id, id))
+      .returning()
+      .then((r) => r[0] ?? null),
+
+  updateForAgent: (id: string, agentId: string, data: Partial<typeof followups.$inferInsert>) =>
+    db.update(followups)
+      .set({ ...data, updatedAt: new Date() })
+      .where(and(
+        eq(followups.id, id),
+        inArray(
+          followups.leadId,
+          db.select({ id: leads.id }).from(leads).where(eq(leads.assignedTo, agentId))
+        )
+      ))
+      .returning()
+      .then((r) => r[0] ?? null),
 
   getLeadForFollowup: async (followupId: string) => {
     const fu = await followUpRepository.findById(followupId);

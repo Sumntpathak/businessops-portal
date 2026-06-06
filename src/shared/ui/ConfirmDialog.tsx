@@ -20,10 +20,10 @@ export function ConfirmDialog({
   loading,
 }: ConfirmDialogProps) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-      <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 shadow-xl">
-        <h2 className="text-base font-semibold text-slate-950">{title}</h2>
-        <p className="mt-2 text-sm text-slate-500">{message}</p>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 transition-opacity duration-150">
+      <div className="w-full max-w-md rounded-xl border border-gray-200 bg-white p-6 shadow-xl transition-transform duration-150">
+        <h2 className="text-base font-semibold text-gray-950">{title}</h2>
+        <p className="mt-2 text-sm text-gray-500">{message}</p>
         <div className="mt-6 flex justify-end gap-3">
           <Button variant="secondary" onClick={onCancel} disabled={loading}>
             Cancel

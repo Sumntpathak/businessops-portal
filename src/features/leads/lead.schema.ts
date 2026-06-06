@@ -28,6 +28,20 @@ export const createLeadSchema = z.object({
 
 export const updateLeadSchema = createLeadSchema.partial();
 
+export const bulkLeadUpdateSchema = z
+  .object({
+    ids: z.array(z.string().uuid()).min(1, "Select at least one lead").max(100, "Select 100 leads or fewer"),
+    status: leadStatusEnum.optional(),
+    assignedTo: z.string().uuid("Invalid user ID").nullable().optional(),
+  })
+  .refine((data) => data.status !== undefined || data.assignedTo !== undefined, {
+    message: "Choose an action",
+  });
+
+export const bulkLeadDeleteSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1, "Select at least one lead").max(100, "Select 100 leads or fewer"),
+});
+
 export const leadQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(10),
@@ -39,4 +53,6 @@ export const leadQuerySchema = z.object({
 
 export type CreateLeadInput = z.infer<typeof createLeadSchema>;
 export type UpdateLeadInput = z.infer<typeof updateLeadSchema>;
+export type BulkLeadUpdateInput = z.infer<typeof bulkLeadUpdateSchema>;
+export type BulkLeadDeleteInput = z.infer<typeof bulkLeadDeleteSchema>;
 export type LeadQuery = z.infer<typeof leadQuerySchema>;

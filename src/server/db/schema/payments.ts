@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, numeric, timestamp, pgEnum } from "drizzle-orm/pg-core";
+import { pgTable, uuid, varchar, text, numeric, timestamp, pgEnum, uniqueIndex } from "drizzle-orm/pg-core";
 import { invoices } from "./invoices";
 
 export const paymentStatusEnum = pgEnum("payment_status", [
@@ -18,7 +18,13 @@ export const paymentLogs = pgTable("payment_logs", {
   status: paymentStatusEnum("status").notNull(),
   webhookPayload: text("webhook_payload"), // raw JSON string
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-});
+}, (t) => ({
+  // Webhook idempotency: duplicate transactionId raises PG 23505,
+  // which invoice.service.mockWebhook catches and treats as already-processed.
+  // NULLs (e.g. initial failed-payment seed row) are allowed by Postgres
+  // default NULLS DISTINCT semantics, so multiple null txn_ids don't collide.
+  transactionIdUnique: uniqueIndex("payment_logs_transaction_id_unique").on(t.transactionId),
+}));
 
 export type PaymentLog = typeof paymentLogs.$inferSelect;
 export type NewPaymentLog = typeof paymentLogs.$inferInsert;

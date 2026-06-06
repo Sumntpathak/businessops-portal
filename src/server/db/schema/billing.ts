@@ -1,4 +1,4 @@
-import { index, integer, numeric, pgEnum, pgTable, text, timestamp, uuid, varchar } from "drizzle-orm/pg-core";
+import { boolean, index, integer, numeric, pgEnum, pgTable, text, timestamp, uuid, varchar } from "drizzle-orm/pg-core";
 import { users } from "./core";
 import { leads } from "./leads-schema";
 
@@ -64,6 +64,46 @@ export const fileAttachments = pgTable("file_attachments", {
   index("attachments_entity_idx").on(t.entityType, t.entityId),
 ]);
 
+export const integrationConfigs = pgTable("integration_configs", {
+  id:          uuid("id").defaultRandom().primaryKey(),
+  type:        varchar("type", { length: 50 }).notNull(),
+  provider:    varchar("provider", { length: 100 }).notNull(),
+  config:      text("config").notNull(),
+  isEnabled:   boolean("is_enabled").notNull().default(false),
+  createdBy:   uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+  updatedAt:   timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  createdAt:   timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (t) => [
+  index("integration_configs_type_provider_idx").on(t.type, t.provider),
+]);
+
+export const messageLogs = pgTable("message_logs", {
+  id:            uuid("id").defaultRandom().primaryKey(),
+  channel:       varchar("channel", { length: 20 }).notNull(),
+  recipient:     varchar("recipient", { length: 255 }).notNull(),
+  subject:       varchar("subject", { length: 500 }),
+  body:          text("body").notNull(),
+  status:        varchar("status", { length: 20 }).notNull().default("sent"),
+  relatedEntity: varchar("related_entity", { length: 50 }),
+  relatedId:     uuid("related_id"),
+  sentBy:        uuid("sent_by").references(() => users.id, { onDelete: "set null" }),
+  createdAt:     timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (t) => [
+  index("message_logs_channel_idx").on(t.channel),
+  index("message_logs_entity_idx").on(t.relatedEntity, t.relatedId),
+]);
+
+export const userPermissions = pgTable("user_permissions", {
+  id:         uuid("id").defaultRandom().primaryKey(),
+  userId:     uuid("user_id").references(() => users.id, { onDelete: "cascade" }).notNull(),
+  permission: varchar("permission", { length: 100 }).notNull(),
+  granted:    boolean("granted").notNull().default(false),
+  grantedBy:  uuid("granted_by").references(() => users.id, { onDelete: "set null" }),
+  updatedAt:  timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (t) => [
+  index("user_perms_user_idx").on(t.userId),
+]);
+
 export type Invoice     = typeof invoices.$inferSelect;
 export type NewInvoice  = typeof invoices.$inferInsert;
 export type InvoiceItem    = typeof invoiceItems.$inferSelect;
@@ -72,3 +112,9 @@ export type PaymentLog    = typeof paymentLogs.$inferSelect;
 export type NewPaymentLog = typeof paymentLogs.$inferInsert;
 export type FileAttachment    = typeof fileAttachments.$inferSelect;
 export type NewFileAttachment = typeof fileAttachments.$inferInsert;
+export type IntegrationConfig = typeof integrationConfigs.$inferSelect;
+export type NewIntegrationConfig = typeof integrationConfigs.$inferInsert;
+export type MessageLog = typeof messageLogs.$inferSelect;
+export type NewMessageLog = typeof messageLogs.$inferInsert;
+export type UserPermission = typeof userPermissions.$inferSelect;
+export type NewUserPermission = typeof userPermissions.$inferInsert;

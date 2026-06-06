@@ -8,9 +8,9 @@
 
 ## High
 
-1. Login has no rate limiting, lockout, or abuse protection.
-   - File: `src/app/api/auth/login/route.ts`
-   - Fix: Add IP and email-based throttling with exponential backoff.
+1. Login/register throttling is in-memory.
+   - File: `src/server/http/rate-limit.ts`
+   - Fix: Replace with a durable shared limiter such as Redis/Upstash before scaling beyond a single serverless instance.
 
 2. Lead writes split authorization reads from mutations.
    - File: `src/features/leads/server/lead.repository.ts`
@@ -34,9 +34,9 @@
 
 ## Medium
 
-1. Auth cookies use `SameSite=Lax`.
+1. Auth cookies use `SameSite=Strict`; state-changing APIs still do not use explicit CSRF tokens.
    - File: `src/server/auth/cookies.ts`
-   - Fix: Use `SameSite=Strict` unless a documented cross-site flow requires Lax.
+   - Fix: Add double-submit or synchronizer CSRF tokens if future cross-site flows require relaxing SameSite.
 
 2. Follow-up ownership is enforced by controllers instead of the follow-up service.
    - File: `src/features/follow-ups/server/follow-up.service.ts`

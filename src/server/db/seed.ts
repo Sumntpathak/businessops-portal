@@ -7,6 +7,7 @@ import { drizzle } from "drizzle-orm/neon-http";
 import bcrypt from "bcryptjs";
 import * as schema from "./schema";
 import { DEMO_ACCOUNTS } from "@/features/auth/demo-accounts";
+import { USER_PERMISSIONS } from "@/shared/constants";
 
 const sql = neon(process.env.DATABASE_URL!);
 const db = drizzle(sql, { schema });
@@ -19,16 +20,28 @@ const addDays = (d: Date, n: number) => {
   return r;
 };
 
-function optionalEnv(name: string) {
-  return process.env[name];
+// Seed passwords: env vars take precedence; the hardcoded DEMO_ACCOUNTS
+// fallbacks exist ONLY for local dev. In production, missing env vars must
+// fail loudly — otherwise the live DB would be seeded with widely-known
+// demo credentials (Admin@1234, etc.).
+const IS_PROD = process.env.NODE_ENV === "production";
+
+function resolveSeedPassword(envName: string, fallback: string, role: string): string {
+  const value = process.env[envName];
+  if (value) return value;
+  if (IS_PROD) {
+    throw new Error(`${envName} is required to seed ${role} in production`);
+  }
+  console.warn(`⚠️  ${envName} not set — using demo password for ${role}. DO NOT use in production.`);
+  return fallback;
 }
 
 const seedPasswords = {
-  admin: optionalEnv("SEED_ADMIN_PASSWORD") ?? DEMO_ACCOUNTS[0].password,
-  manager: optionalEnv("SEED_MANAGER_PASSWORD") ?? DEMO_ACCOUNTS[1].password,
-  agentOne: optionalEnv("SEED_AGENT_ONE_PASSWORD") ?? DEMO_ACCOUNTS[2].password,
-  agentTwo: optionalEnv("SEED_AGENT_TWO_PASSWORD") ?? DEMO_ACCOUNTS[3].password,
-  finance: optionalEnv("SEED_FINANCE_PASSWORD") ?? DEMO_ACCOUNTS[4].password,
+  admin: resolveSeedPassword("SEED_ADMIN_PASSWORD", DEMO_ACCOUNTS[0].password, "admin"),
+  manager: resolveSeedPassword("SEED_MANAGER_PASSWORD", DEMO_ACCOUNTS[1].password, "manager"),
+  agentOne: resolveSeedPassword("SEED_AGENT_ONE_PASSWORD", DEMO_ACCOUNTS[2].password, "agent 1"),
+  agentTwo: resolveSeedPassword("SEED_AGENT_TWO_PASSWORD", DEMO_ACCOUNTS[3].password, "agent 2"),
+  finance: resolveSeedPassword("SEED_FINANCE_PASSWORD", DEMO_ACCOUNTS[4].password, "finance"),
 };
 
 async function seed() {
@@ -39,7 +52,7 @@ async function seed() {
 
   const [admin] = await db.insert(schema.users).values({
     name: "Admin User",
-    email: "admin@businessops.dev",
+    email: DEMO_ACCOUNTS[0].email,
     passwordHash: await hash(seedPasswords.admin),
     role: "admin",
     isActive: true,
@@ -47,7 +60,7 @@ async function seed() {
 
   const [manager] = await db.insert(schema.users).values({
     name: "Manager User",
-    email: "manager@businessops.dev",
+    email: DEMO_ACCOUNTS[1].email,
     passwordHash: await hash(seedPasswords.manager),
     role: "manager",
     isActive: true,
@@ -55,7 +68,7 @@ async function seed() {
 
   const [agent1] = await db.insert(schema.users).values({
     name: "Agent One",
-    email: "agent1@businessops.dev",
+    email: DEMO_ACCOUNTS[2].email,
     passwordHash: await hash(seedPasswords.agentOne),
     role: "agent",
     isActive: true,
@@ -63,7 +76,7 @@ async function seed() {
 
   const [agent2] = await db.insert(schema.users).values({
     name: "Agent Two",
-    email: "agent2@businessops.dev",
+    email: DEMO_ACCOUNTS[3].email,
     passwordHash: await hash(seedPasswords.agentTwo),
     role: "agent",
     isActive: true,
@@ -71,13 +84,53 @@ async function seed() {
 
   const [finance] = await db.insert(schema.users).values({
     name: "Finance User",
-    email: "finance@businessops.dev",
+    email: DEMO_ACCOUNTS[4].email,
     passwordHash: await hash(seedPasswords.finance),
     role: "finance",
     isActive: true,
   }).returning();
 
   console.log("✅ Users seeded (5)");
+
+  await db.insert(schema.integrationConfigs).values([
+    {
+      type: "email",
+      provider: "smtp_mock",
+      config: JSON.stringify({ host: "smtp.mock-server.local", port: 587, senderEmail: "noreply@businessops.local", senderName: "BusinessOps Portal" }),
+      isEnabled: false,
+      createdBy: admin.id,
+    },
+    {
+      type: "whatsapp",
+      provider: "twilio_mock",
+      config: JSON.stringify({ endpoint: "https://mock-wa.api.local/v1", phone: "+91-9876543210", namespace: "businessops_templates" }),
+      isEnabled: false,
+      createdBy: admin.id,
+    },
+    {
+      type: "payment",
+      provider: "razorpay_mock",
+      config: JSON.stringify({ keyId: "rzp_mock_xxxxxxxxxxxxx", currency: "INR" }),
+      isEnabled: false,
+      createdBy: admin.id,
+    },
+  ]);
+
+  const defaultPermissions = [
+    ...USER_PERMISSIONS.map((p) => ({ userId: admin.id, permission: p.key, granted: true, grantedBy: admin.id })),
+    ...["can_send_email", "can_send_whatsapp", "can_view_payments", "can_export_data", "can_bulk_operations", "can_view_audit_logs"]
+      .map((permission) => ({ userId: manager.id, permission, granted: true, grantedBy: admin.id })),
+    ...["can_send_email", "can_send_whatsapp"]
+      .map((permission) => ({ userId: agent1.id, permission, granted: true, grantedBy: admin.id })),
+    ...["can_send_email"]
+      .map((permission) => ({ userId: agent2.id, permission, granted: true, grantedBy: admin.id })),
+    ...["can_send_email", "can_view_payments", "can_export_data"]
+      .map((permission) => ({ userId: finance.id, permission, granted: true, grantedBy: admin.id })),
+  ];
+
+  await db.insert(schema.userPermissions).values(defaultPermissions);
+
+  console.log("✅ Mock integrations and user permissions seeded");
 
   // ─── LEADS (20) ───────────────────────────────────────────────────────────
   const leadData = [
@@ -330,6 +383,31 @@ async function seed() {
   });
 
   console.log("✅ Invoices seeded (8: 2 Draft, 2 Sent, 2 Paid, 2 Cancelled)");
+
+  await db.insert(schema.messageLogs).values([
+    {
+      channel: "email",
+      recipient: "neha.sharma@techcorp.com",
+      subject: "Follow-up on Your Consultation Request",
+      body: "Dear Neha, Thank you for your interest in our consulting services...",
+      status: "sent",
+      relatedEntity: "lead",
+      relatedId: insertedLeads[0].id,
+      sentBy: agent1.id,
+    },
+    {
+      channel: "whatsapp",
+      recipient: "+91-9876543210",
+      subject: null,
+      body: `Hi Rahul, your invoice ${makeInvNum(1)} for Rs. 45,000 is ready. Please check your email for details.`,
+      status: "sent",
+      relatedEntity: "invoice",
+      relatedId: inv1.id,
+      sentBy: finance.id,
+    },
+  ]);
+
+  console.log("✅ Message logs seeded (2)");
 
   // ─── FILE ATTACHMENT ───────────────────────────────────────────────────────
   await db.insert(schema.fileAttachments).values({

@@ -11,12 +11,19 @@ export const createFollowUpSchema = z.object({
 });
 
 export const updateFollowUpSchema = z.object({
-  status: followUpStatusEnum,
+  status: followUpStatusEnum.optional(),
+  followUpDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be in YYYY-MM-DD format")
+    .refine((d) => !isNaN(Date.parse(d)), "Invalid date")
+    .optional(),
+  message: z.string().trim().min(1, "Message is required").max(2000).optional(),
 });
 
 export const followUpQuerySchema = z.object({
   status: followUpStatusEnum.optional(),
   due: z.enum(["today", "overdue", "upcoming"]).optional(),
+  search: z.string().optional(),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),
 });

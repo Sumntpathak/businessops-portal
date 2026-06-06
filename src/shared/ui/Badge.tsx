@@ -1,13 +1,11 @@
 import type { HTMLAttributes } from "react";
 import { cn } from "@/shared/utils/cn";
+import { badgeBase } from "@/shared/ui/styles";
 
 export function Badge({ className, ...props }: HTMLAttributes<HTMLSpanElement>) {
   return (
     <span
-      className={cn(
-        "inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700",
-        className,
-      )}
+      className={cn(badgeBase, "border-gray-200 bg-gray-50 text-gray-700", className)}
       {...props}
     />
   );

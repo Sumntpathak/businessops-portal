@@ -22,6 +22,10 @@ export const followUpService = {
     const lead = await followUpRepository.getLeadForFollowup(id);
     if (!lead) throw new AuthError(404, "Follow-up not found");
     if (ctx.role === "agent" && lead.assignedTo !== ctx.sub) throw new AuthError(403, "Forbidden");
-    return followUpRepository.updateStatus(id, data.status);
+    const updated = ctx.role === "agent"
+      ? await followUpRepository.updateForAgent(id, ctx.sub, data)
+      : await followUpRepository.update(id, data);
+    if (!updated) throw new AuthError(403, "Follow-up access changed before update");
+    return updated;
   },
 };

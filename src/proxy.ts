@@ -11,15 +11,26 @@ function loadSecret() {
 }
 const secret = loadSecret();
 
-// Exact match set — startsWith was a foot-gun for future routes like /login-sso
-const PUBLIC_EXACT = new Set(["/login", "/register"]);
-const PUBLIC_PREFIX = ["/api/auth/login", "/api/auth/register", "/api/auth/logout"];
+const PUBLIC_EXACT = new Set([
+  "/login",
+  "/register",
+  "/forgot-password",
+  "/reset-password",
+  "/api/payments/mock-webhook",
+]);
+const PUBLIC_PREFIX = [
+  "/api/auth/login",
+  "/api/auth/register",
+  "/api/auth/logout",
+  "/api/auth/forgot-password",
+  "/api/auth/reset-password",
+];
 
 const ROLE_PREFIXES: Record<Role, string[]> = {
   admin:   ["/dashboard", "/leads", "/invoices", "/users", "/followups", "/settings", "/audit-logs", "/api"],
-  manager: ["/dashboard", "/leads", "/invoices", "/followups", "/users", "/settings", "/api/leads", "/api/followups", "/api/invoices", "/api/dashboard", "/api/users", "/api/auth"],
-  agent:   ["/dashboard", "/leads", "/followups", "/api/leads", "/api/followups", "/api/dashboard", "/api/auth"],
-  finance: ["/dashboard", "/leads", "/invoices", "/followups", "/settings", "/api/leads", "/api/invoices", "/api/payments", "/api/dashboard", "/api/auth"],
+  manager: ["/dashboard", "/leads", "/invoices", "/followups", "/users", "/settings", "/api/leads", "/api/followups", "/api/invoices", "/api/dashboard", "/api/users", "/api/auth", "/api/messages", "/api/integrations/status", "/api/uploads"],
+  agent:   ["/dashboard", "/leads", "/invoices", "/followups", "/settings", "/api/leads", "/api/followups", "/api/invoices", "/api/dashboard", "/api/auth", "/api/messages", "/api/integrations/status", "/api/uploads", "/api/users"],
+  finance: ["/dashboard", "/leads", "/invoices", "/followups", "/settings", "/api/leads", "/api/invoices", "/api/payments", "/api/dashboard", "/api/auth", "/api/messages", "/api/integrations/status", "/api/uploads", "/api/users"],
 };
 
 const ClaimsSchema = z.object({
@@ -29,7 +40,7 @@ const ClaimsSchema = z.object({
   name: z.string(),
 });
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   if (pathname.startsWith("/_next") || pathname.startsWith("/favicon")) return NextResponse.next();
@@ -47,7 +58,7 @@ export async function middleware(request: NextRequest) {
 
   try {
     const { payload } = await jwtVerify(token, secret);
-    const claims = ClaimsSchema.parse(payload); // throws if malformed
+    const claims = ClaimsSchema.parse(payload);
     const { sub: userId, role, email, name } = claims;
 
     const allowed = ROLE_PREFIXES[role] ?? [];
