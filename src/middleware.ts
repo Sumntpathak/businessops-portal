@@ -12,6 +12,7 @@ function loadSecret() {
 const secret = loadSecret();
 
 const PUBLIC_EXACT = new Set([
+  "/",
   "/login",
   "/register",
   "/forgot-password",

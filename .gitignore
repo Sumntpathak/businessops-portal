@@ -56,3 +56,12 @@ next-env.d.ts
 .tmp*
 tmp/
 temp/
+
+# Local debug/utility scripts (never commit — may contain hardcoded credentials)
+src/server/db/check-*.ts
+src/server/db/reset-*.ts
+src/server/db/test-http-*.ts
+src/server/db/clean-*.ts
+
+# Interview/internal documents
+*.pdf
