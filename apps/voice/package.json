@@ -1,0 +1,24 @@
+{
+    "name":  "@recepto/voice",
+    "version":  "0.1.0",
+    "private":  true,
+    "type":  "module",
+    "scripts":  {
+                    "dev":  "tsx watch src/server.ts",
+                    "build":  "tsc -p tsconfig.json",
+                    "start":  "node dist/server.js",
+                    "typecheck":  "tsc -p tsconfig.json --noEmit",
+                    "test":  "node --import tsx --test --test-isolation=none src/**/*.test.ts"
+                },
+    "dependencies":  {
+                         "@recepto/shared":  "workspace:*",
+                         "fastify":  "^4.29.0",
+                         "ws":  "^8.18.0"
+                     },
+    "devDependencies":  {
+                            "@types/node":  "^20.17.12",
+                            "@types/ws":  "^8.5.13",
+                            "tsx":  "^4.19.2",
+                            "typescript":  "^5.7.3"
+                        }
+}
