@@ -1,0 +1,25 @@
+{
+  "name": "@recepto/calendar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test --test-isolation=none src/**/*.test.ts"
+  },
+  "dependencies": {
+    "@recepto/db": "workspace:*",
+    "date-fns": "^4.1.0",
+    "date-fns-tz": "^3.2.0",
+    "drizzle-orm": "0.38.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.12",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}
