@@ -1,0 +1,114 @@
+﻿name: recepto
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      target: development
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://recepto:recepto@postgres:5432/recepto
+      REDIS_URL: redis://redis:6379
+      PORT: 3000
+      WATCHPACK_POLLING: "true"
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/workspace
+      - web_node_modules:/workspace/node_modules
+      - web_app_node_modules:/workspace/apps/web/node_modules
+      - web_shared_node_modules:/workspace/packages/shared/node_modules
+      - web_db_node_modules:/workspace/packages/db/node_modules
+      - web_calendar_node_modules:/workspace/packages/calendar/node_modules
+      - web_next:/workspace/apps/web/.next
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    init: true
+
+  voice:
+    build:
+      context: .
+      dockerfile: apps/voice/Dockerfile
+      target: development
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://recepto:recepto@postgres:5432/recepto
+      REDIS_URL: redis://redis:6379
+      PORT: 3001
+    ports:
+      - "3001:3001"
+    volumes:
+      - .:/workspace
+      - voice_node_modules:/workspace/node_modules
+      - voice_app_node_modules:/workspace/apps/voice/node_modules
+      - voice_shared_node_modules:/workspace/packages/shared/node_modules
+      - voice_db_node_modules:/workspace/packages/db/node_modules
+      - voice_calendar_node_modules:/workspace/packages/calendar/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    init: true
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: recepto
+      POSTGRES_USER: recepto
+      POSTGRES_PASSWORD: recepto
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U recepto -d recepto"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  web_node_modules:
+  web_app_node_modules:
+  web_shared_node_modules:
+  web_db_node_modules:
+  web_calendar_node_modules:
+  web_next:
+  voice_node_modules:
+  voice_app_node_modules:
+  voice_shared_node_modules:
+  voice_db_node_modules:
+  voice_calendar_node_modules:
+
+

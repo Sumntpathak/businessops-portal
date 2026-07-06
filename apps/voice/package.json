@@ -1,24 +1,35 @@
 {
-    "name":  "@recepto/voice",
-    "version":  "0.1.0",
-    "private":  true,
-    "type":  "module",
-    "scripts":  {
-                    "dev":  "tsx watch src/server.ts",
-                    "build":  "tsc -p tsconfig.json",
-                    "start":  "node dist/server.js",
-                    "typecheck":  "tsc -p tsconfig.json --noEmit",
-                    "test":  "node --import tsx --test --test-isolation=none src/**/*.test.ts"
-                },
-    "dependencies":  {
-                         "@recepto/shared":  "workspace:*",
-                         "fastify":  "^4.29.0",
-                         "ws":  "^8.18.0"
-                     },
-    "devDependencies":  {
-                            "@types/node":  "^20.17.12",
-                            "@types/ws":  "^8.5.13",
-                            "tsx":  "^4.19.2",
-                            "typescript":  "^5.7.3"
-                        }
+    "name": "@recepto/voice",
+    "version": "0.1.0",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "dev": "tsx watch src/server.ts",
+        "build": "tsc -p tsconfig.json",
+        "start": "node dist/server.js",
+        "typecheck": "tsc -p tsconfig.json --noEmit",
+        "test": "node --import tsx --test --test-isolation=none src/**/*.test.ts"
+    },
+    "dependencies": {
+        "@fastify/formbody": "^7.4.0",
+        "@recepto/calendar": "workspace:*",
+        "@recepto/db": "workspace:*",
+        "@recepto/shared": "workspace:*",
+        "bullmq": "^5.79.2",
+        "cheerio": "^1.1.2",
+        "drizzle-orm": "0.38.4",
+        "fastify": "^4.29.0",
+        "ioredis": "5.10.1",
+        "ipaddr.js": "^2.2.0",
+        "robots-parser": "^3.0.1",
+        "twilio": "^6.0.2",
+        "ws": "^8.18.0",
+        "zod": "^3.24.1"
+    },
+    "devDependencies": {
+        "@types/node": "^20.17.12",
+        "@types/ws": "^8.5.13",
+        "tsx": "^4.19.2",
+        "typescript": "^5.7.3"
+    }
 }

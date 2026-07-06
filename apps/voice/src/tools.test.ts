@@ -7,6 +7,7 @@ const session: CallSession = {
   callId: "018f5f86-9cf1-7f4d-81d2-6f11a3e841f3",
   providerCallSid: "CA123",
   tenantId: "018f5f86-9cf1-7f4d-81d2-6f11a3e841f4",
+  timezone: "Asia/Kolkata",
   caller: {
     id: "018f5f86-9cf1-7f4d-81d2-6f11a3e841f5",
     phoneE164: "+919876543210",
@@ -51,7 +52,7 @@ function harness() {
       getCallerContext: async (...args: any[]) => { calls.push({ name: "getCallerContext", args }); return { caller: session.caller, memories: [], upcomingBookings: [] }; }
     }
   };
-  return { executor: new ToolExecutor(session, dependencies), calls, service };
+  return { executor: new ToolExecutor(session, dependencies), calls, service, dependencies };
 }
 
 describe("ToolExecutor", () => {
@@ -97,5 +98,36 @@ describe("ToolExecutor", () => {
     await executor.execute("get_caller_context", {});
     assert.deepEqual(calls.find((call) => call.name === "getCallerContext")?.args, [session.tenantId, session.caller.id]);
   });
-});
+
+  it("rejects unknown tools and missing services", async () => {
+    const { executor, dependencies } = harness();
+    await assert.rejects(() => executor.execute("unknown_tool", {}), /Unknown tool/);
+    dependencies.repository.findService = async () => null;
+    await assert.rejects(
+      () => executor.execute("check_availability", {
+        serviceName: "Missing", date: "2026-07-07"
+      }),
+      /Service not found/
+    );
+  });
+
+  it("removes the Google event if booking persistence fails", async () => {
+    const { executor, dependencies, calls, service } = harness();
+    dependencies.repository.createBooking = async () => {
+      throw new Error("database failed");
+    };
+    await assert.rejects(
+      () => executor.execute("create_booking", {
+        serviceId: service.id,
+        startsAt: "2026-07-07T03:30:00.000Z"
+      }),
+      /database failed/
+    );
+    assert.deepEqual(
+      calls.find((call) => call.name === "deleteEvent")?.args,
+      [session.tenantId, "gcal-1"]
+    );
+  });});
+
+
 

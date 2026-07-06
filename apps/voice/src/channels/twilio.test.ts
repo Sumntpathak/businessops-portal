@@ -54,9 +54,11 @@ describe("TwilioAdapter", () => {
       audio: Buffer.from("audio"),
       meta: { streamSid: "MZ123" }
     });
-    assert.equal(adapter.parseStreamEvent(JSON.stringify({
+    const dtmf = adapter.parseStreamEvent(JSON.stringify({
       event: "dtmf", streamSid: "MZ123", dtmf: { digit: "7" }
-    })).digits, "7");
+    }));
+    assert.equal(dtmf.type, "dtmf");
+    if (dtmf.type === "dtmf") assert.equal(dtmf.digits, "7");
     assert.equal(adapter.parseStreamEvent(JSON.stringify({
       event: "stop", streamSid: "MZ123", stop: { callSid: "CA123" }
     })).type, "stop");
@@ -67,3 +69,4 @@ describe("TwilioAdapter", () => {
     });
   });
 });
+
