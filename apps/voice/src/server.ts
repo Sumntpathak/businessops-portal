@@ -1,4 +1,4 @@
-﻿import crypto from "node:crypto";
+import crypto from "node:crypto";
 import formbody from "@fastify/formbody";
 import Fastify from "fastify";
 import { Redis } from "ioredis";
@@ -12,8 +12,10 @@ import {
 } from "@recepto/calendar";
 import { createDatabase, schema, withTenant } from "@recepto/db";
 import { validateEnv } from "@recepto/shared/env";
-import { StubAIBridge, type TranscriptEvent } from "./ai-bridge.js";
+import type { TranscriptEvent } from "./ai-bridge.js";
+import { AzureRealtimeBridge } from "./azure-realtime-bridge.js";
 import type { CallSession } from "./call-session.js";
+import { deriveCallerGeo } from "./caller-profile.js";
 import { startCallSummaryWorker } from "./call-summary-worker.js";
 import { TwilioAdapter } from "./channels/twilio.js";
 import { startOnboardingWorker } from "./onboarding/worker.js";
@@ -145,17 +147,24 @@ app.post("/twilio/incoming", async (request, reply) => {
     }
 
     const scoped = withTenant(db, destination.tenantId);
+    const callerGeo = deriveCallerGeo(parsed.data.From);
     const [caller] = await db
       .insert(schema.callers)
       .values(
         scoped.values({
           phoneE164: parsed.data.From,
-          displayName: null
+          displayName: null,
+          country: callerGeo.country,
+          timezone: callerGeo.timezone
         })
       )
       .onConflictDoUpdate({
         target: [schema.callers.tenantId, schema.callers.phoneE164],
-        set: { updatedAt: new Date() }
+        set: {
+          ...(callerGeo.country ? { country: callerGeo.country } : {}),
+          ...(callerGeo.timezone ? { timezone: callerGeo.timezone } : {}),
+          updatedAt: new Date()
+        }
       })
       .returning({ id: schema.callers.id });
 
@@ -265,7 +274,7 @@ async function loadCallSession(callId: string): Promise<CallSession> {
     .limit(1);
   if (!call) throw new Error("Call not found");
 
-  const [tenantRows, profileRows, callerRows, memories] = await Promise.all([
+  const [tenantRows, profileRows, callerRows, memories, intakeFields] = await Promise.all([
     db
       .select({ timezone: schema.tenants.timezone })
       .from(schema.tenants)
@@ -284,7 +293,11 @@ async function loadCallSession(callId: string): Promise<CallSession> {
       .select({
         id: schema.callers.id,
         phoneE164: schema.callers.phoneE164,
-        displayName: schema.callers.displayName
+        displayName: schema.callers.displayName,
+        country: schema.callers.country,
+        timezone: schema.callers.timezone,
+        profile: schema.callers.profile,
+        stage: schema.callers.stage
       })
       .from(schema.callers)
       .where(scoped.where(schema.callers, eq(schema.callers.id, call.callerId)))
@@ -303,7 +316,21 @@ async function loadCallSession(callId: string): Promise<CallSession> {
         )
       )
       .orderBy(desc(schema.callerMemories.createdAt))
-      .limit(5)
+      .limit(5),
+    db
+      .select({
+        id: schema.intakeFields.id,
+        key: schema.intakeFields.key,
+        label: schema.intakeFields.label,
+        type: schema.intakeFields.type,
+        options: schema.intakeFields.options,
+        priority: schema.intakeFields.priority,
+        sort: schema.intakeFields.sort,
+        active: schema.intakeFields.active
+      })
+      .from(schema.intakeFields)
+      .where(scoped.where(schema.intakeFields, eq(schema.intakeFields.active, true)))
+      .orderBy(schema.intakeFields.sort)
   ]);
 
   const tenant = tenantRows[0];
@@ -317,6 +344,7 @@ async function loadCallSession(callId: string): Promise<CallSession> {
     tenantId: call.tenantId,
     timezone: tenant.timezone,
     caller,
+    intakeFields,
     agent,
     memories,
     startedAt: call.startedAt.toISOString()
@@ -337,7 +365,12 @@ mediaStreams.on("connection", (socket, request) => {
     accountSid: env.TWILIO_ACCOUNT_SID,
     authToken: env.TWILIO_AUTH_TOKEN
   });
-  const bridge = new StubAIBridge();
+  const bridge = new AzureRealtimeBridge({
+    url: env.AZURE_REALTIME_URL,
+    apiKey: env.AZURE_REALTIME_KEY,
+    model: env.AZURE_REALTIME_MODEL,
+    logger: app.log
+  });
   let session: CallSession | undefined;
   let transcriptSeq = 0;
   let frameCount = 0;
@@ -407,6 +440,16 @@ mediaStreams.on("connection", (socket, request) => {
     void persistTranscript(event).catch((error) => {
       app.log.error({ err: error, callId }, "Transcript persistence failed");
     });
+  });
+  bridge.onBargeIn(() => {
+    // Caller spoke over the agent: flush Twilio's queued playback immediately.
+    if (socket.readyState === WebSocket.OPEN) {
+      try {
+        socket.send(JSON.stringify(adapter.encodeClear()));
+      } catch (error) {
+        app.log.error({ err: error, callId }, "Twilio clear message failed");
+      }
+    }
   });
 
   socket.on("message", (data) => {

@@ -1,4 +1,4 @@
-﻿import Link from "next/link";
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { and, asc, eq } from "drizzle-orm";
 import { z } from "zod";
@@ -23,6 +23,7 @@ export default async function CallDetailPage({
       endedAt: schema.calls.endedAt,
       durationSeconds: schema.calls.durationSeconds,
       status: schema.calls.status,
+      callerId: schema.callers.id,
       callerName: schema.callers.displayName,
       callerPhone: schema.callers.phoneE164
     })
@@ -65,7 +66,9 @@ export default async function CallDetailPage({
         <div>
           <p className="text-sm text-muted-foreground">Call detail</p>
           <h1 className="mt-2 text-3xl font-semibold">
-            {call.callerName ?? "Caller " + call.callerPhone.slice(-4)}
+            <Link href={"/dashboard/callers/" + call.callerId} className="hover:underline">
+              {call.callerName ?? "Caller " + call.callerPhone.slice(-4)}
+            </Link>
           </h1>
         </div>
         <div className="text-right text-sm">

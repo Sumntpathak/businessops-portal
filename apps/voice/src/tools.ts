@@ -1,20 +1,33 @@
-﻿import {
+import {
   and,
   asc,
   desc,
   eq,
   gte,
   ilike,
-  isNull
+  isNull,
+  sql
 } from "drizzle-orm";
 import { z } from "zod";
-import type { AvailabilityService, CalendarService } from "@recepto/calendar";
+import {
+  CalendarConnectionRevokedError,
+  type AvailabilityService,
+  type CalendarService
+} from "@recepto/calendar";
 import {
   schema,
   withTenant,
   type createDatabase
 } from "@recepto/db";
 import type { CallSession } from "./call-session.js";
+import {
+  adjacentIsoDates,
+  formatCallerLocalTime,
+  localDateInTimezone,
+  validateProfileFields,
+  type ProfileValue,
+  type RejectedProfileField
+} from "./caller-profile.js";
 
 type Database = ReturnType<typeof createDatabase>;
 
@@ -34,6 +47,16 @@ export interface ToolRepository {
     callerId: string,
     displayName: string
   ): Promise<void>;
+  updateCallerProfile(
+    tenantId: string,
+    callerId: string,
+    fields: Record<string, unknown>
+  ): Promise<{
+    updated: string[];
+    rejected: RejectedProfileField[];
+    name: string | null;
+    profile: Record<string, ProfileValue>;
+  }>;
   createBooking(
     tenantId: string,
     callerId: string,
@@ -41,7 +64,7 @@ export interface ToolRepository {
       serviceId: string;
       startsAt: Date;
       endsAt: Date;
-      gcalEventId: string;
+      gcalEventId: string | null;
     }
   ): Promise<{ id: string }>;
   findConfirmedBooking(
@@ -72,6 +95,7 @@ export interface ToolRepository {
       startsAt: Date;
       endsAt: Date;
     }>;
+    intakeFields: CallSession["intakeFields"];
   }>;
 }
 
@@ -102,6 +126,9 @@ const saveMemoryInput = z.object({
   kind: z.enum(["fact", "preference", "summary"]),
   content: z.string().trim().min(1).max(2_000)
 });
+const updateCallerProfileInput = z.object({
+  fields: z.record(z.union([z.string(), z.number().finite(), z.boolean()]))
+});
 const emptyInput = z.object({}).strict();
 
 export class ToolExecutor {
@@ -120,6 +147,8 @@ export class ToolExecutor {
         return this.cancelBooking(cancelBookingInput.parse(rawInput));
       case "save_memory":
         return this.saveMemory(saveMemoryInput.parse(rawInput));
+      case "update_caller_profile":
+        return this.updateCallerProfile(updateCallerProfileInput.parse(rawInput));
       case "get_caller_context":
         emptyInput.parse(rawInput);
         return this.getCallerContext();
@@ -138,16 +167,28 @@ export class ToolExecutor {
     );
     if (!service) throw new Error("Service not found");
 
-    const slots = await this.dependencies.availability.getSlots(
-      this.session.tenantId,
-      service.id,
-      input.date
+    const callerTimezone = this.session.caller.timezone ?? this.session.timezone;
+    const businessDates = callerTimezone === this.session.timezone
+      ? [input.date]
+      : adjacentIsoDates(input.date);
+    const candidateGroups = await Promise.all(
+      businessDates.map((date) =>
+        this.dependencies.availability.getSlots(this.session.tenantId, service.id, date)
+      )
     );
+    const slots = candidateGroups
+      .flat()
+      .filter((slot, index, all) =>
+        all.findIndex((other) => other.startsAt.getTime() === slot.startsAt.getTime()) === index
+      )
+      .filter((slot) => localDateInTimezone(slot.startsAt, callerTimezone) === input.date);
     return {
       serviceId: service.id,
+      callerTimezone,
       slots: slots.map((slot) => ({
         startsAt: slot.startsAt.toISOString(),
-        endsAt: slot.endsAt.toISOString()
+        endsAt: slot.endsAt.toISOString(),
+        callerLocalTime: formatCallerLocalTime(slot.startsAt, callerTimezone)
       }))
     };
   }
@@ -189,15 +230,23 @@ export class ToolExecutor {
       );
     }
 
-    const eventId = await this.dependencies.calendar.createEvent(
-      this.session.tenantId,
-      {
-        title: service.name + " — " + (input.callerName ?? this.session.caller.displayName ?? this.session.caller.phoneE164),
-        startsAt,
-        endsAt,
-        description: "Booked by the Recepto voice receptionist."
-      }
-    );
+    // A tenant without a connected Google Calendar still gets local bookings;
+    // the dashboard remains the source of truth until OAuth is completed.
+    let eventId: string | null;
+    try {
+      eventId = await this.dependencies.calendar.createEvent(
+        this.session.tenantId,
+        {
+          title: service.name + " — " + (input.callerName ?? this.session.caller.displayName ?? this.session.caller.phoneE164),
+          startsAt,
+          endsAt,
+          description: "Booked by the Recepto voice receptionist."
+        }
+      );
+    } catch (error) {
+      if (!(error instanceof CalendarConnectionRevokedError)) throw error;
+      eventId = null;
+    }
 
     try {
       const booking = await this.dependencies.repository.createBooking(
@@ -213,14 +262,17 @@ export class ToolExecutor {
       return {
         bookingId: booking.id,
         eventId,
+        calendarSynced: eventId !== null,
         startsAt: startsAt.toISOString(),
         endsAt: endsAt.toISOString(),
         serviceName: service.name
       };
     } catch (error) {
-      await this.dependencies.calendar
-        .deleteEvent(this.session.tenantId, eventId)
-        .catch(() => undefined);
+      if (eventId) {
+        await this.dependencies.calendar
+          .deleteEvent(this.session.tenantId, eventId)
+          .catch(() => undefined);
+      }
       throw error;
     }
   }
@@ -234,10 +286,16 @@ export class ToolExecutor {
     if (!booking) throw new Error("Confirmed booking not found");
 
     if (booking.gcalEventId) {
-      await this.dependencies.calendar.deleteEvent(
-        this.session.tenantId,
-        booking.gcalEventId
-      );
+      try {
+        await this.dependencies.calendar.deleteEvent(
+          this.session.tenantId,
+          booking.gcalEventId
+        );
+      } catch (error) {
+        // A calendar disconnected after the booking was made must not block
+        // the local cancellation.
+        if (!(error instanceof CalendarConnectionRevokedError)) throw error;
+      }
     }
     await this.dependencies.repository.cancelBooking(
       this.session.tenantId,
@@ -245,6 +303,14 @@ export class ToolExecutor {
       booking.id
     );
     return { bookingId: booking.id, cancelled: true };
+  }
+
+  private async updateCallerProfile(input: z.infer<typeof updateCallerProfileInput>) {
+    return this.dependencies.repository.updateCallerProfile(
+      this.session.tenantId,
+      this.session.caller.id,
+      input.fields
+    );
   }
 
   private async saveMemory(input: z.infer<typeof saveMemoryInput>) {
@@ -262,12 +328,15 @@ export class ToolExecutor {
       this.session.tenantId,
       this.session.caller.id
     );
+    const callerTimezone = context.caller.timezone ?? this.session.timezone;
     return {
       ...context,
+      callerTimezone,
       upcomingBookings: context.upcomingBookings.map((booking) => ({
         ...booking,
         startsAt: booking.startsAt.toISOString(),
-        endsAt: booking.endsAt.toISOString()
+        endsAt: booking.endsAt.toISOString(),
+        callerLocalTime: formatCallerLocalTime(booking.startsAt, callerTimezone)
       }))
     };
   }
@@ -281,10 +350,33 @@ export class DrizzleToolRepository implements ToolRepository {
     selector: { serviceId?: string; serviceName?: string }
   ): Promise<ToolService | null> {
     const scoped = withTenant(this.db, tenantId);
-    const match = selector.serviceId
-      ? eq(schema.services.id, selector.serviceId)
-      : ilike(schema.services.name, selector.serviceName ?? "");
-    const [service] = await this.db
+
+    if (selector.serviceId) {
+      const [service] = await this.db
+        .select({
+          id: schema.services.id,
+          name: schema.services.name,
+          durationMinutes: schema.services.durationMinutes
+        })
+        .from(schema.services)
+        .where(
+          scoped.where(
+            schema.services,
+            and(eq(schema.services.id, selector.serviceId), eq(schema.services.active, true))
+          )
+        )
+        .limit(1);
+      return service ?? null;
+    }
+
+    const query = (selector.serviceName ?? "").trim();
+    if (!query) return null;
+
+    // Escape LIKE wildcards so a caller phrase like "100% visa help" cannot
+    // accidentally match everything.
+    const likeQuery = query.replace(/[\\%_]/g, "\\$&");
+
+    const [substringMatch] = await this.db
       .select({
         id: schema.services.id,
         name: schema.services.name,
@@ -294,11 +386,45 @@ export class DrizzleToolRepository implements ToolRepository {
       .where(
         scoped.where(
           schema.services,
-          and(match, eq(schema.services.active, true))
+          and(ilike(schema.services.name, `%${likeQuery}%`), eq(schema.services.active, true))
         )
       )
       .limit(1);
-    return service ?? null;
+    if (substringMatch) return substringMatch;
+
+    // Fuzzy fallback: score every active service by shared significant words
+    // (e.g. caller says "student visa", service is named "Student Services Consultation").
+    const candidates = await this.db
+      .select({
+        id: schema.services.id,
+        name: schema.services.name,
+        durationMinutes: schema.services.durationMinutes
+      })
+      .from(schema.services)
+      .where(scoped.where(schema.services, eq(schema.services.active, true)));
+
+    const queryWords = new Set(
+      query
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter((word) => word.length > 2)
+    );
+    if (queryWords.size === 0) return null;
+
+    let best: ToolService | null = null;
+    let bestScore = 0;
+    for (const candidate of candidates) {
+      const candidateWords = candidate.name
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter((word) => word.length > 2);
+      const score = candidateWords.filter((word) => queryWords.has(word)).length;
+      if (score > bestScore) {
+        bestScore = score;
+        best = candidate;
+      }
+    }
+    return bestScore > 0 ? best : null;
   }
 
   async updateCallerName(
@@ -313,6 +439,60 @@ export class DrizzleToolRepository implements ToolRepository {
       .where(scoped.where(schema.callers, eq(schema.callers.id, callerId)));
   }
 
+  async updateCallerProfile(
+    tenantId: string,
+    callerId: string,
+    fields: Record<string, unknown>
+  ) {
+    const scoped = withTenant(this.db, tenantId);
+    const definitions = await this.db
+      .select({
+        key: schema.intakeFields.key,
+        type: schema.intakeFields.type,
+        options: schema.intakeFields.options,
+        active: schema.intakeFields.active
+      })
+      .from(schema.intakeFields)
+      .where(scoped.where(schema.intakeFields));
+
+    const { accepted, rejected } = validateProfileFields(fields, definitions);
+    const name = typeof accepted.name === "string" ? accepted.name : undefined;
+    const profileUpdates = Object.fromEntries(
+      Object.entries(accepted).filter(([key]) => key !== "name")
+    ) as Record<string, ProfileValue>;
+    const updated = Object.keys(accepted);
+
+    if (updated.length === 0) {
+      const [caller] = await this.db
+        .select({
+          name: schema.callers.displayName,
+          profile: schema.callers.profile
+        })
+        .from(schema.callers)
+        .where(scoped.where(schema.callers, eq(schema.callers.id, callerId)))
+        .limit(1);
+      if (!caller) throw new Error("Caller not found");
+      return { updated, rejected, name: caller.name, profile: caller.profile };
+    }
+
+    const [caller] = await this.db
+      .update(schema.callers)
+      .set({
+        ...(name ? { displayName: name } : {}),
+        ...(Object.keys(profileUpdates).length > 0
+          ? { profile: sql`${schema.callers.profile} || ${JSON.stringify(profileUpdates)}::jsonb` }
+          : {}),
+        updatedAt: new Date()
+      })
+      .where(scoped.where(schema.callers, eq(schema.callers.id, callerId)))
+      .returning({
+        name: schema.callers.displayName,
+        profile: schema.callers.profile
+      });
+    if (!caller) throw new Error("Caller not found");
+    return { updated, rejected, name: caller.name, profile: caller.profile };
+  }
+
   async createBooking(
     tenantId: string,
     callerId: string,
@@ -320,7 +500,7 @@ export class DrizzleToolRepository implements ToolRepository {
       serviceId: string;
       startsAt: Date;
       endsAt: Date;
-      gcalEventId: string;
+      gcalEventId: string | null;
     }
   ): Promise<{ id: string }> {
     const scoped = withTenant(this.db, tenantId);
@@ -418,12 +598,16 @@ export class DrizzleToolRepository implements ToolRepository {
 
   async getCallerContext(tenantId: string, callerId: string) {
     const scoped = withTenant(this.db, tenantId);
-    const [callerRows, memories, upcomingBookings] = await Promise.all([
+    const [callerRows, memories, upcomingBookings, intakeFields] = await Promise.all([
       this.db
         .select({
           id: schema.callers.id,
           phoneE164: schema.callers.phoneE164,
-          displayName: schema.callers.displayName
+          displayName: schema.callers.displayName,
+          country: schema.callers.country,
+          timezone: schema.callers.timezone,
+          profile: schema.callers.profile,
+          stage: schema.callers.stage
         })
         .from(schema.callers)
         .where(scoped.where(schema.callers, eq(schema.callers.id, callerId)))
@@ -470,13 +654,25 @@ export class DrizzleToolRepository implements ToolRepository {
           )
         )
         .orderBy(asc(schema.bookings.startsAt))
-        .limit(10)
+        .limit(10),
+      this.db
+        .select({
+          id: schema.intakeFields.id,
+          key: schema.intakeFields.key,
+          label: schema.intakeFields.label,
+          type: schema.intakeFields.type,
+          options: schema.intakeFields.options,
+          priority: schema.intakeFields.priority,
+          sort: schema.intakeFields.sort,
+          active: schema.intakeFields.active
+        })
+        .from(schema.intakeFields)
+        .where(scoped.where(schema.intakeFields, eq(schema.intakeFields.active, true)))
+        .orderBy(asc(schema.intakeFields.sort))
     ]);
 
     const caller = callerRows[0];
     if (!caller) throw new Error("Caller not found");
-    return { caller, memories, upcomingBookings };
+    return { caller, memories, upcomingBookings, intakeFields };
   }
 }
-
-

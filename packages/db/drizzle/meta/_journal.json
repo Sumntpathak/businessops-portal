@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1783274007113,
+      "tag": "0000_parallel_black_bolt",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1783363169371,
+      "tag": "0001_true_nehzno",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1783363194682,
+      "tag": "0002_seed_default_intake_fields",
+      "breakpoints": true
+    }
+  ]
+}
