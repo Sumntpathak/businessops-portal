@@ -15,5 +15,7 @@ export interface VoiceChannelAdapter {
   answerInstructions(wsUrl: string): string;
   parseStreamEvent(raw: string | Buffer): StreamEvent;
   encodeAudioOut(pcmOrUlaw: Buffer): unknown;
+  /** Channel message that flushes any queued outbound audio (used for barge-in). */
+  encodeClear?(): unknown;
   hangup(callSid: string): Promise<void>;
 }

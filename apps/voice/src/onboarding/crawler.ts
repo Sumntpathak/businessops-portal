@@ -2,7 +2,14 @@ import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { load } from "cheerio";
 import ipaddr from "ipaddr.js";
-import robotsParser from "robots-parser";
+import robotsParserPackage from "robots-parser";
+
+const robotsParser = robotsParserPackage as unknown as (
+  url: string,
+  robotstxt: string
+) => {
+  isAllowed(url: string, userAgent?: string): boolean | undefined;
+};
 
 const USER_AGENT = "ReceptoBot/1.0";
 const MAX_PAGES = 10;

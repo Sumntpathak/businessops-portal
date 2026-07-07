@@ -153,6 +153,11 @@ export class TwilioAdapter implements VoiceChannelAdapter {
     };
   }
 
+  encodeClear(): unknown {
+    if (!this.streamSid) throw new Error("Twilio stream has not started");
+    return { event: "clear", streamSid: this.streamSid };
+  }
+
   async hangup(callSid: string): Promise<void> {
     await this.hangupCall(callSid);
   }

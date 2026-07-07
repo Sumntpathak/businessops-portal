@@ -1,0 +1,20 @@
+services:
+  web:
+    build:
+      target: production
+    volumes: !reset []
+    restart: unless-stopped
+    init: true
+
+  voice:
+    build:
+      target: production
+    volumes: !reset []
+    restart: unless-stopped
+    init: true
+
+  postgres:
+    ports: !reset []
+
+  redis:
+    ports: !reset []

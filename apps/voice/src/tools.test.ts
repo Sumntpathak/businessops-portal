@@ -67,7 +67,7 @@ describe("ToolExecutor", () => {
     const result = await executor.execute("check_availability", {
       serviceName: "Consultation", date: "2026-07-07"
     });
-    assert.deepEqual(result, { serviceId: service.id, callerTimezone: "Asia/Kolkata", slots: [{ startsAt: "2026-07-07T03:30:00.000Z", endsAt: "2026-07-07T04:00:00.000Z", callerLocalTime: "7 Jul 2026, 09:00" }] });
+    assert.deepEqual(result, { serviceId: service.id, callerTimezone: "Asia/Kolkata", slots: [{ startsAt: "2026-07-07T03:30:00.000Z", endsAt: "2026-07-07T04:00:00.000Z", callerLocalTime: "7 Jul 2026, 09:00", businessLocalTime: "7 Jul 2026, 09:00" }] });
     assert.deepEqual(calls.find((call) => call.name === "findService")?.args, [session.tenantId, { serviceName: "Consultation" }]);
     assert.deepEqual(calls.find((call) => call.name === "getSlots")?.args, [session.tenantId, service.id, "2026-07-07"]);
   });
@@ -96,7 +96,7 @@ describe("ToolExecutor", () => {
       startsAt: "2026-07-07T03:30:00.000Z",
       callerName: "Asha Patel"
     });
-    assert.deepEqual(result, { bookingId: "booking-1", eventId: "gcal-1", calendarSynced: true, startsAt: "2026-07-07T03:30:00.000Z", endsAt: "2026-07-07T04:00:00.000Z", serviceName: "Consultation" });
+    assert.deepEqual(result, { bookingId: "booking-1", eventId: "gcal-1", calendarSynced: true, startsAt: "2026-07-07T03:30:00.000Z", endsAt: "2026-07-07T04:00:00.000Z", callerLocalTime: "7 Jul 2026, 09:00", businessLocalTime: "7 Jul 2026, 09:00", serviceName: "Consultation" });
     const create = calls.find((call) => call.name === "createBooking");
     assert.equal(create?.args[0], session.tenantId);
     assert.equal(create?.args[1], session.caller.id);

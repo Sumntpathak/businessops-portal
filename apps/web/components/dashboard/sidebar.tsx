@@ -7,6 +7,7 @@ import {
   Bot,
   CalendarDays,
   LayoutDashboard,
+  Mic,
   PanelLeft,
   PhoneCall,
   Settings,
@@ -19,6 +20,7 @@ const navigation = [
   { label: "Callers", href: "/dashboard/callers", icon: Users },
   { label: "Bookings", href: "/dashboard/bookings", icon: CalendarDays },
   { label: "Agent", href: "/dashboard/agent", icon: Bot },
+  { label: "Voice Test", href: "/dashboard/voice-test", icon: Mic },
   { label: "Settings", href: "/dashboard/settings", icon: Settings }
 ];
 

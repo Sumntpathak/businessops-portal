@@ -228,6 +228,8 @@ const mediaPathSchema = z.string().uuid();
 
 app.server.on("upgrade", (request, socket, head) => {
   const url = new URL(request.url ?? "/", "http://localhost");
+  if (url.pathname === "/browser-test") return;
+
   const match = /^\/media\/([^/]+)$/.exec(url.pathname);
   const callId = match?.[1];
 
@@ -520,6 +522,142 @@ mediaStreams.on("connection", (socket, request) => {
     app.log.error({ err: error, callId }, "Twilio media WebSocket error");
     void finalize("failed");
   });
+});
+
+const browserTestStreams = new WebSocketServer({ noServer: true });
+const BROWSER_TEST_TENANT_ID = "20000000-0000-4000-8000-000000000002";
+
+app.server.on("upgrade", (request, socket, head) => {
+  const url = new URL(request.url ?? "/", "http://localhost");
+  if (url.pathname !== "/browser-test") return;
+
+  if (process.env.NODE_ENV === "production") {
+    socket.destroy();
+    return;
+  }
+
+  browserTestStreams.handleUpgrade(request, socket, head, (webSocket) => {
+    browserTestStreams.emit("connection", webSocket, request);
+  });
+});
+
+browserTestStreams.on("connection", (socket) => {
+  void (async () => {
+    const bridge = new AzureRealtimeBridge({
+      url: env.AZURE_REALTIME_URL,
+      apiKey: env.AZURE_REALTIME_KEY,
+      model: env.AZURE_REALTIME_MODEL,
+      logger: app.log
+    });
+    let session: CallSession | undefined;
+    let transcriptSeq = 0;
+    let finalized = false;
+
+    try {
+      const scoped = withTenant(db, BROWSER_TEST_TENANT_ID);
+      const testPhone = "+10000" + Math.floor(1000000 + Math.random() * 8999999);
+      const [caller] = await db
+        .insert(schema.callers)
+        .values(
+          scoped.values({
+            phoneE164: testPhone,
+            displayName: "Browser test",
+            country: null,
+            timezone: null
+          })
+        )
+        .returning({ id: schema.callers.id });
+      if (!caller) throw new Error("Browser test caller insert returned no row");
+
+      const [call] = await db
+        .insert(schema.calls)
+        .values(
+          scoped.values({
+            callerId: caller.id,
+            channel: "twilio",
+            direction: "inbound",
+            providerCallSid: "browser-test-" + crypto.randomUUID(),
+            status: "in_progress"
+          })
+        )
+        .returning({ id: schema.calls.id });
+      if (!call) throw new Error("Browser test call insert returned no row");
+
+      await redis.set("call-route:" + call.id, BROWSER_TEST_TENANT_ID, "EX", 60 * 60);
+      session = await loadCallSession(call.id);
+
+      const persistTranscript = async (event: TranscriptEvent) => {
+        if (!session) return;
+        transcriptSeq += 1;
+        await db.insert(schema.callTranscripts).values(
+          scoped.values({
+            callId: session.callId,
+            seq: transcriptSeq,
+            role: event.role,
+            content: event.content,
+            at: event.at
+          })
+        );
+      };
+
+      const finalize = async () => {
+        if (finalized) return;
+        finalized = true;
+        await bridge.stop();
+        if (!session) return;
+        const endedAt = new Date();
+        const durationSeconds = Math.max(
+          0,
+          Math.round((endedAt.getTime() - new Date(session.startedAt).getTime()) / 1000)
+        );
+        await db
+          .update(schema.calls)
+          .set({ status: "completed", endedAt, durationSeconds, updatedAt: endedAt })
+          .where(scoped.where(schema.calls, eq(schema.calls.id, session.callId)));
+        await summaryQueue.add(
+          "call:summarize",
+          { callId: session.callId, tenantId: BROWSER_TEST_TENANT_ID, callerId: session.caller.id },
+          { removeOnComplete: 100, removeOnFail: 100 }
+        );
+      };
+
+      bridge.onAudioOut((audio) => {
+        if (socket.readyState === WebSocket.OPEN) socket.send(audio);
+      });
+      bridge.onTranscript((event) => {
+        void persistTranscript(event).catch((error) => {
+          app.log.error({ err: error, callId: call.id }, "Browser test transcript persistence failed");
+        });
+      });
+      bridge.onBargeIn(() => {
+        if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ event: "clear" }));
+      });
+
+      const executor = new ToolExecutor(session, {
+        availability: availabilityService,
+        calendar: calendarService,
+        repository: toolRepository
+      });
+      bridge.onToolCall((name, input) => executor.execute(name, input));
+      await bridge.start(session);
+      socket.send(JSON.stringify({ event: "ready", callId: call.id }));
+      app.log.info({ callId: call.id }, "Browser test call started");
+
+      socket.on("message", (data, isBinary) => {
+        if (isBinary) {
+          bridge.sendAudio(Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer));
+        }
+      });
+      socket.on("close", () => void finalize());
+      socket.on("error", (error) => {
+        app.log.error({ err: error, callId: call.id }, "Browser test WebSocket error");
+        void finalize();
+      });
+    } catch (error) {
+      app.log.error({ err: error }, "Browser test call setup failed");
+      socket.close(1011, "Browser test setup failed");
+    }
+  })();
 });
 
 const port = Number(process.env.PORT ?? 3001);

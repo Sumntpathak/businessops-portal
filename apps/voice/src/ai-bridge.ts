@@ -14,6 +14,8 @@ export interface AIBridge {
     callback: (name: string, input: unknown) => Promise<unknown> | unknown
   ): void;
   onTranscript(callback: (event: TranscriptEvent) => void): void;
+  /** Optional: fired when the caller talks over the agent so the channel can flush queued audio. */
+  onBargeIn?(callback: () => void): void;
   stop(): Promise<void>;
 }
 

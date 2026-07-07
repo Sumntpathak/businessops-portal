@@ -188,7 +188,8 @@ export class ToolExecutor {
       slots: slots.map((slot) => ({
         startsAt: slot.startsAt.toISOString(),
         endsAt: slot.endsAt.toISOString(),
-        callerLocalTime: formatCallerLocalTime(slot.startsAt, callerTimezone)
+        callerLocalTime: formatCallerLocalTime(slot.startsAt, callerTimezone),
+        businessLocalTime: formatCallerLocalTime(slot.startsAt, this.session.timezone)
       }))
     };
   }
@@ -265,6 +266,11 @@ export class ToolExecutor {
         calendarSynced: eventId !== null,
         startsAt: startsAt.toISOString(),
         endsAt: endsAt.toISOString(),
+        callerLocalTime: formatCallerLocalTime(
+          startsAt,
+          this.session.caller.timezone ?? this.session.timezone
+        ),
+        businessLocalTime: formatCallerLocalTime(startsAt, this.session.timezone),
         serviceName: service.name
       };
     } catch (error) {
@@ -336,7 +342,8 @@ export class ToolExecutor {
         ...booking,
         startsAt: booking.startsAt.toISOString(),
         endsAt: booking.endsAt.toISOString(),
-        callerLocalTime: formatCallerLocalTime(booking.startsAt, callerTimezone)
+        callerLocalTime: formatCallerLocalTime(booking.startsAt, callerTimezone),
+        businessLocalTime: formatCallerLocalTime(booking.startsAt, this.session.timezone)
       }))
     };
   }
