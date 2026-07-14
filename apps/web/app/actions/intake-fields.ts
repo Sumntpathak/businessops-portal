@@ -50,7 +50,7 @@ async function assertActiveCapacity(tenantId: string) {
 
 function refresh() {
   revalidatePath("/dashboard/settings");
-  revalidatePath("/dashboard/callers");
+  revalidatePath("/dashboard/calls");
 }
 
 export async function createIntakeField(formData: FormData) {

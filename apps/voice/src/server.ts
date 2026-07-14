@@ -10,13 +10,20 @@ import {
   AvailabilityService,
   CalendarService
 } from "@recepto/calendar";
-import { createDatabase, schema, withTenant } from "@recepto/db";
+import { createDatabase, decryptTwilioAuthToken, schema, withTenant } from "@recepto/db";
 import { validateEnv } from "@recepto/shared/env";
 import type { TranscriptEvent } from "./ai-bridge.js";
-import { AzureRealtimeBridge } from "./azure-realtime-bridge.js";
+import { AzureRealtimeBridge, buildSessionConfig } from "./azure-realtime-bridge.js";
 import type { CallSession } from "./call-session.js";
 import { deriveCallerGeo } from "./caller-profile.js";
 import { startCallSummaryWorker } from "./call-summary-worker.js";
+import {
+  AzureSipClient,
+  incomingCallEventSchema,
+  phoneFromSipHeader,
+  sipHeader,
+  verifyWebhookSignature
+} from "./channels/azure-sip.js";
 import { TwilioAdapter } from "./channels/twilio.js";
 import { startOnboardingWorker } from "./onboarding/worker.js";
 import {
@@ -47,6 +54,21 @@ const app = Fastify({
     request.headers["x-request-id"]?.toString() ?? crypto.randomUUID()
 });
 await app.register(formbody);
+
+// Parse JSON while keeping the raw bytes: webhook signature verification
+// (Azure SIP) must run against the exact body the sender signed.
+app.addContentTypeParser(
+  "application/json",
+  { parseAs: "buffer" },
+  (request, body, done) => {
+    (request as { rawBody?: Buffer }).rawBody = body as Buffer;
+    try {
+      done(null, JSON.parse((body as Buffer).toString("utf8")));
+    } catch {
+      done(new Error("Invalid JSON body"), undefined);
+    }
+  }
+);
 
 const mediaStreams = new WebSocketServer({ noServer: true });
 const onboardingWorker = startOnboardingWorker(app.log);
@@ -94,24 +116,15 @@ app.post("/twilio/incoming", async (request, reply) => {
     });
   }
 
-  const verified = twilioHttp.verifyWebhook({
-    url: publicHttpUrl("twilio/incoming"),
-    headers: requestHeaders(request.headers),
-    body: rawBody.success ? rawBody.data : {}
-  });
-  if (!verified) {
-    request.log.warn({ requestId: request.id }, "Rejected invalid Twilio signature");
-    return reply.code(403).send({
-      error: { code: "INVALID_SIGNATURE", message: "Webhook signature is invalid." }
-    });
-  }
-
   try {
     // The globally unique called number is the trusted routing key that establishes tenant scope.
+    // It must be resolved BEFORE signature verification: each tenant may bring their own Twilio
+    // account, so the Auth Token used to verify the signature depends on which tenant this is.
     const [destination] = await db
       .select({
         tenantId: schema.phoneNumbers.tenantId,
-        tenantStatus: schema.tenants.status
+        tenantStatus: schema.tenants.status,
+        authTokenCiphertext: schema.tenantTwilioCredentials.authTokenCiphertext
       })
       .from(schema.phoneNumbers)
       .innerJoin(
@@ -120,6 +133,10 @@ app.post("/twilio/incoming", async (request, reply) => {
           eq(schema.tenants.id, schema.phoneNumbers.tenantId),
           isNull(schema.tenants.deletedAt)
         )
+      )
+      .leftJoin(
+        schema.tenantTwilioCredentials,
+        eq(schema.tenantTwilioCredentials.tenantId, schema.phoneNumbers.tenantId)
       )
       .where(
         and(
@@ -133,6 +150,31 @@ app.post("/twilio/incoming", async (request, reply) => {
     if (!destination) {
       return reply.code(404).send({
         error: { code: "NUMBER_NOT_FOUND", message: "Called number is not configured." }
+      });
+    }
+
+    // Tenants who connected their own Twilio account (via Settings) are verified against
+    // their own Auth Token. Numbers seeded before that flow existed (no credentials row)
+    // fall back to the platform's own Twilio account token.
+    const authToken = destination.authTokenCiphertext
+      ? decryptTwilioAuthToken(destination.authTokenCiphertext, env.SESSION_SECRET)
+      : env.TWILIO_AUTH_TOKEN;
+
+    const verified = twilioHttp.verifyWebhook(
+      {
+        url: publicHttpUrl("twilio/incoming"),
+        headers: requestHeaders(request.headers),
+        body: rawBody.success ? rawBody.data : {}
+      },
+      authToken
+    );
+    if (!verified) {
+      request.log.warn(
+        { requestId: request.id, tenantId: destination.tenantId },
+        "Rejected invalid Twilio signature"
+      );
+      return reply.code(403).send({
+        error: { code: "INVALID_SIGNATURE", message: "Webhook signature is invalid." }
       });
     }
 
@@ -224,6 +266,225 @@ app.post("/twilio/incoming", async (request, reply) => {
   }
 });
 
+const azureSip =
+  env.AZURE_SIP_ENABLED && env.AZURE_WEBHOOK_SECRET
+    ? new AzureSipClient({
+        realtimeUrl: env.AZURE_REALTIME_URL,
+        apiKey: env.AZURE_REALTIME_KEY
+      })
+    : undefined;
+
+app.post("/azure/incoming", async (request, reply) => {
+  if (!azureSip || !env.AZURE_WEBHOOK_SECRET) {
+    return reply.code(404).send({
+      error: { code: "NOT_ENABLED", message: "Azure SIP is not configured." }
+    });
+  }
+
+  const rawBody = (request as { rawBody?: Buffer }).rawBody;
+  if (
+    !rawBody ||
+    !verifyWebhookSignature(rawBody, request.headers, env.AZURE_WEBHOOK_SECRET)
+  ) {
+    request.log.warn("Rejected Azure webhook with invalid signature");
+    return reply.code(400).send({
+      error: { code: "INVALID_SIGNATURE", message: "Webhook signature is invalid." }
+    });
+  }
+
+  const parsed = incomingCallEventSchema.safeParse(request.body);
+  if (!parsed.success) {
+    return reply.code(400).send({
+      error: { code: "INVALID_INPUT", message: "Invalid webhook payload." }
+    });
+  }
+  const event = parsed.data;
+  if (event.type !== "realtime.call.incoming" || !event.data) {
+    return reply.code(200).send({ ok: true });
+  }
+
+  // Webhook retries must not double-handle a call.
+  const firstDelivery = await redis.set("azure-wh:" + event.id, "1", "EX", 300, "NX");
+  if (firstDelivery !== "OK") return reply.code(200).send({ ok: true });
+
+  const providerCallId = event.data.call_id;
+  const from = phoneFromSipHeader(sipHeader(event, "From"));
+  const to = phoneFromSipHeader(sipHeader(event, "To"));
+
+  // Acknowledge within the webhook timeout; accept/attach continues in background.
+  setImmediate(() => {
+    void handleAzureSipCall(providerCallId, from, to).catch((error) => {
+      app.log.error({ err: error, providerCallId }, "Azure SIP call handling failed");
+      void azureSip?.reject(providerCallId, 480).catch(() => undefined);
+    });
+  });
+  return reply.code(200).send({ ok: true });
+});
+
+async function handleAzureSipCall(
+  providerCallId: string,
+  from: string | null,
+  to: string | null
+): Promise<void> {
+  if (!azureSip) return;
+  if (!from || !to) {
+    app.log.warn({ providerCallId, from, to }, "Azure SIP call missing phone numbers");
+    await azureSip.reject(providerCallId, 400);
+    return;
+  }
+
+  const [destination] = await db
+    .select({
+      tenantId: schema.phoneNumbers.tenantId,
+      tenantStatus: schema.tenants.status
+    })
+    .from(schema.phoneNumbers)
+    .innerJoin(
+      schema.tenants,
+      and(
+        eq(schema.tenants.id, schema.phoneNumbers.tenantId),
+        isNull(schema.tenants.deletedAt)
+      )
+    )
+    .where(
+      and(
+        eq(schema.phoneNumbers.e164, to),
+        eq(schema.phoneNumbers.status, "active")
+      )
+    )
+    .limit(1);
+
+  if (!destination) {
+    await azureSip.reject(providerCallId, 604);
+    return;
+  }
+  if (destination.tenantStatus !== "live") {
+    await azureSip.reject(providerCallId, 480);
+    return;
+  }
+
+  const scoped = withTenant(db, destination.tenantId);
+  const callerGeo = deriveCallerGeo(from);
+  const [caller] = await db
+    .insert(schema.callers)
+    .values(
+      scoped.values({
+        phoneE164: from,
+        displayName: null,
+        country: callerGeo.country,
+        timezone: callerGeo.timezone
+      })
+    )
+    .onConflictDoUpdate({
+      target: [schema.callers.tenantId, schema.callers.phoneE164],
+      set: {
+        ...(callerGeo.country ? { country: callerGeo.country } : {}),
+        ...(callerGeo.timezone ? { timezone: callerGeo.timezone } : {}),
+        updatedAt: new Date()
+      }
+    })
+    .returning({ id: schema.callers.id });
+  if (!caller) throw new Error("Caller upsert returned no row");
+
+  const [call] = await db
+    .insert(schema.calls)
+    .values(
+      scoped.values({
+        callerId: caller.id,
+        channel: "twilio",
+        direction: "inbound",
+        providerCallSid: providerCallId,
+        status: "in_progress"
+      })
+    )
+    .onConflictDoNothing({ target: schema.calls.providerCallSid })
+    .returning({ id: schema.calls.id });
+  if (!call) return; // Duplicate delivery already being handled.
+
+  await redis.set("call-route:" + call.id, destination.tenantId, "EX", 4 * 60 * 60);
+  const session = await loadCallSession(call.id);
+
+  await azureSip.accept(providerCallId, {
+    model: env.AZURE_REALTIME_MODEL,
+    ...buildSessionConfig(session)
+  });
+
+  const bridge = new AzureRealtimeBridge({
+    url: env.AZURE_REALTIME_URL,
+    apiKey: env.AZURE_REALTIME_KEY,
+    model: env.AZURE_REALTIME_MODEL,
+    attachCallId: providerCallId,
+    logger: app.log
+  });
+
+  let transcriptSeq = 0;
+  let finalized = false;
+  const finalize = async (status: "completed" | "failed") => {
+    if (finalized) return;
+    finalized = true;
+    await bridge.stop();
+    try {
+      const endedAt = new Date();
+      const durationSeconds = Math.max(
+        0,
+        Math.round((endedAt.getTime() - new Date(session.startedAt).getTime()) / 1000)
+      );
+      await db
+        .update(schema.calls)
+        .set({ status, endedAt, durationSeconds, updatedAt: endedAt })
+        .where(scoped.where(schema.calls, eq(schema.calls.id, session.callId)));
+      await summaryQueue.add(
+        "call:summarize",
+        {
+          callId: session.callId,
+          tenantId: session.tenantId,
+          callerId: session.caller.id
+        },
+        { removeOnComplete: 100, removeOnFail: 100 }
+      );
+      app.log.info(
+        { callId: session.callId, tenantId: session.tenantId, durationSeconds },
+        "Azure SIP call finalized"
+      );
+    } catch (error) {
+      app.log.error({ err: error, callId: session.callId }, "Azure SIP finalization failed");
+    }
+  };
+
+  bridge.onTranscript((transcriptEvent) => {
+    transcriptSeq += 1;
+    const seq = transcriptSeq;
+    void db
+      .insert(schema.callTranscripts)
+      .values(
+        scoped.values({
+          callId: session.callId,
+          seq,
+          role: transcriptEvent.role,
+          content: transcriptEvent.content,
+          at: transcriptEvent.at
+        })
+      )
+      .catch((error) => {
+        app.log.error({ err: error, callId: session.callId }, "Transcript persistence failed");
+      });
+  });
+
+  const executor = new ToolExecutor(session, {
+    availability: availabilityService,
+    calendar: calendarService,
+    repository: toolRepository
+  });
+  bridge.onToolCall((name, input) => executor.execute(name, input));
+  bridge.onClose(() => void finalize("completed"));
+
+  await bridge.start(session);
+  app.log.info(
+    { callId: session.callId, tenantId: session.tenantId, providerCallId },
+    "Azure SIP call accepted and attached"
+  );
+}
+
 const mediaPathSchema = z.string().uuid();
 
 app.server.on("upgrade", (request, socket, head) => {
@@ -286,7 +547,8 @@ async function loadCallSession(callId: string): Promise<CallSession> {
       .select({
         agentMd: schema.agentProfiles.agentMd,
         voiceGreeting: schema.agentProfiles.voiceGreeting,
-        languageMode: schema.agentProfiles.languageMode
+        languageMode: schema.agentProfiles.languageMode,
+        languages: schema.agentProfiles.languages
       })
       .from(schema.agentProfiles)
       .where(scoped.where(schema.agentProfiles))
@@ -541,12 +803,19 @@ app.server.on("upgrade", (request, socket, head) => {
   });
 });
 
-browserTestStreams.on("connection", (socket) => {
+const browserTestVoiceSchema = z.string().regex(/^[a-z-]{1,32}$/).optional();
+
+browserTestStreams.on("connection", (socket, request) => {
   void (async () => {
+    const url = new URL(request.url ?? "/", "http://localhost");
+    const requestedVoice = browserTestVoiceSchema.safeParse(
+      url.searchParams.get("voice") ?? undefined
+    );
     const bridge = new AzureRealtimeBridge({
       url: env.AZURE_REALTIME_URL,
       apiKey: env.AZURE_REALTIME_KEY,
       model: env.AZURE_REALTIME_MODEL,
+      voice: requestedVoice.success ? requestedVoice.data : undefined,
       logger: app.log
     });
     let session: CallSession | undefined;
@@ -560,8 +829,10 @@ browserTestStreams.on("connection", (socket) => {
         .insert(schema.callers)
         .values(
           scoped.values({
+            // No displayName: the UI labels these via the browser-test call SID, and a
+            // placeholder here leaks into the agent prompt as if it were the caller's name.
             phoneE164: testPhone,
-            displayName: "Browser test",
+            displayName: null,
             country: null,
             timezone: null
           })
@@ -628,6 +899,14 @@ browserTestStreams.on("connection", (socket) => {
         void persistTranscript(event).catch((error) => {
           app.log.error({ err: error, callId: call.id }, "Browser test transcript persistence failed");
         });
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({
+            event: "transcript",
+            role: event.role,
+            content: event.content,
+            at: event.at.toISOString()
+          }));
+        }
       });
       bridge.onBargeIn(() => {
         if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ event: "clear" }));

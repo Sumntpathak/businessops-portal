@@ -58,7 +58,12 @@ export class TwilioAdapter implements VoiceChannelAdapter {
     });
   }
 
-  verifyWebhook(request: VoiceWebhookRequest): boolean {
+  /**
+   * Verifies the X-Twilio-Signature header. `authTokenOverride` lets callers verify
+   * against a specific tenant's own Twilio Auth Token instead of the adapter's default
+   * (the platform account), since each tenant may have connected their own Twilio account.
+   */
+  verifyWebhook(request: VoiceWebhookRequest, authTokenOverride?: string): boolean {
     const signatureHeader = request.headers["x-twilio-signature"];
     const signature = Array.isArray(signatureHeader)
       ? signatureHeader[0]
@@ -67,7 +72,7 @@ export class TwilioAdapter implements VoiceChannelAdapter {
 
     try {
       return this.validator(
-        this.options.authToken,
+        authTokenOverride ?? this.options.authToken,
         signature,
         request.url,
         request.body

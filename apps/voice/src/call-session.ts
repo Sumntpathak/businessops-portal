@@ -26,6 +26,7 @@ export interface CallSession {
     agentMd: string;
     voiceGreeting: string;
     languageMode: "hinglish" | "english" | "hindi";
+    languages: string[];
   };
   memories: Array<{
     id: string;

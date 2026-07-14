@@ -92,6 +92,17 @@ export const users = pgTable(
   (table) => [uniqueIndex("users_email_uidx").on(table.email)]
 );
 
+export const waitlistSignups = pgTable(
+  "waitlist_signups",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    email: citext("email").notNull(),
+    source: text("source").notNull().default("landing"),
+    ...auditColumns()
+  },
+  (table) => [uniqueIndex("waitlist_signups_email_uidx").on(table.email)]
+);
+
 export const tenants = pgTable(
   "tenants",
   {
@@ -138,6 +149,7 @@ export const agentProfiles = pgTable(
     agentMd: text("agent_md").notNull(),
     voiceGreeting: text("voice_greeting").notNull(),
     languageMode: languageModeEnum("language_mode").notNull().default("hinglish"),
+    languages: jsonb("languages").$type<string[]>().notNull().default(sql`'["English", "Hindi"]'::jsonb`),
     version: integer("version").notNull().default(1),
     source: agentProfileSourceEnum("source").notNull(),
     updatedBy: uuid("updated_by")
@@ -187,6 +199,23 @@ export const phoneNumbers = pgTable(
     uniqueIndex("phone_numbers_e164_uidx").on(table.e164),
     index("phone_numbers_tenant_id_idx").on(table.tenantId)
   ]
+);
+
+export const tenantTwilioCredentials = pgTable(
+  "tenant_twilio_credentials",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    accountSid: text("account_sid").notNull(),
+    // AES-256-GCM ciphertext (iv + tag + data, base64) — see lib/crypto/secret-box.
+    authTokenCiphertext: text("auth_token_ciphertext").notNull(),
+    phoneNumberSid: text("phone_number_sid").notNull(),
+    webhookConfiguredAt: timestamp("webhook_configured_at", { withTimezone: true, mode: "date" }),
+    ...auditColumns()
+  },
+  (table) => [uniqueIndex("tenant_twilio_credentials_tenant_id_uidx").on(table.tenantId)]
 );
 
 export const callers = pgTable(

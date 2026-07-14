@@ -1,6 +1,23 @@
-﻿name: recepto
+name: recepto
 
 services:
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/voice/Dockerfile
+      target: deps
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-recepto}:${POSTGRES_PASSWORD:-recepto}@postgres:5432/${POSTGRES_DB:-recepto}
+    volumes:
+      - .:/workspace
+      - voice_node_modules:/workspace/node_modules
+      - voice_db_node_modules:/workspace/packages/db/node_modules
+    command: ["pnpm", "--filter", "@recepto/db", "db:migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   web:
     build:
       context: .
@@ -8,7 +25,7 @@ services:
       target: development
     env_file: .env
     environment:
-      DATABASE_URL: postgresql://recepto:recepto@postgres:5432/recepto
+      DATABASE_URL: postgresql://${POSTGRES_USER:-recepto}:${POSTGRES_PASSWORD:-recepto}@postgres:5432/${POSTGRES_DB:-recepto}
       REDIS_URL: redis://redis:6379
       PORT: 3000
       WATCHPACK_POLLING: "true"
@@ -27,6 +44,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3000"]
       interval: 10s
@@ -41,7 +60,7 @@ services:
       target: development
     env_file: .env
     environment:
-      DATABASE_URL: postgresql://recepto:recepto@postgres:5432/recepto
+      DATABASE_URL: postgresql://${POSTGRES_USER:-recepto}:${POSTGRES_PASSWORD:-recepto}@postgres:5432/${POSTGRES_DB:-recepto}
       REDIS_URL: redis://redis:6379
       PORT: 3001
     ports:
@@ -58,6 +77,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
       interval: 10s
@@ -68,15 +89,15 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: recepto
-      POSTGRES_USER: recepto
-      POSTGRES_PASSWORD: recepto
+      POSTGRES_DB: ${POSTGRES_DB:-recepto}
+      POSTGRES_USER: ${POSTGRES_USER:-recepto}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-recepto}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U recepto -d recepto"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-recepto} -d ${POSTGRES_DB:-recepto}"]
       interval: 5s
       timeout: 3s
       retries: 10

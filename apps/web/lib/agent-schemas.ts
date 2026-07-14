@@ -26,6 +26,17 @@ export const saveServicesSchema = z.object({
 
 const timeSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/);
 
+export const saveLanguagesSchema = z.object({
+  languages: z
+    .array(z.string().trim().min(1).max(40))
+    .min(1)
+    .max(12)
+    .refine(
+      (languages) => new Set(languages.map((l) => l.toLowerCase())).size === languages.length,
+      "Each language may only appear once"
+    )
+});
+
 export const saveBusinessHoursSchema = z.object({
   hours: z
     .array(

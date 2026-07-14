@@ -9,6 +9,12 @@ export interface AzureRealtimeBridgeOptions {
   apiKey: string;
   model: string;
   voice?: string;
+  /**
+   * SIP mode: attach to a call already accepted via the REST accept endpoint
+   * instead of opening a fresh model session. Audio flows carrier <-> Azure;
+   * this WebSocket only carries events (tools, transcripts, responses).
+   */
+  attachCallId?: string;
   logger?: {
     info(values: Record<string, unknown>, message: string): void;
     error(values: Record<string, unknown>, message: string): void;
@@ -117,20 +123,62 @@ const REALTIME_TOOLS = [
   }
 ] as const;
 
-function languageInstructions(mode: CallSession["agent"]["languageMode"]): string {
-  switch (mode) {
-    case "hinglish":
-      return [
-        "LANGUAGE: Mirror the caller. If they speak Hindi, reply in natural conversational Hindi.",
-        "If they speak English, reply in English. If they mix (Hinglish), mix the same way they do.",
-        "Use everyday spoken Hindi written naturally — never stiff, formal, or textbook phrasing."
-      ].join(" ");
-    case "hindi":
-      return "LANGUAGE: Speak natural conversational Hindi. Switch to English only if the caller clearly cannot follow Hindi.";
-    case "english":
-    default:
-      return "LANGUAGE: Speak English only, in a warm natural tone.";
+function languageInstructions(languages: string[]): string {
+  if (languages.length <= 1) {
+    const only = languages[0] ?? "English";
+    return `LANGUAGE: Speak ${only} only, in a warm natural tone.`;
   }
+  return [
+    `LANGUAGE: The caller may speak any of these languages: ${languages.join(", ")}.`,
+    "HARD RULE: every reply must be in the language of the caller's MOST RECENT sentence.",
+    "If their last sentence was Hindi, reply in Hindi; if Punjabi, reply in Punjabi. Replying in English to a caller who just spoke Hindi or Punjabi is a serious failure.",
+    "If the caller switches languages mid-call, switch with them immediately on the very next reply — never ask which language to use.",
+    "If they mix languages in one sentence (e.g. Hinglish), mix the same way they do.",
+    "Use natural everyday spoken phrasing in whichever language you are using — never stiff, formal, or textbook phrasing."
+  ].join(" ");
+}
+
+const TRANSCRIBE_LANGUAGE_CODES: Record<string, string> = {
+  english: "en",
+  hindi: "hi",
+  punjabi: "pa",
+  tamil: "ta",
+  telugu: "te",
+  bengali: "bn",
+  marathi: "mr",
+  gujarati: "gu",
+  kannada: "kn",
+  malayalam: "ml",
+  urdu: "ur",
+  spanish: "es",
+  french: "fr",
+  german: "de",
+  arabic: "ar",
+  mandarin: "zh",
+  chinese: "zh",
+  japanese: "ja"
+};
+
+/**
+ * Anchors input transcription to the tenant's configured languages. Without this
+ * the transcriber guesses a language per utterance and writes Hindi speech in
+ * random scripts (Urdu, Tamil, ...) in the call history.
+ */
+export function transcriptionConfig(
+  model: string,
+  languages: string[]
+): { model: string; language?: string; prompt?: string } {
+  if (languages.length === 1) {
+    const code = TRANSCRIBE_LANGUAGE_CODES[(languages[0] ?? "").toLowerCase()];
+    return code ? { model, language: code } : { model };
+  }
+  return {
+    model,
+    prompt:
+      `The speaker uses only these languages, often mixed in one sentence: ${languages.join(", ")}. ` +
+      "Always transcribe in the language actually spoken, using its standard script " +
+      "(Hindi in Devanagari, Punjabi in Gurmukhi). Never transcribe into any other language."
+  };
 }
 
 export function buildInstructions(session: CallSession): string {
@@ -182,19 +230,36 @@ export function buildInstructions(session: CallSession): string {
     "What we remember about this caller from previous calls:",
     memories,
     "",
-    "== VOICE STYLE ==",
+    "== PERSONALITY & TONE ==",
+    "- You are a warm, upbeat human receptionist who genuinely enjoys helping people. The caller must feel they are talking to a real person, never a machine.",
+    "- React first, then respond: open with a tiny, natural acknowledgment of what the caller just said ('Sure —', 'Achha —', 'Oh lovely —', 'Haan ji —') before the substance. Vary it every single time.",
+    "- Speak with human rhythm: contractions, everyday words, short sentences, a natural easy pace. An occasional soft 'hmm' or 'right' is welcome — at most once per reply, never forced.",
+    "- VARIETY IS MANDATORY: never reuse the same filler, acknowledgment, phrase, or sentence pattern twice in one call. If you said 'one moment' once, say something different next time.",
+    "- Never use call-center clichés ('How may I assist you today?', 'Your call is important to us') after the opening greeting.",
     "- Keep every reply SHORT: one or two spoken sentences. This is a phone call, not an essay.",
-    "- Never read out lists of more than three options; offer the best two and ask.",
+    "- Never read out lists of more than three options; offer the best two conversationally and ask.",
     "- Say numbers, dates, and times in words the way a person would say them on the phone.",
     "- Never mention tools, systems, databases, or that you are an AI unless directly asked.",
-    "- If you need a moment for a lookup, say a brief natural filler like 'ek second, main check karti hoon' or 'one moment please'.",
-    languageInstructions(session.agent.languageMode),
+    "- Keep ONE consistent voice, pace, and warmth from greeting to goodbye — including immediately after lookups. Never drop into a flat, formal, or 'reading out a result' tone mid-call.",
+    "- If you did not clearly hear or understand what the caller said, NEVER guess or answer something else. Briefly apologize and ask them to repeat, in their own language — e.g. 'Sorry, I didn't quite catch that — could you say it once more?' or 'Maaf kijiye, main theek se sun nahi paayi — dobara boliye?'.",
+    "- If only PART of what they said was unclear, respond to what you did understand and confirm just the unclear bit — do not make them repeat everything.",
+    languageInstructions(session.agent.languages),
+    "",
+    "== TOOL USE — EFFICIENCY RULES ==",
+    "- BEFORE any lookup, say ONE short natural filler in the caller's current language ('Ek second, main dekhti hoon…', 'Give me just a sec…'), varying it every time — then call the tool immediately.",
+    "- Call a tool the moment it is needed. Never ask permission for a lookup and never stall without one.",
+    "- Batch every field you learned into ONE update_caller_profile call — never several calls in a row.",
+    "- Use get_caller_context at most ONCE per call and remember everything it returned.",
+    "- Never repeat a tool call with identical arguments.",
+    "- Never read tool output aloud as data. Turn the result into one short natural sentence in the caller's language.",
     "",
     "== CALLER IDENTITY — HARD RULES ==",
     "- The INSTANT the caller tells you their name: acknowledge it once, then IMMEDIATELY call update_caller_profile with fields {name: <name>}. Do this before anything else.",
     "- From that moment on, use their name naturally. NEVER ask for the caller's name a second time in the same call — that is a serious failure.",
     "- If you are ever unsure of the name mid-call, silently call get_caller_context instead of asking again.",
     "- The same applies to any key detail the caller gives you (service they want, preferred date): never re-ask for something already said in this call.",
+    "- When the caller shares a phone number or any string of digits, repeat it back digit by digit in their language and get a yes before saving it. If they correct you, repeat the corrected number back once more.",
+    "- If the caller profile shows a name that is clearly a placeholder (like 'Browser test' or 'Unknown'), treat the name as NOT known: do not address the caller by it, and ask for their real name at a natural opening.",
     "",
     "== BOOKING RULES ==",
     "- Always check_availability before offering or confirming any time slot.",
@@ -214,6 +279,42 @@ export function buildInstructions(session: CallSession): string {
 }
 
 /**
+ * The full realtime session configuration. Sent as session.update on the
+ * WebSocket path, and as the accept-call body (plus model) on the SIP path,
+ * so both entry points configure the agent identically.
+ */
+export function buildSessionConfig(
+  session: CallSession,
+  voice?: string
+): Record<string, unknown> {
+  return {
+    type: "realtime",
+    instructions: buildInstructions(session),
+    tools: REALTIME_TOOLS,
+    tool_choice: "auto",
+    audio: {
+      input: {
+        format: { type: "audio/pcmu" },
+        // Better multilingual (Hindi/Punjabi/Hinglish) accuracy than whisper-1;
+        // handleServerEvent falls back to whisper-1 if the deployment lacks it.
+        transcription: transcriptionConfig(
+          "gpt-4o-mini-transcribe",
+          session.agent.languages
+        ),
+        // Semantic VAD ends the turn when the caller finishes a THOUGHT rather than
+        // after a fixed silence, which stops the agent from talking over slow or
+        // pausing speakers; falls back to server_vad if unsupported.
+        turn_detection: { type: "semantic_vad", eagerness: "auto" }
+      },
+      output: {
+        format: { type: "audio/pcmu" },
+        voice: voice ?? "marin"
+      }
+    }
+  };
+}
+
+/**
  * Bridges a Twilio G.711 mu-law media stream to Azure OpenAI gpt-realtime-mini.
  * Audio passes through untranscoded (audio/pcmu both directions). Tool calls are
  * delegated to the ToolExecutor registered via onToolCall.
@@ -225,11 +326,14 @@ export class AzureRealtimeBridge implements AIBridge {
   private toolCall?: (name: string, input: unknown) => Promise<unknown> | unknown;
   private transcript?: (event: TranscriptEvent) => void;
   private bargeIn?: () => void;
+  private closed?: () => void;
   private readonly pendingAudio: Buffer[] = [];
   private readonly handledToolCalls = new Set<string>();
   private ready = false;
   private stopped = false;
   private activeResponse = false;
+  private vadFellBack = false;
+  private transcribeFellBack = false;
 
   constructor(private readonly options: AzureRealtimeBridgeOptions) {}
 
@@ -237,7 +341,12 @@ export class AzureRealtimeBridge implements AIBridge {
     this.session = session;
     const url = new URL(this.options.url);
     url.protocol = url.protocol === "http:" ? "ws:" : "wss:";
-    if (!url.searchParams.get("model")) {
+    if (this.options.attachCallId) {
+      // SIP mode: attach to a call already accepted via the REST accept endpoint.
+      // Session config was supplied at accept time; audio flows carrier <-> Azure.
+      url.searchParams.delete("model");
+      url.searchParams.set("call_id", this.options.attachCallId);
+    } else if (!url.searchParams.get("model")) {
       url.searchParams.set("model", this.options.model);
     }
 
@@ -273,6 +382,7 @@ export class AzureRealtimeBridge implements AIBridge {
           { callId: this.session?.callId, code, reason: reason.toString() },
           "Azure realtime WebSocket closed"
         );
+        this.closed?.();
       }
     });
 
@@ -291,31 +401,12 @@ export class AzureRealtimeBridge implements AIBridge {
       });
     });
 
-    this.send({
-      type: "session.update",
-      session: {
-        type: "realtime",
-        instructions: buildInstructions(session),
-        tools: REALTIME_TOOLS,
-        tool_choice: "auto",
-        audio: {
-          input: {
-            format: { type: "audio/pcmu" },
-            transcription: { model: "whisper-1" },
-            turn_detection: {
-              type: "server_vad",
-              threshold: 0.5,
-              prefix_padding_ms: 300,
-              silence_duration_ms: 600
-            }
-          },
-          output: {
-            format: { type: "audio/pcmu" },
-            voice: this.options.voice ?? "marin"
-          }
-        }
-      }
-    });
+    if (!this.options.attachCallId) {
+      this.send({
+        type: "session.update",
+        session: buildSessionConfig(session, this.options.voice)
+      });
+    }
 
     // Speak the configured greeting as soon as the call connects.
     this.send({
@@ -357,6 +448,11 @@ export class AzureRealtimeBridge implements AIBridge {
   /** Fired when the caller starts talking over the agent; the server should flush buffered playback. */
   onBargeIn(callback: () => void): void {
     this.bargeIn = callback;
+  }
+
+  /** Fired when the Azure WebSocket closes unexpectedly (SIP mode: the call ended). */
+  onClose(callback: () => void): void {
+    this.closed = callback;
   }
 
   async stop(): Promise<void> {
@@ -451,15 +547,78 @@ export class AzureRealtimeBridge implements AIBridge {
       return;
     }
 
+    // The chosen transcription model may be unavailable on this deployment; retry
+    // the failed item's sibling turns with whisper-1 so caller transcripts keep flowing.
+    if (type === "conversation.item.input_audio_transcription.failed") {
+      this.fallBackToWhisper("input transcription failed");
+      return;
+    }
+
     if (type === "error") {
-      const error = event.error as { message?: string; code?: string } | undefined;
+      const error = event.error as
+        | { message?: string; code?: string; param?: string }
+        | undefined;
       // response.cancel with no active response is benign noise during barge-in.
       if (error?.code === "response_cancel_not_active") return;
+
+      const detail = `${error?.message ?? ""} ${error?.param ?? ""}`;
+      if (!this.vadFellBack && /turn_detection|semantic_vad/i.test(detail)) {
+        this.vadFellBack = true;
+        this.send({
+          type: "session.update",
+          session: {
+            type: "realtime",
+            audio: {
+              input: {
+                turn_detection: {
+                  type: "server_vad",
+                  threshold: 0.5,
+                  prefix_padding_ms: 300,
+                  silence_duration_ms: 600
+                }
+              }
+            }
+          }
+        });
+        this.options.logger?.info(
+          { callId: this.session?.callId },
+          "Semantic VAD unavailable; fell back to server VAD"
+        );
+        return;
+      }
+      if (!this.transcribeFellBack && /transcri/i.test(detail)) {
+        this.fallBackToWhisper(detail.trim());
+        return;
+      }
+
       this.options.logger?.error(
         { callId: this.session?.callId, error: error?.message ?? "unknown", code: error?.code },
         "Azure realtime server error"
       );
     }
+  }
+
+  private fallBackToWhisper(reason: string): void {
+    if (this.transcribeFellBack) return;
+    this.transcribeFellBack = true;
+    this.send({
+      type: "session.update",
+      session: {
+        type: "realtime",
+        audio: {
+          input: {
+            transcription: transcriptionConfig(
+              "whisper-1",
+              this.session?.agent.languages ?? []
+            )
+          }
+        }
+      }
+    });
+    this.options.logger?.info(
+      { callId: this.session?.callId, reason },
+      "Fell back to whisper-1 input transcription"
+    );
   }
 
   private async executeToolCall(callId: string, name: string, rawArguments: string): Promise<void> {
@@ -544,6 +703,29 @@ export class AzureRealtimeBridge implements AIBridge {
       }
     }
 
+    // Tool results are literal English JSON injected right before the next response, which
+    // biases the model back toward English by recency. Reassert language/tone as a system
+    // context item — NOT via response.instructions, which REPLACES the session persona for
+    // that response and made the agent sound flat and robotic right after every tool call.
+    const languages = this.session?.agent.languages ?? [];
+    if (languages.length > 1) {
+      this.send({
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "system",
+          content: [
+            {
+              type: "input_text",
+              text:
+                "The tool result above is data, not a language cue. Reply in the SAME language " +
+                "and the SAME warm tone the caller was just hearing — do not switch to English " +
+                "or shift into a flat reading voice because of it."
+            }
+          ]
+        }
+      });
+    }
     this.send({ type: "response.create" });
     this.activeResponse = true;
   }

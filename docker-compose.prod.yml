@@ -3,6 +3,7 @@ services:
     build:
       target: production
     volumes: !reset []
+    ports: !reset []
     restart: unless-stopped
     init: true
 
@@ -10,6 +11,7 @@ services:
     build:
       target: production
     volumes: !reset []
+    ports: !reset []
     restart: unless-stopped
     init: true
 
@@ -18,3 +20,22 @@ services:
 
   redis:
     ports: !reset []
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+      - voice
+
+volumes:
+  caddy_data:
+  caddy_config:

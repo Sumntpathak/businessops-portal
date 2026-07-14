@@ -22,6 +22,27 @@
       "when": 1783363194682,
       "tag": "0002_seed_default_intake_fields",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1783446970158,
+      "tag": "0003_rapid_vision",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1784012589488,
+      "tag": "0004_medical_unicorn",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1784014373210,
+      "tag": "0005_milky_solo",
+      "breakpoints": true
     }
   ]
 }

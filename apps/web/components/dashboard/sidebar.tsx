@@ -10,14 +10,12 @@ import {
   Mic,
   PanelLeft,
   PhoneCall,
-  Settings,
-  Users
+  Settings
 } from "lucide-react";
 
 const navigation = [
   { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
   { label: "Calls", href: "/dashboard/calls", icon: PhoneCall },
-  { label: "Callers", href: "/dashboard/callers", icon: Users },
   { label: "Bookings", href: "/dashboard/bookings", icon: CalendarDays },
   { label: "Agent", href: "/dashboard/agent", icon: Bot },
   { label: "Voice Test", href: "/dashboard/voice-test", icon: Mic },

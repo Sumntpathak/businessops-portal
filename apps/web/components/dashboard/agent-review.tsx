@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { PageBody, PageHeader, PageShell } from "@/components/dashboard/page-shell";
 
 type JobStatus = "queued" | "crawling" | "distilling" | "ready_for_review" | "failed";
 interface Service { id?: string; name: string; durationMinutes: number; price: string | null; description: string; active: boolean; }
@@ -11,7 +12,7 @@ interface BusinessHour { weekday: number; opens: string; closes: string; closed:
 interface AgentStatus {
   tenantStatus: string;
   job: { status: JobStatus; error: string | null; crawlResult: Array<{ url: string; title: string; text: string }> | null } | null;
-  profile: { agentMd: string; version: number; source: "auto" | "manual" } | null;
+  profile: { agentMd: string; version: number; source: "auto" | "manual"; languages: string[] } | null;
   services: Service[];
   businessHours: BusinessHour[];
   revisions: Array<{ id: string; version: number; createdAt: string }>;
@@ -33,6 +34,8 @@ export function AgentReview() {
   const [agentMd, setAgentMd] = useState("");
   const [services, setServices] = useState<Service[]>([]);
   const [hours, setHours] = useState<BusinessHour[]>(defaultHours);
+  const [languages, setLanguages] = useState<string[]>([]);
+  const [newLanguage, setNewLanguage] = useState("");
   const [message, setMessage] = useState<string>();
   const [pending, setPending] = useState<string>();
   const initialized = useRef(false);
@@ -47,6 +50,7 @@ export function AgentReview() {
       setAgentMd(body.data.profile?.agentMd ?? "");
       setServices(body.data.services);
       setHours(body.data.businessHours.length === 7 ? body.data.businessHours : defaultHours());
+      setLanguages(body.data.profile?.languages.length ? body.data.profile.languages : ["English"]);
       initialized.current = true;
     } else if (!editorDirty.current && body.data.profile?.agentMd) {
       setAgentMd(body.data.profile.agentMd);
@@ -101,6 +105,29 @@ export function AgentReview() {
     setMessage("Business hours saved.");
   }
 
+  async function saveLanguages(next: string[]) {
+    setPending("languages"); setMessage(undefined);
+    const response = await fetch("/api/agent/languages", {
+      method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ languages: next })
+    });
+    setPending(undefined);
+    if (!response.ok) { setMessage(await responseError(response)); return; }
+    setLanguages(next);
+    setMessage("Languages saved.");
+  }
+
+  function addLanguage() {
+    const value = newLanguage.trim();
+    if (!value || languages.some((l) => l.toLowerCase() === value.toLowerCase())) return;
+    setNewLanguage("");
+    void saveLanguages([...languages, value]);
+  }
+
+  function removeLanguage(language: string) {
+    if (languages.length <= 1) return;
+    void saveLanguages(languages.filter((l) => l !== language));
+  }
+
   async function goLive() {
     setPending("live"); setMessage(undefined);
     const response = await fetch("/api/agent/go-live", { method: "POST" });
@@ -122,7 +149,9 @@ export function AgentReview() {
 
   if (!status) {
     return (
-      <div className="space-y-8">
+      <PageShell>
+        <PageHeader eyebrow="Onboarding status" title="Agent" />
+        <PageBody className="space-y-8">
         <section className="flex flex-col justify-between gap-4 rounded-xl border bg-muted/10 p-5 sm:flex-row sm:items-center">
           <div className="space-y-2">
             <Skeleton className="h-3 w-32" />
@@ -150,27 +179,29 @@ export function AgentReview() {
             <Skeleton className="h-16 w-full rounded-lg" />
           </div>
         </section>
-      </div>
+        </PageBody>
+      </PageShell>
     );
   }
 
   return (
-    <div className="space-y-8">
-      <section className="flex flex-col justify-between gap-4 rounded-xl border bg-muted/10 p-5 sm:flex-row sm:items-center">
-        <div>
-          <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Onboarding status</p>
-          <h1 className="mt-2 text-2xl font-semibold capitalize">{statusLabel}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {crawlPages > 0 ? crawlPages + " website pages collected." : "The worker is preparing your draft."}
-          </p>
-          {status?.job?.error ? <p role="alert" className="mt-2 text-sm text-red-400">{status.job.error}</p> : null}
-        </div>
-        <div className="flex items-center gap-3">
-          <span className="rounded-full border px-3 py-1 text-xs capitalize">Tenant: {status?.tenantStatus ?? "onboarding"}</span>
-          <Button onClick={goLive} disabled={!reviewReady || pending === "live"}>{pending === "live" ? "Checking…" : "Go Live"}</Button>
-        </div>
-      </section>
-
+    <PageShell>
+      <PageHeader
+        eyebrow="Onboarding status"
+        title={<span className="capitalize">{statusLabel}</span>}
+        actions={
+          <div className="flex items-center gap-3">
+            <span className="rounded-full border px-3 py-1 text-xs capitalize">Tenant: {status?.tenantStatus ?? "onboarding"}</span>
+            <Button onClick={goLive} disabled={!reviewReady || pending === "live"}>{pending === "live" ? "Checking…" : "Go Live"}</Button>
+          </div>
+        }
+      >
+        <p className="mt-1 text-sm text-muted-foreground">
+          {crawlPages > 0 ? crawlPages + " website pages collected." : "The worker is preparing your draft."}
+        </p>
+        {status?.job?.error ? <p role="alert" className="mt-2 text-sm text-red-400">{status.job.error}</p> : null}
+      </PageHeader>
+      <PageBody className="space-y-8">
       {message ? <p role="status" className="rounded-lg border bg-muted/20 px-4 py-3 text-sm">{message}</p> : null}
 
       <section>
@@ -238,6 +269,44 @@ export function AgentReview() {
       </section>
 
       <section className="rounded-xl border p-5">
+        <div className="mb-5">
+          <h2 className="text-xl font-semibold">Languages</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            The agent auto-detects which of these languages a caller is using and switches to match them, even mid-call.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {languages.map((language) => (
+            <span key={language} className="flex items-center gap-2 rounded-full border bg-muted/20 px-3 py-1.5 text-sm">
+              {language}
+              <button
+                type="button"
+                onClick={() => removeLanguage(language)}
+                disabled={languages.length <= 1 || pending === "languages"}
+                aria-label={`Remove ${language}`}
+                className="text-muted-foreground hover:text-foreground disabled:opacity-30"
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+        <div className="mt-4 flex gap-2">
+          <input
+            value={newLanguage}
+            onChange={(event) => setNewLanguage(event.target.value)}
+            onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addLanguage(); } }}
+            placeholder="Add a language, e.g. Spanish"
+            maxLength={40}
+            className="h-10 flex-1 rounded-md border bg-background px-3 text-sm"
+          />
+          <Button type="button" variant="outline" onClick={addLanguage} disabled={!newLanguage.trim() || pending === "languages"}>
+            Add
+          </Button>
+        </div>
+      </section>
+
+      <section className="rounded-xl border p-5">
         <h2 className="text-xl font-semibold">Revision history</h2>
         <div className="mt-4 divide-y">
           {status?.revisions.length ? status.revisions.map((revision) => (
@@ -250,6 +319,7 @@ export function AgentReview() {
       </section>
 
       {!status?.googleCalendarConnected ? <p className="text-sm text-amber-300">Go Live remains locked until Google Calendar is connected in Settings.</p> : null}
-    </div>
+      </PageBody>
+    </PageShell>
   );
 }

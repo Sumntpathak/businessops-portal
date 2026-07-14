@@ -18,7 +18,7 @@ const session: CallSession = {
     stage: "new"
   },
   intakeFields: [],
-  agent: { agentMd: "# Clinic", voiceGreeting: "Hello", languageMode: "hinglish" },
+  agent: { agentMd: "# Clinic", voiceGreeting: "Hello", languageMode: "hinglish", languages: ["English", "Hindi"] },
   memories: [],
   startedAt: "2026-07-06T04:00:00.000Z"
 };
@@ -35,8 +35,8 @@ function harness() {
       getSlots: async (...args: any[]) => {
         calls.push({ name: "getSlots", args });
         return [{
-          startsAt: new Date("2026-07-07T03:30:00.000Z"),
-          endsAt: new Date("2026-07-07T04:00:00.000Z")
+          startsAt: new Date("2027-01-07T03:30:00.000Z"),
+          endsAt: new Date("2027-01-07T04:00:00.000Z")
         }];
       }
     },
@@ -65,11 +65,11 @@ describe("ToolExecutor", () => {
   it("resolves a service name and scopes availability to the session tenant", async () => {
     const { executor, calls, service } = harness();
     const result = await executor.execute("check_availability", {
-      serviceName: "Consultation", date: "2026-07-07"
+      serviceName: "Consultation", date: "2027-01-07"
     });
-    assert.deepEqual(result, { serviceId: service.id, callerTimezone: "Asia/Kolkata", slots: [{ startsAt: "2026-07-07T03:30:00.000Z", endsAt: "2026-07-07T04:00:00.000Z", callerLocalTime: "7 Jul 2026, 09:00", businessLocalTime: "7 Jul 2026, 09:00" }] });
+    assert.deepEqual(result, { serviceId: service.id, callerTimezone: "Asia/Kolkata", slots: [{ startsAt: "2027-01-07T03:30:00.000Z", endsAt: "2027-01-07T04:00:00.000Z", callerLocalTime: "7 Jan 2027, 09:00", businessLocalTime: "7 Jan 2027, 09:00" }] });
     assert.deepEqual(calls.find((call) => call.name === "findService")?.args, [session.tenantId, { serviceName: "Consultation" }]);
-    assert.deepEqual(calls.find((call) => call.name === "getSlots")?.args, [session.tenantId, service.id, "2026-07-07"]);
+    assert.deepEqual(calls.find((call) => call.name === "getSlots")?.args, [session.tenantId, service.id, "2027-01-07"]);
   });
 
   it("filters adjacent business dates into the caller's local date", async () => {
@@ -82,7 +82,7 @@ describe("ToolExecutor", () => {
     const executor = new ToolExecutor(callerSession, dependencies);
     const result = await executor.execute("check_availability", {
       serviceId: service.id,
-      date: "2026-07-07"
+      date: "2027-01-07"
     }) as { callerTimezone: string; slots: unknown[] };
     assert.equal(result.callerTimezone, "Asia/Kolkata");
     assert.equal(result.slots.length, 1);
@@ -93,10 +93,10 @@ describe("ToolExecutor", () => {
     const { executor, calls, service } = harness();
     const result = await executor.execute("create_booking", {
       serviceId: service.id,
-      startsAt: "2026-07-07T03:30:00.000Z",
+      startsAt: "2027-01-07T03:30:00.000Z",
       callerName: "Asha Patel"
     });
-    assert.deepEqual(result, { bookingId: "booking-1", eventId: "gcal-1", calendarSynced: true, startsAt: "2026-07-07T03:30:00.000Z", endsAt: "2026-07-07T04:00:00.000Z", callerLocalTime: "7 Jul 2026, 09:00", businessLocalTime: "7 Jul 2026, 09:00", serviceName: "Consultation" });
+    assert.deepEqual(result, { bookingId: "booking-1", eventId: "gcal-1", calendarSynced: true, startsAt: "2027-01-07T03:30:00.000Z", endsAt: "2027-01-07T04:00:00.000Z", callerLocalTime: "7 Jan 2027, 09:00", businessLocalTime: "7 Jan 2027, 09:00", serviceName: "Consultation" });
     const create = calls.find((call) => call.name === "createBooking");
     assert.equal(create?.args[0], session.tenantId);
     assert.equal(create?.args[1], session.caller.id);
@@ -138,7 +138,7 @@ describe("ToolExecutor", () => {
     dependencies.repository.findService = async () => null;
     await assert.rejects(
       () => executor.execute("check_availability", {
-        serviceName: "Missing", date: "2026-07-07"
+        serviceName: "Missing", date: "2027-01-07"
       }),
       /Service not found/
     );
@@ -152,7 +152,7 @@ describe("ToolExecutor", () => {
     await assert.rejects(
       () => executor.execute("create_booking", {
         serviceId: service.id,
-        startsAt: "2026-07-07T03:30:00.000Z"
+        startsAt: "2027-01-07T03:30:00.000Z"
       }),
       /database failed/
     );

@@ -21,7 +21,7 @@ const session: CallSession = {
     { id: "f1", key: "service_interest", label: "Service interest", type: "text", options: [], priority: "key", sort: 10, active: true },
     { id: "f2", key: "target_date", label: "Target date", type: "text", options: [], priority: "key", sort: 20, active: true }
   ],
-  agent: { agentMd: "# Holistic", voiceGreeting: "Hello", languageMode: "english" },
+  agent: { agentMd: "# Holistic", voiceGreeting: "Hello", languageMode: "english", languages: ["English"] },
   memories: [],
   startedAt: "2026-07-06T04:00:00.000Z"
 };
@@ -39,5 +39,22 @@ describe("realtime caller profile instructions", () => {
     const instructions = buildInstructions(session);
     assert.match(instructions, /update_caller_profile with fields \{name:/);
     assert.doesNotMatch(instructions, /save_memory with kind 'fact'.*Caller name/);
+  });
+
+  it("instructs auto language detection and switching when multiple languages are configured", () => {
+    const instructions = buildInstructions({
+      ...session,
+      agent: { ...session.agent, languages: ["English", "Hindi", "Spanish"] }
+    });
+    assert.match(instructions, /English, Hindi, Spanish/);
+    assert.match(instructions, /switch with them immediately/);
+  });
+
+  it("locks to a single language when only one is configured", () => {
+    const instructions = buildInstructions({
+      ...session,
+      agent: { ...session.agent, languages: ["French"] }
+    });
+    assert.match(instructions, /Speak French only/);
   });
 });

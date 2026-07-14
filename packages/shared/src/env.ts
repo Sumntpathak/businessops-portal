@@ -10,6 +10,13 @@ export const envSchema = z.object({
   AZURE_REALTIME_URL: z.string().url(),
   AZURE_REALTIME_KEY: z.string().min(1),
   AZURE_REALTIME_MODEL: z.string().default("gpt-realtime-mini"),
+  // Present only once the Azure SIP connector is configured; the /azure/incoming
+  // webhook route stays disabled until both are set.
+  AZURE_WEBHOOK_SECRET: z.string().min(1).optional(),
+  AZURE_SIP_ENABLED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
   ANTHROPIC_API_KEY: z.string().min(1),
   BRAVE_SEARCH_API_KEY: z.string().min(1),
   GOOGLE_CLIENT_ID: z.string().min(1),

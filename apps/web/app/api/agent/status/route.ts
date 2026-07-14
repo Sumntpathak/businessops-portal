@@ -40,6 +40,7 @@ async function getStatus() {
           agentMd: schema.agentProfiles.agentMd,
           version: schema.agentProfiles.version,
           source: schema.agentProfiles.source,
+          languages: schema.agentProfiles.languages,
           updatedAt: schema.agentProfiles.updatedAt
         })
         .from(schema.agentProfiles)
