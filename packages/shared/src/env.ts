@@ -17,7 +17,10 @@ export const envSchema = z.object({
     .enum(["true", "false"])
     .default("false")
     .transform((value) => value === "true"),
+  // Repurposed to hold a Cloudflare Workers AI API token (used for both the
+  // call-summary worker and the onboarding distiller, via GLM-4.7-Flash).
   ANTHROPIC_API_KEY: z.string().min(1),
+  CLOUDFLARE_ACCOUNT_ID: z.string().min(1),
   BRAVE_SEARCH_API_KEY: z.string().min(1),
   GOOGLE_CLIENT_ID: z.string().min(1),
   GOOGLE_CLIENT_SECRET: z.string().min(1),

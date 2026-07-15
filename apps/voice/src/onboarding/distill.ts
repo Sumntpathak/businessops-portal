@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { parseToolCallArguments } from "../cloudflare-tool-call.js";
 import type { CrawledPage, StubDraft } from "./crawler.js";
 
 export interface DistillInput {
@@ -12,10 +13,12 @@ export interface DistilledDraft extends StubDraft {
   voiceGreeting: string;
 }
 
-const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
-const ANTHROPIC_VERSION = "2023-06-01";
-const DISTILL_MODEL = "claude-sonnet-5";
+const DISTILL_MODEL = "@cf/zai-org/glm-4.7-flash";
 const MAX_PAGE_CHARS = 12_000;
+
+function cloudflareChatUrl(accountId: string): string {
+  return `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1/chat/completions`;
+}
 
 const timeSchema = z
   .string()
@@ -49,52 +52,55 @@ const draftSchema = z.object({
 });
 
 const SUBMIT_TOOL = {
-  name: "submit_agent_profile",
-  description: "Submit the finished receptionist profile for this business.",
-  input_schema: {
-    type: "object" as const,
-    properties: {
-      agent_md: {
-        type: "string",
-        description: "The complete agent.md markdown document."
-      },
-      voice_greeting: {
-        type: "string",
-        description:
-          "One short spoken sentence the agent uses to answer the phone, mentioning the business name."
-      },
-      services: {
-        type: "array",
-        items: {
-          type: "object",
-          properties: {
-            name: { type: "string" },
-            duration_minutes: { type: "integer", description: "Appointment length in minutes." },
-            price: {
-              type: ["string", "null"],
-              description: "Display price like '₹500' or 'From ₹1,200', or null if unknown."
+  type: "function" as const,
+  function: {
+    name: "submit_agent_profile",
+    description: "Submit the finished receptionist profile for this business.",
+    parameters: {
+      type: "object",
+      properties: {
+        agent_md: {
+          type: "string",
+          description: "The complete agent.md markdown document."
+        },
+        voice_greeting: {
+          type: "string",
+          description:
+            "One short spoken sentence the agent uses to answer the phone, mentioning the business name."
+        },
+        services: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              duration_minutes: { type: "integer", description: "Appointment length in minutes." },
+              price: {
+                type: ["string", "null"],
+                description: "Display price like '₹500' or 'From ₹1,200', or null if unknown."
+              },
+              description: { type: "string", description: "One sentence, caller-friendly." }
             },
-            description: { type: "string", description: "One sentence, caller-friendly." }
-          },
-          required: ["name", "duration_minutes", "price", "description"]
+            required: ["name", "duration_minutes", "price", "description"]
+          }
+        },
+        business_hours: {
+          type: "array",
+          description: "Exactly 7 entries, weekday 0 (Sunday) through 6 (Saturday).",
+          items: {
+            type: "object",
+            properties: {
+              weekday: { type: "integer", minimum: 0, maximum: 6 },
+              opens: { type: "string", description: "HH:MM:SS 24h local time." },
+              closes: { type: "string", description: "HH:MM:SS 24h local time." },
+              closed: { type: "boolean" }
+            },
+            required: ["weekday", "opens", "closes", "closed"]
+          }
         }
       },
-      business_hours: {
-        type: "array",
-        description: "Exactly 7 entries, weekday 0 (Sunday) through 6 (Saturday).",
-        items: {
-          type: "object",
-          properties: {
-            weekday: { type: "integer", minimum: 0, maximum: 6 },
-            opens: { type: "string", description: "HH:MM:SS 24h local time." },
-            closes: { type: "string", description: "HH:MM:SS 24h local time." },
-            closed: { type: "boolean" }
-          },
-          required: ["weekday", "opens", "closes", "closed"]
-        }
-      }
-    },
-    required: ["agent_md", "voice_greeting", "services", "business_hours"]
+      required: ["agent_md", "voice_greeting", "services", "business_hours"]
+    }
   }
 };
 
@@ -142,37 +148,35 @@ function buildPrompt(input: DistillInput): string {
   ].join("\n");
 }
 
-interface AnthropicToolUseBlock {
-  type: "tool_use";
-  name: string;
-  input: unknown;
+interface OpenAiToolCall {
+  id: string;
+  function: { name: string; arguments: string };
 }
 
 /**
- * Distills crawled website content into a reviewed-ready agent profile using Claude.
+ * Distills crawled website content into a reviewed-ready agent profile.
  * Throws on API or validation failure — callers decide whether to fall back to the stub.
  */
 export async function claudeDistill(
   input: DistillInput,
-  apiKey: string
+  apiKey: string,
+  accountId: string
 ): Promise<DistilledDraft> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 120_000);
 
   try {
-    const response = await fetch(ANTHROPIC_URL, {
+    const response = await fetch(cloudflareChatUrl(accountId), {
       method: "POST",
       signal: controller.signal,
       headers: {
         "content-type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": ANTHROPIC_VERSION
+        authorization: `Bearer ${apiKey}`
       },
       body: JSON.stringify({
         model: DISTILL_MODEL,
-        max_tokens: 8_000,
         tools: [SUBMIT_TOOL],
-        tool_choice: { type: "tool", name: "submit_agent_profile" },
+        tool_choice: { type: "function", function: { name: "submit_agent_profile" } },
         messages: [{ role: "user", content: buildPrompt(input) }]
       })
     });
@@ -180,21 +184,21 @@ export async function claudeDistill(
     if (!response.ok) {
       const body = await response.text().catch(() => "");
       throw new Error(
-        `Claude distill failed with HTTP ${response.status}: ${body.slice(0, 500)}`
+        `Onboarding distill failed with HTTP ${response.status}: ${body.slice(0, 500)}`
       );
     }
 
-    const payload = (await response.json()) as { content?: Array<{ type: string }> };
-    const toolUse = (payload.content ?? []).find(
-      (block): block is AnthropicToolUseBlock =>
-        block.type === "tool_use" &&
-        (block as AnthropicToolUseBlock).name === "submit_agent_profile"
+    const payload = (await response.json()) as {
+      choices?: Array<{ message?: { tool_calls?: OpenAiToolCall[] } }>;
+    };
+    const toolCall = payload.choices?.[0]?.message?.tool_calls?.find(
+      (call) => call.function.name === "submit_agent_profile"
     );
-    if (!toolUse) {
-      throw new Error("Claude distill returned no submit_agent_profile tool call");
+    if (!toolCall) {
+      throw new Error("Onboarding distill returned no submit_agent_profile tool call");
     }
 
-    const draft = draftSchema.parse(toolUse.input);
+    const draft = draftSchema.parse(parseToolCallArguments(toolCall.function.arguments));
     const weekdays = new Set(draft.business_hours.map((hours) => hours.weekday));
     if (weekdays.size !== 7) {
       throw new Error("Claude distill returned duplicate or missing weekdays");

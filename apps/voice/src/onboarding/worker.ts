@@ -83,10 +83,18 @@ export function startOnboardingWorker(logger: WorkerLogger) {
           );
 
         const city = tenant.timezone.split("/").at(-1)?.replaceAll("_", " ") ?? "";
-        const searchUrls = await braveSearch(
-          [tenant.name, city].filter(Boolean).join(" "),
-          env.BRAVE_SEARCH_API_KEY
-        );
+        let searchUrls: string[] = [];
+        try {
+          searchUrls = await braveSearch(
+            [tenant.name, city].filter(Boolean).join(" "),
+            env.BRAVE_SEARCH_API_KEY
+          );
+        } catch (searchError) {
+          logger.error(
+            { err: searchError, tenantId: data.tenantId },
+            "Brave search failed; continuing with only the provided URL"
+          );
+        }
         const pages = await crawlWebsite(data.url, searchUrls);
 
         await db
@@ -112,7 +120,8 @@ export function startOnboardingWorker(logger: WorkerLogger) {
               timezone: tenant.timezone,
               pages
             },
-            env.ANTHROPIC_API_KEY
+            env.ANTHROPIC_API_KEY,
+            env.CLOUDFLARE_ACCOUNT_ID
           );
         } catch (distillError) {
           // Claude failure must not dead-end onboarding: fall back to the
