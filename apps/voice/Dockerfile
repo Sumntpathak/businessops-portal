@@ -20,7 +20,7 @@ CMD ["sh", "-c", "pnpm --filter @recepto/shared build && pnpm --filter @recepto/
 FROM deps AS build
 COPY . .
 RUN pnpm --filter @recepto/shared build && pnpm --filter @recepto/db build && pnpm --filter @recepto/calendar build && pnpm --filter @recepto/voice build
-RUN pnpm deploy --filter @recepto/voice --prod /prod/voice
+RUN pnpm deploy --filter @recepto/voice --prod --legacy /prod/voice
 
 FROM node:20-alpine AS production
 ENV NODE_ENV=production
