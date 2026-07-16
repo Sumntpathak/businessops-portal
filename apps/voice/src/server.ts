@@ -477,6 +477,16 @@ async function handleAzureSipCall(
   });
   bridge.onToolCall((name, input) => executor.execute(name, input));
   bridge.onClose(() => void finalize("completed"));
+  bridge.onEndCall(() => {
+    void (async () => {
+      await finalize("completed");
+      try {
+        await azureSip?.hangup(providerCallId);
+      } catch (error) {
+        app.log.error({ err: error, providerCallId }, "Azure SIP hangup after end_call failed");
+      }
+    })();
+  });
 
   await bridge.start(session);
   app.log.info(
@@ -715,6 +725,17 @@ mediaStreams.on("connection", (socket, request) => {
       }
     }
   });
+  bridge.onEndCall(() => {
+    void (async () => {
+      await finalize("completed");
+      try {
+        if (session) await adapter.hangup(session.providerCallSid);
+      } catch (error) {
+        app.log.error({ err: error, callId }, "Twilio hangup after end_call failed");
+      }
+      socket.close(1000, "Call ended by agent");
+    })();
+  });
 
   socket.on("message", (data) => {
     void (async () => {
@@ -910,6 +931,15 @@ browserTestStreams.on("connection", (socket, request) => {
       });
       bridge.onBargeIn(() => {
         if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ event: "clear" }));
+      });
+      bridge.onEndCall(() => {
+        void (async () => {
+          await finalize();
+          if (socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ event: "ended" }));
+            socket.close(1000, "Call ended by agent");
+          }
+        })();
       });
 
       const executor = new ToolExecutor(session, {

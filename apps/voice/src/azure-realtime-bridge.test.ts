@@ -41,13 +41,14 @@ describe("realtime caller profile instructions", () => {
     assert.doesNotMatch(instructions, /save_memory with kind 'fact'.*Caller name/);
   });
 
-  it("instructs auto language detection and switching when multiple languages are configured", () => {
+  it("instructs holding the opening language until the caller clearly switches, then holding the new one", () => {
     const instructions = buildInstructions({
       ...session,
       agent: { ...session.agent, languages: ["English", "Hindi", "Spanish"] }
     });
     assert.match(instructions, /English, Hindi, Spanish/);
-    assert.match(instructions, /switch with them immediately/);
+    assert.match(instructions, /Do not switch languages preemptively/);
+    assert.match(instructions, /HOLD that language for the rest of the call/);
   });
 
   it("locks to a single language when only one is configured", () => {
@@ -56,5 +57,12 @@ describe("realtime caller profile instructions", () => {
       agent: { ...session.agent, languages: ["French"] }
     });
     assert.match(instructions, /Speak French only/);
+  });
+
+  it("instructs ending the call only after the caller confirms nothing else is needed", () => {
+    const instructions = buildInstructions(session);
+    assert.match(instructions, /then call end_call/);
+    assert.match(instructions, /Never call end_call while the caller is mid-request/);
+    assert.match(instructions, /Never call end_call more than once/);
   });
 });

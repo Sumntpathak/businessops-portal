@@ -144,6 +144,7 @@ export default function VoiceTestPage() {
             at?: string;
           };
           if (message.event === "ready") setState("live");
+          if (message.event === "ended") setState("ended");
           if (message.event === "transcript" && message.role && message.content) {
             setTranscript((current) => [
               ...current,

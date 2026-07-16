@@ -120,6 +120,13 @@ const REALTIME_TOOLS = [
     description:
       "Fetch this caller's saved details: name, remembered facts, and upcoming confirmed bookings (with bookingIds). Call when the caller references past visits, wants to change/cancel a booking, or when you are unsure of a detail you were already told.",
     parameters: { type: "object", properties: {} }
+  },
+  {
+    type: "function",
+    name: "end_call",
+    description:
+      "End the phone call. Call this ONLY after the caller has confirmed there is nothing else they need — e.g. right after they say 'no that's all' / 'that's it, thanks' following a completed booking, answered question, or message taken. Say a short natural goodbye in your reply FIRST, then call this tool.",
+    parameters: { type: "object", properties: {} }
   }
 ] as const;
 
@@ -130,10 +137,12 @@ function languageInstructions(languages: string[]): string {
   }
   return [
     `LANGUAGE: The caller may speak any of these languages: ${languages.join(", ")}.`,
-    "HARD RULE: every reply must be in the language of the caller's MOST RECENT sentence.",
-    "If their last sentence was Hindi, reply in Hindi; if Punjabi, reply in Punjabi. Replying in English to a caller who just spoke Hindi or Punjabi is a serious failure.",
-    "If the caller switches languages mid-call, switch with them immediately on the very next reply — never ask which language to use.",
-    "If they mix languages in one sentence (e.g. Hinglish), mix the same way they do.",
+    "You opened the call in the greeting's language — that is your working language until something changes it. Do not switch languages preemptively or guess based on the caller's name, accent, or phone number.",
+    "Only switch language when ONE of these actually happens: (a) the caller speaks a full sentence clearly in a different supported language (not just one borrowed word), or (b) the caller directly asks to continue in another language.",
+    "When you do switch, treat it as a real, deliberate moment: acknowledge it naturally in one short phrase (e.g. 'Sure, switching to Hindi' / 'Theek hai, Hindi mein baat karte hain'), then continue.",
+    "If it is unclear which language the caller wants — they said one ambiguous word, or mixed two languages in a way you cannot confidently read as a switch — do not silently guess. Briefly ask which language they'd prefer, then wait for their answer before changing anything.",
+    "Once you switch, HOLD that language for the rest of the call. Do not flip back and forth turn to turn. A single stray word from the caller in another language is not a signal to switch back — only a clear new sentence or an explicit request is.",
+    "If the caller mixes languages naturally within their own speech (e.g. Hinglish) throughout the call, mirror that same mixed style consistently rather than picking one artificially.",
     "Use natural everyday spoken phrasing in whichever language you are using — never stiff, formal, or textbook phrasing."
   ].join(" ");
 }
@@ -271,6 +280,12 @@ export function buildInstructions(session: CallSession): string {
     "- If the booking result shows calendarSynced false, the booking is still valid and recorded — confirm it normally and never mention calendars or syncing.",
     "- To change or cancel, use get_caller_context to find the booking, confirm which one, then cancel_booking.",
     "",
+    "== ENDING THE CALL ==",
+    "- After you finish handling the caller's request (booking confirmed, question answered, message taken), ask if there's anything else — do not assume the call is over.",
+    "- Only when the caller clearly confirms there is nothing else (e.g. 'no that's all', 'that's it, thanks', 'no I'm good') do you close the call: say one short, warm goodbye line, then call end_call.",
+    "- Never call end_call while the caller is mid-request, has an unanswered question, or has not yet confirmed they're done. Never call it just because there's a pause — silence is not a goodbye.",
+    "- Never call end_call more than once in a call.",
+    "",
     "== SAFETY ==",
     "- Never reveal information about any other caller or booking that is not this caller's.",
     "- If asked something not covered by the business profile, offer to take a message rather than guessing.",
@@ -327,6 +342,8 @@ export class AzureRealtimeBridge implements AIBridge {
   private transcript?: (event: TranscriptEvent) => void;
   private bargeIn?: () => void;
   private closed?: () => void;
+  private endCall?: () => void;
+  private endCallRequested = false;
   private readonly pendingAudio: Buffer[] = [];
   private readonly handledToolCalls = new Set<string>();
   private ready = false;
@@ -455,6 +472,11 @@ export class AzureRealtimeBridge implements AIBridge {
     this.closed = callback;
   }
 
+  /** Fired when the agent calls end_call after the caller confirms nothing else is needed. */
+  onEndCall(callback: () => void): void {
+    this.endCall = callback;
+  }
+
   async stop(): Promise<void> {
     this.stopped = true;
     this.ready = false;
@@ -517,6 +539,12 @@ export class AzureRealtimeBridge implements AIBridge {
             String(item.arguments ?? "{}")
           );
         }
+      }
+      // The goodbye audio for this response has now fully streamed out — safe to
+      // actually disconnect without cutting the agent off mid-sentence.
+      if (this.endCallRequested) {
+        this.endCallRequested = false;
+        this.endCall?.();
       }
       return;
     }
@@ -625,6 +653,20 @@ export class AzureRealtimeBridge implements AIBridge {
     if (!callId || !name || this.handledToolCalls.has(callId)) return;
     this.handledToolCalls.add(callId);
 
+    if (name === "end_call") {
+      this.endCallRequested = true;
+      this.send({
+        type: "conversation.item.create",
+        item: {
+          type: "function_call_output",
+          call_id: callId,
+          output: JSON.stringify({ ended: true })
+        }
+      });
+      this.transcript?.({ role: "tool", content: "end_call -> {\"ended\":true}", at: new Date() });
+      return;
+    }
+
     let output: unknown;
     let parsedInput: unknown;
     try {
@@ -718,9 +760,9 @@ export class AzureRealtimeBridge implements AIBridge {
             {
               type: "input_text",
               text:
-                "The tool result above is data, not a language cue. Reply in the SAME language " +
-                "and the SAME warm tone the caller was just hearing — do not switch to English " +
-                "or shift into a flat reading voice because of it."
+                "The tool result above is data, not a language cue. Keep holding the language " +
+                "already established this call, in the SAME warm tone the caller was just hearing " +
+                "— do not switch to English or shift into a flat reading voice because of it."
             }
           ]
         }
