@@ -30,9 +30,9 @@ const IDS = {
 
 const OWNER_EMAIL = "gd@gmail.com";
 const DASHBOARD_PASSWORD = "Holistic2026!Demo";
-// Precomputed with argon2 (apps/web's argon2 install) for the password above.
+// Precomputed with bcryptjs (cost 12) for the password above.
 const DASHBOARD_PASSWORD_HASH =
-  "$argon2id$v=19$m=65536,t=3,p=4$zNM6Au4SohSVGQ9mAVFCbw$BKYJF8LbvlOhzy7igc2BPvojHDA7jpTJfqEuU6LFeZE";
+  "$2b$12$P8vsHeMpXQqwVXQS6n.EzON/FOAlreZVo4JXOCgtykci0nuYOcHBe";
 
 const agentMd = [
   "# Holistic Migration Solutions Reception Agent",

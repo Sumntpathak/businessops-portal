@@ -1,4 +1,4 @@
-import { hash, argon2id } from "argon2";
+import bcrypt from "bcryptjs";
 import { eq } from "drizzle-orm";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
@@ -47,12 +47,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const passwordHash = await hash(parsed.data.password, {
-    type: argon2id,
-    memoryCost: 19_456,
-    timeCost: 2,
-    parallelism: 1
-  });
+  const passwordHash = await bcrypt.hash(parsed.data.password, 12);
 
   try {
     const [user] = await db

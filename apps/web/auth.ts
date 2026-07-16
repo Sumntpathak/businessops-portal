@@ -1,7 +1,7 @@
 import NextAuth from "next-auth";
 import Credentials from "next-auth/providers/credentials";
 import Google from "next-auth/providers/google";
-import { verify } from "argon2";
+import bcrypt from "bcryptjs";
 import { eq } from "drizzle-orm";
 import { schema } from "@recepto/db";
 import { validateEnv } from "@recepto/shared/env";
@@ -68,7 +68,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           return null;
         }
 
-        const validPassword = await verify(user.passwordHash, parsed.data.password).catch(
+        const validPassword = await bcrypt.compare(parsed.data.password, user.passwordHash).catch(
           () => false
         );
 
