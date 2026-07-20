@@ -2,7 +2,6 @@ import crypto from "node:crypto";
 import formbody from "@fastify/formbody";
 import Fastify from "fastify";
 import { Redis } from "ioredis";
-import { Queue } from "bullmq";
 import { WebSocket, WebSocketServer } from "ws";
 import { and, desc, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
@@ -16,7 +15,7 @@ import type { TranscriptEvent } from "./ai-bridge.js";
 import { AzureRealtimeBridge, buildSessionConfig } from "./azure-realtime-bridge.js";
 import type { CallSession } from "./call-session.js";
 import { deriveCallerGeo } from "./caller-profile.js";
-import { startCallSummaryWorker } from "./call-summary-worker.js";
+import { createCallSummarizer } from "./call-summary-worker.js";
 import {
   AzureSipClient,
   incomingCallEventSchema,
@@ -33,10 +32,18 @@ import {
 
 const env = validateEnv(process.env);
 const db = createDatabase(env.DATABASE_URL);
-const redis = new Redis(env.REDIS_URL, { maxRetriesPerRequest: null });
-const summaryQueue = new Queue("call-summarize", {
-  connection: { url: env.REDIS_URL }
+// Redis is now optional: it backs only best-effort webhook dedupe, so a failed
+// connection must never crash the process or block a call.
+const redis = new Redis(env.REDIS_URL, {
+  maxRetriesPerRequest: 1,
+  enableOfflineQueue: false,
+  lazyConnect: true
 });
+redis.on("error", () => {
+  // Logged at the call site that used it; swallowing here prevents an unhandled
+  // 'error' event from taking the voice server down.
+});
+void redis.connect().catch(() => undefined);
 const calendarService = new CalendarService({
   db,
   clientId: env.GOOGLE_CLIENT_ID,
@@ -72,7 +79,21 @@ app.addContentTypeParser(
 
 const mediaStreams = new WebSocketServer({ noServer: true });
 const onboardingWorker = startOnboardingWorker(app.log);
-const summaryWorker = startCallSummaryWorker(env.REDIS_URL, app.log);
+const summarizeCall = createCallSummarizer(app.log);
+
+/**
+ * Summaries run in the background after a call ends. They must never delay
+ * finalization or surface as a call failure, so errors are logged and dropped.
+ */
+function scheduleCallSummary(job: {
+  callId: string;
+  tenantId: string;
+  callerId: string;
+}): void {
+  void summarizeCall(job).catch((error: unknown) => {
+    app.log.error({ err: error, callId: job.callId }, "Call summary failed");
+  });
+}
 const twilioHttp = new TwilioAdapter({
   accountSid: env.TWILIO_ACCOUNT_SID,
   authToken: env.TWILIO_AUTH_TOKEN
@@ -239,13 +260,6 @@ app.post("/twilio/incoming", async (request, reply) => {
 
     if (!existingCall) throw new Error("Call insert returned no row");
 
-    await redis.set(
-      "call-route:" + existingCall.id,
-      destination.tenantId,
-      "EX",
-      4 * 60 * 60
-    );
-
     request.log.info(
       { callId: existingCall.id, tenantId: destination.tenantId },
       "Inbound Twilio call accepted"
@@ -303,8 +317,17 @@ app.post("/azure/incoming", async (request, reply) => {
     return reply.code(200).send({ ok: true });
   }
 
-  // Webhook retries must not double-handle a call.
-  const firstDelivery = await redis.set("azure-wh:" + event.id, "1", "EX", 300, "NX");
+  // Webhook retries must not double-handle a call. Redis is only an optimization
+  // here: if it is down or rate-limited we fail OPEN and let the call through,
+  // since the calls table has a unique index on provider_call_sid that makes the
+  // insert below idempotent anyway. Dropping a real call is far worse than a
+  // duplicate delivery attempt.
+  const firstDelivery = await redis
+    .set("azure-wh:" + event.id, "1", "EX", 300, "NX")
+    .catch((error: unknown) => {
+      request.log.warn({ err: error, eventId: event.id }, "Webhook dedupe unavailable; continuing");
+      return "OK";
+    });
   if (firstDelivery !== "OK") return reply.code(200).send({ ok: true });
 
   const providerCallId = event.data.call_id;
@@ -401,7 +424,6 @@ async function handleAzureSipCall(
     .returning({ id: schema.calls.id });
   if (!call) return; // Duplicate delivery already being handled.
 
-  await redis.set("call-route:" + call.id, destination.tenantId, "EX", 4 * 60 * 60);
   const session = await loadCallSession(call.id);
 
   await azureSip.accept(providerCallId, {
@@ -433,15 +455,11 @@ async function handleAzureSipCall(
         .update(schema.calls)
         .set({ status, endedAt, durationSeconds, updatedAt: endedAt })
         .where(scoped.where(schema.calls, eq(schema.calls.id, session.callId)));
-      await summaryQueue.add(
-        "call:summarize",
-        {
-          callId: session.callId,
-          tenantId: session.tenantId,
-          callerId: session.caller.id
-        },
-        { removeOnComplete: 100, removeOnFail: 100 }
-      );
+      scheduleCallSummary({
+        callId: session.callId,
+        tenantId: session.tenantId,
+        callerId: session.caller.id
+      });
       app.log.info(
         { callId: session.callId, tenantId: session.tenantId, durationSeconds },
         "Azure SIP call finalized"
@@ -529,7 +547,14 @@ app.server.on("upgrade", (request, socket, head) => {
 });
 
 async function loadCallSession(callId: string): Promise<CallSession> {
-  const tenantId = await redis.get("call-route:" + callId);
+  // The call row is the source of truth for routing. Reading tenant_id straight
+  // from Postgres keeps calls working when Redis is unavailable or rate-limited.
+  const [route] = await db
+    .select({ tenantId: schema.calls.tenantId })
+    .from(schema.calls)
+    .where(eq(schema.calls.id, callId))
+    .limit(1);
+  const tenantId = route?.tenantId;
   if (!tenantId || !z.string().uuid().safeParse(tenantId).success) {
     throw new Error("Call routing state not found");
   }
@@ -623,7 +648,6 @@ async function loadCallSession(callId: string): Promise<CallSession> {
     memories,
     startedAt: call.startedAt.toISOString()
   };
-  await redis.set("call:" + callId, JSON.stringify(session), "EX", 4 * 60 * 60);
   return session;
 }
 
@@ -682,15 +706,11 @@ mediaStreams.on("connection", (socket, request) => {
         .update(schema.calls)
         .set({ status, endedAt, durationSeconds, updatedAt: endedAt })
         .where(scoped.where(schema.calls, eq(schema.calls.id, session.callId)));
-      await summaryQueue.add(
-        "call:summarize",
-        {
-          callId: session.callId,
-          tenantId: session.tenantId,
-          callerId: session.caller.id
-        },
-        { removeOnComplete: 100, removeOnFail: 100 }
-      );
+      scheduleCallSummary({
+        callId: session.callId,
+        tenantId: session.tenantId,
+        callerId: session.caller.id
+      });
       app.log.info(
         {
           callId: session.callId,
@@ -875,7 +895,6 @@ browserTestStreams.on("connection", (socket, request) => {
         .returning({ id: schema.calls.id });
       if (!call) throw new Error("Browser test call insert returned no row");
 
-      await redis.set("call-route:" + call.id, BROWSER_TEST_TENANT_ID, "EX", 60 * 60);
       session = await loadCallSession(call.id);
 
       const persistTranscript = async (event: TranscriptEvent) => {
@@ -906,11 +925,11 @@ browserTestStreams.on("connection", (socket, request) => {
           .update(schema.calls)
           .set({ status: "completed", endedAt, durationSeconds, updatedAt: endedAt })
           .where(scoped.where(schema.calls, eq(schema.calls.id, session.callId)));
-        await summaryQueue.add(
-          "call:summarize",
-          { callId: session.callId, tenantId: BROWSER_TEST_TENANT_ID, callerId: session.caller.id },
-          { removeOnComplete: 100, removeOnFail: 100 }
-        );
+        scheduleCallSummary({
+          callId: session.callId,
+          tenantId: BROWSER_TEST_TENANT_ID,
+          callerId: session.caller.id
+        });
       };
 
       bridge.onAudioOut((audio) => {
@@ -977,12 +996,7 @@ async function shutdown(signal: string): Promise<void> {
   shuttingDown = true;
   app.log.info({ signal }, "Voice service shutting down");
   mediaStreams.clients.forEach((client) => client.close(1001, "Server shutdown"));
-  await Promise.allSettled([
-    onboardingWorker.close(),
-    summaryWorker.close(),
-    summaryQueue.close(),
-    app.close()
-  ]);
+  await Promise.allSettled([onboardingWorker.close(), app.close()]);
   redis.disconnect();
 }
 
@@ -993,11 +1007,7 @@ try {
   await app.listen({ host: "0.0.0.0", port });
 } catch (error) {
   app.log.error(error);
-  await Promise.allSettled([
-    onboardingWorker.close(),
-    summaryWorker.close(),
-    summaryQueue.close()
-  ]);
+  await Promise.allSettled([onboardingWorker.close()]);
   redis.disconnect();
   process.exit(1);
 }

@@ -1,4 +1,3 @@
-import { Worker, type Job } from "bullmq";
 import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { createDatabase, schema, withTenant } from "@recepto/db";
@@ -11,6 +10,8 @@ const summaryJobSchema = z.object({
   tenantId: z.string().uuid(),
   callerId: z.string().uuid()
 });
+
+export type SummaryJobData = z.infer<typeof summaryJobSchema>;
 
 export interface SummaryLogger {
   info(values: Record<string, unknown>, message: string): void;
@@ -166,14 +167,17 @@ async function summarizeWithClaude(
   }
 }
 
-export function startCallSummaryWorker(redisUrl: string, logger: SummaryLogger) {
+/**
+ * Runs call summarization directly in-process (no queue). Returns a function
+ * that summarizes one finished call; callers should fire-and-forget it so call
+ * finalization is never blocked on the summary model.
+ */
+export function createCallSummarizer(logger: SummaryLogger) {
   const env = validateEnv(process.env);
   const db = createDatabase(env.DATABASE_URL);
 
-  const worker = new Worker(
-    "call-summarize",
-    async (job: Job) => {
-      const data = summaryJobSchema.parse(job.data);
+  return async (input: SummaryJobData): Promise<void> => {
+      const data = summaryJobSchema.parse(input);
 
       if (!isConfigured(env.ANTHROPIC_API_KEY) || !isConfigured(env.CLOUDFLARE_ACCOUNT_ID)) {
         logger.info(
@@ -329,12 +333,5 @@ export function startCallSummaryWorker(redisUrl: string, logger: SummaryLogger) 
         },
         "Call summarized into durable memory"
       );
-    },
-    { connection: { url: redisUrl }, concurrency: 2 }
-  );
-
-  worker.on("error", (error) => {
-    logger.error({ error: error.message }, "Call summary worker error");
-  });
-  return worker;
+  };
 }

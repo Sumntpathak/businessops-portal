@@ -1,5 +1,4 @@
-import { Worker, type Job } from "bullmq";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lt } from "drizzle-orm";
 import { z } from "zod";
 import { createDatabase, schema, withTenant } from "@recepto/db";
 import { validateEnv } from "@recepto/shared/env";
@@ -12,10 +11,20 @@ import {
 import { claudeDistill, type DistilledDraft } from "./distill.js";
 
 const jobDataSchema = z.object({
+  jobId: z.string().uuid(),
   tenantId: z.string().uuid(),
   url: z.string().url(),
   hint: z.string().max(240)
 });
+
+/** How often the poller scans for queued onboarding jobs. */
+const POLL_INTERVAL_MS = 15_000;
+
+/**
+ * A job still mid-flight after this long is assumed abandoned (process crash or
+ * deploy) and is returned to the queue, so onboarding never dead-ends silently.
+ */
+const STALE_JOB_MS = 15 * 60 * 1000;
 
 export interface WorkerLogger {
   info(values: Record<string, unknown>, message: string): void;
@@ -30,10 +39,8 @@ export function startOnboardingWorker(logger: WorkerLogger) {
   const env = validateEnv(process.env);
   const db = createDatabase(env.DATABASE_URL);
 
-  const worker = new Worker(
-    "onboarding",
-    async (bullJob: Job) => {
-      const data = jobDataSchema.parse(bullJob.data);
+  const processJob = async (input: z.infer<typeof jobDataSchema>): Promise<void> => {
+      const data = jobDataSchema.parse(input);
       const scoped = withTenant(db, data.tenantId);
       let onboardingJobId: string | undefined;
 
@@ -57,24 +64,15 @@ export function startOnboardingWorker(logger: WorkerLogger) {
           throw new Error("Onboarding tenant was not found");
         }
 
-        const [onboardingJob] = await db
-          .select({
-            id: schema.onboardingJobs.id
-          })
-          .from(schema.onboardingJobs)
-          .where(scoped.where(schema.onboardingJobs))
-          .orderBy(desc(schema.onboardingJobs.createdAt))
-          .limit(1);
-
-        if (!onboardingJob) {
-          throw new Error("Onboarding database job was not found");
-        }
-
+        // Always operate on the exact row claimNextJob locked. Re-deriving it by
+        // "latest row for this tenant" would let a second job row for the same
+        // tenant be processed while the claimed one stayed stuck in 'crawling'.
+        const onboardingJob = { id: data.jobId };
         onboardingJobId = onboardingJob.id;
 
         await db
           .update(schema.onboardingJobs)
-          .set({ status: "crawling", error: null, updatedAt: new Date() })
+          .set({ error: null, updatedAt: new Date() })
           .where(
             scoped.where(
               schema.onboardingJobs,
@@ -301,18 +299,89 @@ export function startOnboardingWorker(logger: WorkerLogger) {
         );
         throw error;
       }
-    },
-    {
-      connection: { url: env.REDIS_URL },
-      concurrency: 2
+  };
+
+  // Queued jobs are claimed straight from Postgres. The conditional update is the
+  // lock: only the poller that flips 'queued' -> 'crawling' gets the row back, so
+  // concurrent pollers can never process the same job twice.
+  const claimNextJob = async (): Promise<z.infer<typeof jobDataSchema> | undefined> => {
+    const [queued] = await db
+      .select({
+        id: schema.onboardingJobs.id,
+        tenantId: schema.onboardingJobs.tenantId,
+        inputUrl: schema.onboardingJobs.inputUrl,
+        inputHint: schema.onboardingJobs.inputHint
+      })
+      .from(schema.onboardingJobs)
+      .where(eq(schema.onboardingJobs.status, "queued"))
+      .orderBy(desc(schema.onboardingJobs.createdAt))
+      .limit(1);
+    if (!queued) return undefined;
+
+    const claimed = await db
+      .update(schema.onboardingJobs)
+      .set({ status: "crawling", updatedAt: new Date() })
+      .where(
+        and(
+          eq(schema.onboardingJobs.id, queued.id),
+          eq(schema.onboardingJobs.status, "queued")
+        )
+      )
+      .returning({ id: schema.onboardingJobs.id });
+    if (claimed.length === 0) return undefined;
+
+    return {
+      jobId: queued.id,
+      tenantId: queued.tenantId,
+      url: queued.inputUrl,
+      hint: queued.inputHint
+    };
+  };
+
+  // A crashed or redeployed process leaves jobs mid-flight with no terminal
+  // status; nothing would ever pick them up again since only 'queued' is polled.
+  // Returning them to 'queued' makes onboarding self-healing across restarts.
+  const requeueStaleJobs = async (): Promise<void> => {
+    const cutoff = new Date(Date.now() - STALE_JOB_MS);
+    const requeued = await db
+      .update(schema.onboardingJobs)
+      .set({ status: "queued", updatedAt: new Date() })
+      .where(
+        and(
+          inArray(schema.onboardingJobs.status, ["crawling", "distilling"]),
+          lt(schema.onboardingJobs.updatedAt, cutoff)
+        )
+      )
+      .returning({ id: schema.onboardingJobs.id });
+    if (requeued.length > 0) {
+      logger.info({ count: requeued.length }, "Requeued stale onboarding jobs");
     }
-  );
+  };
 
-  worker.on("error", (error) => {
-    logger.error({ error: errorMessage(error) }, "Onboarding worker error");
-  });
+  let stopped = false;
+  let timer: NodeJS.Timeout | undefined;
 
-  return worker;
+  const tick = async (): Promise<void> => {
+    if (stopped) return;
+    try {
+      await requeueStaleJobs();
+      const job = await claimNextJob();
+      if (job) await processJob(job);
+    } catch (error) {
+      logger.error({ error: errorMessage(error) }, "Onboarding poll failed");
+    } finally {
+      if (!stopped) timer = setTimeout(() => void tick(), POLL_INTERVAL_MS);
+    }
+  };
+
+  timer = setTimeout(() => void tick(), POLL_INTERVAL_MS);
+
+  return {
+    async close(): Promise<void> {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    }
+  };
 }
 
 export type { CrawledPage };
