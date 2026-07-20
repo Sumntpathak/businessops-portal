@@ -125,7 +125,7 @@ const REALTIME_TOOLS = [
     type: "function",
     name: "end_call",
     description:
-      "End the phone call. Call this ONLY after the caller has confirmed there is nothing else they need — e.g. right after they say 'no that's all' / 'that's it, thanks' following a completed booking, answered question, or message taken. Say a short natural goodbye in your reply FIRST, then call this tool.",
+      "End the phone call. Call this when the caller confirms there is nothing else they need ('no that's all', 'that's it, thanks'), OR whenever the caller says goodbye or clearly wants to end the call ('bye', 'have a good day', 'not now', 'I'll call back later') — even if you have not collected their name or handled any request. Say a short natural goodbye in your reply FIRST, then call this tool.",
     parameters: { type: "object", properties: {} }
   }
 ] as const;
@@ -283,7 +283,8 @@ export function buildInstructions(session: CallSession): string {
     "== ENDING THE CALL ==",
     "- After you finish handling the caller's request (booking confirmed, question answered, message taken), ask if there's anything else — do not assume the call is over.",
     "- Only when the caller clearly confirms there is nothing else (e.g. 'no that's all', 'that's it, thanks', 'no I'm good') do you close the call: say one short, warm goodbye line, then call end_call.",
-    "- Never call end_call while the caller is mid-request, has an unanswered question, or has not yet confirmed they're done. Never call it just because there's a pause — silence is not a goodbye.",
+    "- If the caller says goodbye or clearly wants to end the call at ANY point ('bye', 'have a good day', 'thanks, that's all', 'not now', 'I'll call back later', 'not interested') — even mid-intake, even if you don't have their name — do NOT ask anything further. A caller's goodbye ALWAYS outranks the identity and intake rules above. Say one short, warm goodbye line, then call end_call immediately.",
+    "- Never call end_call while the caller is mid-request or has an unanswered question. Never call it just because there's a pause — silence is not a goodbye.",
     "- Never call end_call more than once in a call.",
     "",
     "== SAFETY ==",

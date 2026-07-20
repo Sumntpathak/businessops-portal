@@ -65,4 +65,11 @@ describe("realtime caller profile instructions", () => {
     assert.match(instructions, /Never call end_call while the caller is mid-request/);
     assert.match(instructions, /Never call end_call more than once/);
   });
+
+  it("instructs hanging up immediately when the caller says goodbye, even without a name", () => {
+    const instructions = buildInstructions(session);
+    assert.match(instructions, /says goodbye or clearly wants to end the call at ANY point/);
+    assert.match(instructions, /even if you don't have their name/);
+    assert.match(instructions, /goodbye ALWAYS outranks the identity and intake rules/);
+  });
 });
