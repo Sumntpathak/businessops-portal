@@ -164,60 +164,53 @@ export class GeminiLiveBridge implements AIBridge {
   async start(session: CallSession): Promise<void> {
     this.callSession = session;
 
-    this.session = await new Promise<Session>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("Gemini Live connection timed out")), 10_000);
-      let opened: Session | undefined;
-
-      this.client.live
-        .connect({
-          model: this.options.model,
-          config: {
-            responseModalities: [Modality.AUDIO],
-            systemInstruction: { parts: [{ text: buildInstructions(session) }] },
-            tools: [{ functionDeclarations: REALTIME_TOOLS }],
-            speechConfig: {
-              voiceConfig: { prebuiltVoiceConfig: { voiceName: this.options.voice ?? "Puck" } }
-            },
-            inputAudioTranscription: {},
-            outputAudioTranscription: {},
-            // Barge-in ("start of activity interrupts") is the SDK default; left
-            // implicit here rather than importing ActivityHandling for one value.
-            realtimeInputConfig: {
-              automaticActivityDetection: {}
-            }
-          },
-          callbacks: {
-            onopen: () => {
-              clearTimeout(timeout);
-              if (opened) resolve(opened);
-            },
-            onmessage: (message: LiveServerMessage) => this.handleServerMessage(message),
-            onerror: (event) => {
-              this.options.logger?.error(
-                { callId: this.callSession?.callId, error: String(event?.message ?? event) },
-                "Gemini Live WebSocket error"
-              );
-            },
-            onclose: (event) => {
-              this.ready = false;
-              if (!this.stopped) {
-                this.options.logger?.info(
-                  { callId: this.callSession?.callId, reason: event?.reason },
-                  "Gemini Live WebSocket closed"
-                );
-                this.closed?.();
-              }
-            }
+    // client.live.connect() resolves only once the session is genuinely ready
+    // (after setupComplete) — no separate onopen-driven promise needed.
+    const connectPromise = this.client.live.connect({
+      model: this.options.model,
+      config: {
+        responseModalities: [Modality.AUDIO],
+        systemInstruction: { parts: [{ text: buildInstructions(session) }] },
+        tools: [{ functionDeclarations: REALTIME_TOOLS }],
+        speechConfig: {
+          voiceConfig: { prebuiltVoiceConfig: { voiceName: this.options.voice ?? "Puck" } }
+        },
+        inputAudioTranscription: {},
+        outputAudioTranscription: {},
+        // Barge-in ("start of activity interrupts") is the SDK default; left
+        // implicit here rather than importing ActivityHandling for one value.
+        realtimeInputConfig: {
+          automaticActivityDetection: {}
+        }
+      },
+      callbacks: {
+        onopen: () => {
+          this.options.logger?.info({ callId: this.callSession?.callId }, "Gemini Live WebSocket open");
+        },
+        onmessage: (message: LiveServerMessage) => this.handleServerMessage(message),
+        onerror: (event) => {
+          this.options.logger?.error(
+            { callId: this.callSession?.callId, error: String(event?.message ?? event) },
+            "Gemini Live WebSocket error"
+          );
+        },
+        onclose: (event) => {
+          this.ready = false;
+          if (!this.stopped) {
+            this.options.logger?.info(
+              { callId: this.callSession?.callId, reason: event?.reason },
+              "Gemini Live WebSocket closed"
+            );
+            this.closed?.();
           }
-        })
-        .then((connected) => {
-          opened = connected;
-        })
-        .catch((error) => {
-          clearTimeout(timeout);
-          reject(error instanceof Error ? error : new Error(String(error)));
-        });
+        }
+      }
     });
+
+    const timeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("Gemini Live connection timed out")), 10_000)
+    );
+    this.session = await Promise.race([connectPromise, timeout]);
 
     this.session.sendClientContent({
       turns: [
