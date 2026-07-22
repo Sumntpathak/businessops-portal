@@ -31,7 +31,12 @@ export const envSchema = z.object({
   // us-central1/us-east4 both 404 on every Live model tried, while
   // gemini-live-2.5-flash only resolves under location=global.
   GOOGLE_CLOUD_LOCATION: z.string().default("global"),
+  // File-path form of ADC — works when the host supports mounting secret
+  // files (e.g. Render's "Secret Files"). On hosts without that feature, set
+  // GOOGLE_APPLICATION_CREDENTIALS_JSON (the raw JSON contents) instead; the
+  // gemini-live construction site prefers the inline JSON when both are set.
   GOOGLE_APPLICATION_CREDENTIALS: z.string().min(1).optional(),
+  GOOGLE_APPLICATION_CREDENTIALS_JSON: z.string().min(1).optional(),
   // Confirmed via a live smoke test (audio streamed, turnComplete fired) against
   // this project on 2026-07-23. Vertex's Live model catalog is preview-stage and
   // moves fast — re-verify if this starts 404ing.

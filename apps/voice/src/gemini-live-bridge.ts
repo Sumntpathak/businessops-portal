@@ -32,6 +32,15 @@ export interface GeminiLiveBridgeOptions {
   location: string;
   model: string;
   voice?: string;
+  /**
+   * Parsed GCP service-account JSON (the JWTInput shape: client_email,
+   * private_key, etc). Used when the credentials are supplied inline via an
+   * env var rather than a file path — e.g. on hosts without secret-file
+   * support, where GOOGLE_APPLICATION_CREDENTIALS can't point at a mounted
+   * file. When omitted, falls back to standard Application Default
+   * Credentials (GOOGLE_APPLICATION_CREDENTIALS file path, workload identity, etc).
+   */
+  credentials?: Record<string, unknown>;
   logger?: {
     info(values: Record<string, unknown>, message: string): void;
     error(values: Record<string, unknown>, message: string): void;
@@ -147,7 +156,8 @@ export class GeminiLiveBridge implements AIBridge {
     this.client = new GoogleGenAI({
       vertexai: true,
       project: options.project,
-      location: options.location
+      location: options.location,
+      ...(options.credentials ? { googleAuthOptions: { credentials: options.credentials } } : {})
     });
   }
 

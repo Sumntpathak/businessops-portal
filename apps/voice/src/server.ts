@@ -40,6 +40,22 @@ function requireEnv(value: string | undefined, name: string): string {
   return value;
 }
 
+/**
+ * Parses GOOGLE_APPLICATION_CREDENTIALS_JSON for hosts (e.g. Render without
+ * Secret Files) that can't mount a credentials file for
+ * GOOGLE_APPLICATION_CREDENTIALS to point at. Returns undefined when unset so
+ * the caller falls back to standard file-path ADC.
+ */
+function parseInlineGoogleCredentials(): Record<string, unknown> | undefined {
+  const raw = env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
+  if (!raw) return undefined;
+  try {
+    return JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    throw new Error("GOOGLE_APPLICATION_CREDENTIALS_JSON is not valid JSON");
+  }
+}
+
 const db = createDatabase(env.DATABASE_URL);
 // Redis is now optional: it backs only best-effort webhook dedupe, so a failed
 // connection must never crash the process or block a call.
@@ -678,6 +694,7 @@ mediaStreams.on("connection", (socket, request) => {
           project: requireEnv(env.GOOGLE_CLOUD_PROJECT, "GOOGLE_CLOUD_PROJECT"),
           location: env.GOOGLE_CLOUD_LOCATION,
           model: env.GEMINI_LIVE_MODEL,
+          credentials: parseInlineGoogleCredentials(),
           logger: app.log
         })
       : new AzureRealtimeBridge({
