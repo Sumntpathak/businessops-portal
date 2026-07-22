@@ -11,8 +11,9 @@ import {
 } from "@recepto/calendar";
 import { createDatabase, decryptTwilioAuthToken, schema, withTenant } from "@recepto/db";
 import { validateEnv } from "@recepto/shared/env";
-import type { TranscriptEvent } from "./ai-bridge.js";
+import type { AIBridge, TranscriptEvent } from "./ai-bridge.js";
 import { AzureRealtimeBridge, buildSessionConfig } from "./azure-realtime-bridge.js";
+import { GeminiLiveBridge } from "./gemini-live-bridge.js";
 import type { CallSession } from "./call-session.js";
 import { deriveCallerGeo } from "./caller-profile.js";
 import { createCallSummarizer } from "./call-summary-worker.js";
@@ -31,6 +32,14 @@ import {
 } from "./tools.js";
 
 const env = validateEnv(process.env);
+
+function requireEnv(value: string | undefined, name: string): string {
+  if (!value) {
+    throw new Error(`${name} is required when VOICE_PROVIDER=gemini-live`);
+  }
+  return value;
+}
+
 const db = createDatabase(env.DATABASE_URL);
 // Redis is now optional: it backs only best-effort webhook dedupe, so a failed
 // connection must never crash the process or block a call.
@@ -663,12 +672,20 @@ mediaStreams.on("connection", (socket, request) => {
     accountSid: env.TWILIO_ACCOUNT_SID,
     authToken: env.TWILIO_AUTH_TOKEN
   });
-  const bridge = new AzureRealtimeBridge({
-    url: env.AZURE_REALTIME_URL,
-    apiKey: env.AZURE_REALTIME_KEY,
-    model: env.AZURE_REALTIME_MODEL,
-    logger: app.log
-  });
+  const bridge: AIBridge =
+    env.VOICE_PROVIDER === "gemini-live"
+      ? new GeminiLiveBridge({
+          project: requireEnv(env.GOOGLE_CLOUD_PROJECT, "GOOGLE_CLOUD_PROJECT"),
+          location: env.GOOGLE_CLOUD_LOCATION,
+          model: env.GEMINI_LIVE_MODEL,
+          logger: app.log
+        })
+      : new AzureRealtimeBridge({
+          url: env.AZURE_REALTIME_URL,
+          apiKey: env.AZURE_REALTIME_KEY,
+          model: env.AZURE_REALTIME_MODEL,
+          logger: app.log
+        });
   let session: CallSession | undefined;
   let transcriptSeq = 0;
   let frameCount = 0;

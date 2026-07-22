@@ -12,9 +12,11 @@
     },
     "dependencies": {
         "@fastify/formbody": "^7.4.0",
+        "@google/genai": "^2.13.0",
         "@recepto/calendar": "workspace:*",
         "@recepto/db": "workspace:*",
         "@recepto/shared": "workspace:*",
+        "alawmulaw": "^6.0.0",
         "bullmq": "^5.79.2",
         "cheerio": "^1.1.2",
         "drizzle-orm": "0.38.4",

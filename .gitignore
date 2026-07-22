@@ -20,6 +20,11 @@ next-env.d.ts
 *.key
 *.crt
 
+# GCP service account credentials (Vertex AI auth)
+*serviceaccount*.json
+*service-account*.json
+gcp-*.json
+
 # Drizzle local output and logs
 *.log
 npm-debug.log*
