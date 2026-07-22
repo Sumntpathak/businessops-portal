@@ -173,7 +173,7 @@ export class GeminiLiveBridge implements AIBridge {
         systemInstruction: { parts: [{ text: buildInstructions(session) }] },
         tools: [{ functionDeclarations: REALTIME_TOOLS }],
         speechConfig: {
-          voiceConfig: { prebuiltVoiceConfig: { voiceName: this.options.voice ?? "Puck" } }
+          voiceConfig: { prebuiltVoiceConfig: { voiceName: this.options.voice ?? "Kore" } }
         },
         inputAudioTranscription: {},
         outputAudioTranscription: {},
