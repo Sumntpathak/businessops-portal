@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { REALTIME_TOOLS } from "./gemini-live-bridge.js";
+import { CLOSING_QUESTION_PATTERN, REALTIME_TOOLS } from "./gemini-live-bridge.js";
 
 const AZURE_TOOL_NAMES = [
   "check_availability",
@@ -38,5 +38,21 @@ describe("Gemini Live tool declarations", () => {
       const schema = tool?.parametersJsonSchema as { properties?: Record<string, unknown> } | undefined;
       assert.deepEqual(schema?.properties, {});
     }
+  });
+});
+
+describe("closing-question detection for the silence timer", () => {
+  it("matches the agent's English closing question", () => {
+    assert.ok(CLOSING_QUESTION_PATTERN.test("Is there anything else I can help you with today?"));
+  });
+
+  it("matches Hinglish/Hindi closing phrasing", () => {
+    assert.ok(CLOSING_QUESTION_PATTERN.test("Aur kuch aur chahiye aapko?"));
+    assert.ok(CLOSING_QUESTION_PATTERN.test("क्या आपको कुछ और चाहिए?"));
+  });
+
+  it("does not match an ordinary mid-conversation turn", () => {
+    assert.ok(!CLOSING_QUESTION_PATTERN.test("Sure, we offer student and graduate visa consultations."));
+    assert.ok(!CLOSING_QUESTION_PATTERN.test("One moment, let me check availability for you."));
   });
 });

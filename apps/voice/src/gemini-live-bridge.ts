@@ -1,4 +1,4 @@
-import { GoogleGenAI, Modality } from "@google/genai";
+import { EndSensitivity, GoogleGenAI, Modality } from "@google/genai";
 import type {
   FunctionCall,
   FunctionDeclaration,
@@ -20,12 +20,70 @@ const INPUT_SAMPLE_RATE = 16_000;
 const OUTPUT_SAMPLE_RATE = 24_000;
 
 /**
+ * BCP-47 codes for Gemini Live's transcription languageHints. Hindi maps to
+ * hi-IN specifically (not the bare "hi") per direct request — this business's
+ * callers are Indian, and India is the intended locale for these languages.
+ * Anything not listed falls back to auto-detect (no hints sent).
+ */
+const TRANSCRIBE_LANGUAGE_CODES: Record<string, string> = {
+  english: "en-IN",
+  hindi: "hi-IN",
+  punjabi: "pa-IN",
+  tamil: "ta-IN",
+  telugu: "te-IN",
+  bengali: "bn-IN",
+  marathi: "mr-IN",
+  gujarati: "gu-IN",
+  kannada: "kn-IN",
+  malayalam: "ml-IN",
+  urdu: "ur-IN",
+  spanish: "es-ES",
+  french: "fr-FR",
+  german: "de-DE",
+  arabic: "ar-SA",
+  mandarin: "zh-CN",
+  chinese: "zh-CN",
+  japanese: "ja-JP"
+};
+
+/**
+ * Anchors transcription to the tenant's configured languages, same intent as
+ * transcriptionConfig() in azure-realtime-bridge.ts — without hints the
+ * transcriber guesses per utterance and can write Hindi speech in the wrong
+ * script or drift to an unrelated language mid-call.
+ */
+function languageHintCodes(languages: string[]): string[] {
+  return languages
+    .map((language) => TRANSCRIBE_LANGUAGE_CODES[language.toLowerCase()])
+    .filter((code): code is string => Boolean(code));
+}
+
+/**
  * Grace period after `turnComplete` before actually hanging up. Gemini's own
  * turnComplete already accounts for its internal realtime-playback wait (see
  * LiveServerContent docs), but that covers Gemini's model of playback, not the
  * downstream Twilio leg's actual buffered audio reaching the phone line.
  */
 const END_CALL_DRAIN_MS = 800;
+
+/**
+ * Silence-timeout: if the caller says nothing for this long after the agent
+ * finishes a turn, prompt once ("anything else?"). If still silent after
+ * SILENCE_HANGUP_MS more, end the call. Model-driven end_call already covers
+ * the caller saying goodbye; this covers the caller just going quiet and
+ * never responding, which end_call alone has no way to detect.
+ */
+const SILENCE_PROMPT_MS = 2_000;
+const SILENCE_HANGUP_MS = 3_000;
+
+/**
+ * Matches the agent's closing "anything else?" question (agent.md's ENDING
+ * THE CALL rule) in English or Hinglish/Hindi phrasing, so the silence timer
+ * only arms once the conversation is actually winding down — not after every
+ * ordinary mid-call turn, which would misfire on normal thinking pauses.
+ */
+export const CLOSING_QUESTION_PATTERN =
+  /anything else|kuch aur|कुछ और|kuch and chahiye|else i can help|help you with today/i;
 
 export interface GeminiLiveBridgeOptions {
   project: string;
@@ -151,6 +209,8 @@ export class GeminiLiveBridge implements AIBridge {
   private readonly handledToolCalls = new Set<string>();
   private ready = false;
   private stopped = false;
+  private silenceTimer?: NodeJS.Timeout;
+  private currentAgentTurnText = "";
 
   constructor(private readonly options: GeminiLiveBridgeOptions) {
     this.client = new GoogleGenAI({
@@ -164,6 +224,9 @@ export class GeminiLiveBridge implements AIBridge {
   async start(session: CallSession): Promise<void> {
     this.callSession = session;
 
+    const hints = languageHintCodes(session.agent.languages);
+    const transcriptionConfig = hints.length ? { languageHints: { languageCodes: hints } } : {};
+
     // client.live.connect() resolves only once the session is genuinely ready
     // (after setupComplete) — no separate onopen-driven promise needed.
     const connectPromise = this.client.live.connect({
@@ -175,12 +238,16 @@ export class GeminiLiveBridge implements AIBridge {
         speechConfig: {
           voiceConfig: { prebuiltVoiceConfig: { voiceName: this.options.voice ?? "Kore" } }
         },
-        inputAudioTranscription: {},
+        inputAudioTranscription: transcriptionConfig,
         outputAudioTranscription: {},
-        // Barge-in ("start of activity interrupts") is the SDK default; left
-        // implicit here rather than importing ActivityHandling for one value.
+        // Gemini Live defaults to END_SENSITIVITY_HIGH ("ends speech more
+        // often" per the SDK's own docs) — the likely cause of reported
+        // mid-sentence audio cutoffs and getting stuck around tool-call
+        // pauses. LOW makes end-of-speech detection less trigger-happy.
         realtimeInputConfig: {
-          automaticActivityDetection: {}
+          automaticActivityDetection: {
+            endOfSpeechSensitivity: EndSensitivity.END_SENSITIVITY_LOW
+          }
         }
       },
       callbacks: {
@@ -273,6 +340,7 @@ export class GeminiLiveBridge implements AIBridge {
     this.stopped = true;
     this.ready = false;
     this.pendingAudio.length = 0;
+    this.clearSilenceTimer();
     this.session?.close();
     this.session = undefined;
     this.audioOut = undefined;
@@ -296,6 +364,7 @@ export class GeminiLiveBridge implements AIBridge {
         "Gemini Live reported interrupted (barge-in) — flushing playback"
       );
       this.bargeIn?.();
+      this.clearSilenceTimer();
     }
 
     const audioBase64 = message.data;
@@ -304,10 +373,16 @@ export class GeminiLiveBridge implements AIBridge {
     }
 
     const inputText = content?.inputTranscription?.text?.trim();
-    if (inputText) this.transcript?.({ role: "caller", content: inputText, at: new Date() });
+    if (inputText) {
+      this.transcript?.({ role: "caller", content: inputText, at: new Date() });
+      this.clearSilenceTimer();
+    }
 
     const outputText = content?.outputTranscription?.text?.trim();
-    if (outputText) this.transcript?.({ role: "agent", content: outputText, at: new Date() });
+    if (outputText) {
+      this.transcript?.({ role: "agent", content: outputText, at: new Date() });
+      this.currentAgentTurnText += ` ${outputText}`;
+    }
 
     for (const call of message.toolCall?.functionCalls ?? []) {
       void this.executeToolCall(call);
@@ -318,8 +393,46 @@ export class GeminiLiveBridge implements AIBridge {
     // downstream Twilio leg before actually disconnecting.
     if (content?.turnComplete && this.endCallRequested) {
       this.endCallRequested = false;
+      this.clearSilenceTimer();
       setTimeout(() => this.endCall?.(), END_CALL_DRAIN_MS);
+    } else if (content?.turnComplete) {
+      // Only start watching for silence once the agent has asked its closing
+      // "anything else?" question (per agent.md's ENDING THE CALL rule) —
+      // arming this after every turn would fire during completely normal
+      // mid-conversation thinking pauses, not just an abandoned call.
+      if (CLOSING_QUESTION_PATTERN.test(this.currentAgentTurnText)) {
+        this.armSilenceTimer();
+      }
+      this.currentAgentTurnText = "";
     }
+  }
+
+  private clearSilenceTimer(): void {
+    if (this.silenceTimer) clearTimeout(this.silenceTimer);
+    this.silenceTimer = undefined;
+  }
+
+  private armSilenceTimer(): void {
+    this.clearSilenceTimer();
+    this.silenceTimer = setTimeout(() => {
+      if (this.endCallRequested || this.stopped) return;
+      this.options.logger?.info(
+        { callId: this.callSession?.callId },
+        "Caller silent after agent turn — prompting once"
+      );
+      this.session?.sendClientContent({
+        turns: [{ role: "user", parts: [{ text: "[SYSTEM: The caller has gone silent. Briefly check if they are still there or need anything else.]" }] }],
+        turnComplete: true
+      });
+      this.silenceTimer = setTimeout(() => {
+        if (this.endCallRequested || this.stopped) return;
+        this.options.logger?.info(
+          { callId: this.callSession?.callId },
+          "Caller still silent after prompt — ending call"
+        );
+        this.endCall?.();
+      }, SILENCE_HANGUP_MS);
+    }, SILENCE_PROMPT_MS);
   }
 
   private async executeToolCall(call: FunctionCall): Promise<void> {
