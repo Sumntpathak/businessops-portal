@@ -291,6 +291,10 @@ export class GeminiLiveBridge implements AIBridge {
     const content = message.serverContent;
 
     if (content?.interrupted) {
+      this.options.logger?.info(
+        { callId: this.callSession?.callId },
+        "Gemini Live reported interrupted (barge-in) — flushing playback"
+      );
       this.bargeIn?.();
     }
 
