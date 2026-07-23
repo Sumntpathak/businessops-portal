@@ -13,10 +13,35 @@ export function pcm16ToMulaw(samples: Int16Array): Buffer {
 }
 
 /**
- * Linear-interpolation resample between two sample rates. Not a sinc/polyphase
- * filter — adequate for phone-quality voice audio, and a single resample pass
- * (rather than cascading through an intermediate rate) minimizes compounding
- * interpolation error in either direction.
+ * One-pole low-pass IIR filter, applied before decimation to attenuate
+ * content above the target Nyquist frequency. Without this, downsampling by
+ * simple interpolation aliases high frequencies back down as audible
+ * muffling/robotic artifacts — the fix for exactly that symptom reported
+ * after shipping plain linear resampling.
+ */
+function lowPassFilter(samples: Int16Array, sampleRate: number, cutoffHz: number): Int16Array {
+  const rc = 1 / (2 * Math.PI * cutoffHz);
+  const dt = 1 / sampleRate;
+  const alpha = dt / (rc + dt);
+
+  const output = new Int16Array(samples.length);
+  let previous = samples[0] ?? 0;
+  output[0] = previous;
+  for (let i = 1; i < samples.length; i += 1) {
+    const current = samples[i] ?? 0;
+    const filtered = previous + alpha * (current - previous);
+    output[i] = Math.round(filtered);
+    previous = filtered;
+  }
+  return output;
+}
+
+/**
+ * Linear-interpolation resample between two sample rates, with an
+ * anti-aliasing low-pass pass first when downsampling (cutoff set just under
+ * the target Nyquist frequency). Not a full sinc/polyphase filter, but
+ * sufficient for phone-quality voice audio and far better than interpolating
+ * raw full-bandwidth samples straight down.
  */
 export function resampleLinear(
   samples: Int16Array,
@@ -25,6 +50,11 @@ export function resampleLinear(
 ): Int16Array {
   if (fromRate === toRate || samples.length === 0) return samples;
 
+  const isDownsampling = toRate < fromRate;
+  const source = isDownsampling
+    ? lowPassFilter(samples, fromRate, toRate / 2)
+    : samples;
+
   const ratio = fromRate / toRate;
   const outLength = Math.max(1, Math.round(samples.length / ratio));
   const output = new Int16Array(outLength);
@@ -32,10 +62,10 @@ export function resampleLinear(
   for (let i = 0; i < outLength; i += 1) {
     const sourceIndex = i * ratio;
     const lower = Math.floor(sourceIndex);
-    const upper = Math.min(lower + 1, samples.length - 1);
+    const upper = Math.min(lower + 1, source.length - 1);
     const weight = sourceIndex - lower;
-    const lowerSample = samples[lower] ?? 0;
-    const upperSample = samples[upper] ?? lowerSample;
+    const lowerSample = source[lower] ?? 0;
+    const upperSample = source[upper] ?? lowerSample;
     output[i] = Math.round(lowerSample * (1 - weight) + upperSample * weight);
   }
 

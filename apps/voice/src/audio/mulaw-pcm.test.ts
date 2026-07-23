@@ -57,6 +57,54 @@ describe("resampleLinear", () => {
     assert.equal(result.length, 4);
     assert.equal(result[0], 0);
   });
+
+  it("attenuates content above the target Nyquist frequency when downsampling", () => {
+    // 3.5kHz tone at 24kHz — well above 8kHz's 4kHz Nyquist limit. Naive
+    // interpolation aliases this straight through; the anti-aliasing low-pass
+    // pass should measurably attenuate it before decimation.
+    const sourceRate = 24_000;
+    const toneHz = 3_500;
+    const amplitude = 10_000;
+    const durationSamples = 2_400;
+    const tone = new Int16Array(durationSamples);
+    for (let i = 0; i < durationSamples; i += 1) {
+      tone[i] = Math.round(amplitude * Math.sin((2 * Math.PI * toneHz * i) / sourceRate));
+    }
+
+    const downsampled = resampleLinear(tone, sourceRate, 8_000);
+    const rms = (values: Int16Array) =>
+      Math.sqrt(Array.from(values).reduce((sum, v) => sum + v * v, 0) / values.length);
+
+    const inputRms = rms(tone);
+    const outputRms = rms(downsampled);
+    assert.ok(
+      outputRms < inputRms * 0.7,
+      `expected attenuation of a near-Nyquist tone, got input RMS ${inputRms} -> output RMS ${outputRms}`
+    );
+  });
+
+  it("passes a low-frequency tone through downsampling with little attenuation", () => {
+    // 300Hz tone — well within 8kHz's passband — should survive largely intact.
+    const sourceRate = 24_000;
+    const toneHz = 300;
+    const amplitude = 10_000;
+    const durationSamples = 2_400;
+    const tone = new Int16Array(durationSamples);
+    for (let i = 0; i < durationSamples; i += 1) {
+      tone[i] = Math.round(amplitude * Math.sin((2 * Math.PI * toneHz * i) / sourceRate));
+    }
+
+    const downsampled = resampleLinear(tone, sourceRate, 8_000);
+    const rms = (values: Int16Array) =>
+      Math.sqrt(Array.from(values).reduce((sum, v) => sum + v * v, 0) / values.length);
+
+    const inputRms = rms(tone);
+    const outputRms = rms(downsampled);
+    assert.ok(
+      outputRms > inputRms * 0.8,
+      `expected a low-frequency tone to survive downsampling, got input RMS ${inputRms} -> output RMS ${outputRms}`
+    );
+  });
 });
 
 describe("base64 pcm helpers", () => {
