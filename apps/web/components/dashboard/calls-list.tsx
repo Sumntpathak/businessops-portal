@@ -19,6 +19,8 @@ export interface CallListItem {
   status: string;
   summary: string | null;
   callNumber: number;
+  transferredToStaffName: string | null;
+  recordingUrl: string | null;
 }
 
 export interface CallerGroup {
@@ -79,6 +81,12 @@ function CallRow({ call, showNumber }: { call: CallListItem; showNumber: boolean
               ? "Call in progress — transcript is streaming live."
               : "No summary yet for this call.")}
         </p>
+        {call.transferredToStaffName && (
+          <p className="mt-1 text-xs text-muted-foreground">
+            Transferred to {call.transferredToStaffName}
+            {call.recordingUrl && " · recorded"}
+          </p>
+        )}
       </div>
       <div className="shrink-0 text-right">
         <StatusPill status={call.status} />

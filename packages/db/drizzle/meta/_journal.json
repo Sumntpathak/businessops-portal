@@ -43,6 +43,20 @@
       "when": 1784014373210,
       "tag": "0005_milky_solo",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1785311574295,
+      "tag": "0006_perfect_killmonger",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1785389868710,
+      "tag": "0007_minor_wallflower",
+      "breakpoints": true
     }
   ]
 }

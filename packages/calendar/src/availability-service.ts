@@ -22,7 +22,8 @@ export class AvailabilityService {
   async getSlots(
     tenantId: string,
     serviceId: string,
-    date: string
+    date: string,
+    staffId?: string
   ): Promise<AvailabilitySlot[]> {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       throw new Error("Availability date must use YYYY-MM-DD");
@@ -103,7 +104,14 @@ export class AvailabilityService {
               eq(schema.bookings.status, "confirmed"),
               isNull(schema.bookings.deletedAt),
               lt(schema.bookings.startsAt, window.closesAt),
-              gt(schema.bookings.endsAt, window.opensAt)
+              gt(schema.bookings.endsAt, window.opensAt),
+              // Staff share one tenant calendar, so busy time must be scoped
+              // to the requested staff member's own bookings — otherwise one
+              // staff member's booking would incorrectly block a different
+              // staff member's identical slot. Unassigned bookings don't
+              // block a specific staff member either way. When no staffId is
+              // given (auto-assign mode), every confirmed booking counts.
+              staffId ? eq(schema.bookings.staffId, staffId) : undefined
             )
           )
         )

@@ -1,6 +1,6 @@
 import { WebSocket } from "ws";
 import { z } from "zod";
-import type { AIBridge, TranscriptEvent } from "./ai-bridge.js";
+import type { AIBridge, StaffSelector, TranscriptEvent } from "./ai-bridge.js";
 import type { CallSession } from "./call-session.js";
 
 export interface AzureRealtimeBridgeOptions {
@@ -44,6 +44,14 @@ const REALTIME_TOOLS = [
           type: "string",
           description: "Name of the service as the caller said it (fuzzy matched)."
         },
+        staffId: {
+          type: "string",
+          description: "UUID of a specific staff member, if already known from a previous tool result."
+        },
+        staffName: {
+          type: "string",
+          description: "Name of a specific staff member the caller asked for (fuzzy matched). Omit to check availability across any staff member."
+        },
         date: {
           type: "string",
           description: "Requested date in YYYY-MM-DD, in the caller's local timezone shown in instructions."
@@ -61,6 +69,10 @@ const REALTIME_TOOLS = [
       type: "object",
       properties: {
         serviceId: { type: "string", description: "UUID of the service from check_availability." },
+        staffId: {
+          type: "string",
+          description: "UUID of the specific staff member to assign, from check_availability, if the caller requested a specific person."
+        },
         startsAt: {
           type: "string",
           description: "Slot start time, copied verbatim from a check_availability slot (ISO 8601 with offset)."
@@ -120,6 +132,26 @@ const REALTIME_TOOLS = [
     description:
       "Fetch this caller's saved details: name, remembered facts, and upcoming confirmed bookings (with bookingIds). Call when the caller references past visits, wants to change/cancel a booking, or when you are unsure of a detail you were already told.",
     parameters: { type: "object", properties: {} }
+  },
+  {
+    type: "function",
+    name: "list_staff",
+    description:
+      "Look up the business's staff members, including which are registered agents and what that credential is called. Call this when the caller asks who they'll be speaking with, whether a specific person is registered/qualified, or wants to know their options before choosing someone.",
+    parameters: { type: "object", properties: {} }
+  },
+  {
+    type: "function",
+    name: "transfer_to_staff",
+    description:
+      "Transfer the live call to a real staff member's phone. Only call this when the caller EXPLICITLY asks to speak to a person or names a specific staff member — never on your own judgement. Say a short natural line first ('Sure, connecting you to Gagandeep now' / 'One moment, transferring you to the team'), THEN call this tool.",
+    parameters: {
+      type: "object",
+      properties: {
+        staffId: { type: "string", description: "UUID of a specific staff member, if already known from a previous tool result." },
+        staffName: { type: "string", description: "Name of a specific staff member the caller asked for. Omit if the caller just asked for \"a person\" generically." }
+      }
+    }
   },
   {
     type: "function",
@@ -280,6 +312,17 @@ export function buildInstructions(session: CallSession): string {
     "- If the booking result shows calendarSynced false, the booking is still valid and recorded — confirm it normally and never mention calendars or syncing.",
     "- To change or cancel, use get_caller_context to find the booking, confirm which one, then cancel_booking.",
     "",
+    "== STAFF & REGISTERED AGENTS ==",
+    "- Most callers do not need to choose a specific staff member — check_availability without a staff name works fine and the business assigns someone suitable.",
+    "- If the caller asks for a specific person by name, or asks whether their agent is registered/qualified (using whatever term the business profile uses for that credential), call list_staff and answer only from what it returns — never guess or invent a name or credential.",
+    "- If the caller wants a registered agent specifically, offer one from list_staff's results by name; if none are registered, say so plainly rather than implying otherwise.",
+    "- Once a specific staff member is agreed, pass their id as staffId to check_availability and create_booking so the booking is correctly assigned.",
+    "",
+    "== TRANSFERRING TO A HUMAN ==",
+    "- Only call transfer_to_staff when the caller EXPLICITLY asks to speak to a person, or names a specific staff member — never decide on your own that a case is too complex.",
+    "- Say a short natural line first ('Sure, connecting you to Gagandeep now' / 'One moment, transferring you to the team'), THEN call transfer_to_staff — never call it silently.",
+    "- If the tool result reports the transfer was not possible (no matching staff, or no phone number on file), do not imply a transfer happened — apologize briefly and keep helping the caller yourself.",
+    "",
     "== ENDING THE CALL ==",
     "- After you finish handling the caller's request (booking confirmed, question answered, message taken), ask if there's anything else — do not assume the call is over.",
     "- Only when the caller clearly confirms there is nothing else (e.g. 'no that's all', 'that's it, thanks', 'no I'm good') do you close the call: say one short, warm goodbye line, then call end_call.",
@@ -344,7 +387,9 @@ export class AzureRealtimeBridge implements AIBridge {
   private bargeIn?: () => void;
   private closed?: () => void;
   private endCall?: () => void;
+  private transferRequested?: (selector: StaffSelector) => void;
   private endCallRequested = false;
+  private pendingTransfer?: StaffSelector;
   private readonly pendingAudio: Buffer[] = [];
   private readonly handledToolCalls = new Set<string>();
   private ready = false;
@@ -478,6 +523,11 @@ export class AzureRealtimeBridge implements AIBridge {
     this.endCall = callback;
   }
 
+  /** Fired when the agent calls transfer_to_staff after the caller explicitly asks for a human. */
+  onTransferRequested(callback: (selector: StaffSelector) => void): void {
+    this.transferRequested = callback;
+  }
+
   async stop(): Promise<void> {
     this.stopped = true;
     this.ready = false;
@@ -489,6 +539,7 @@ export class AzureRealtimeBridge implements AIBridge {
     this.audioOut = undefined;
     this.toolCall = undefined;
     this.bargeIn = undefined;
+    this.transferRequested = undefined;
   }
 
   private appendAudio(buffer: Buffer): void {
@@ -546,6 +597,13 @@ export class AzureRealtimeBridge implements AIBridge {
       if (this.endCallRequested) {
         this.endCallRequested = false;
         this.endCall?.();
+      }
+      // Same reasoning: wait for the "connecting you now" line to finish
+      // streaming before actually redirecting the call.
+      if (this.pendingTransfer) {
+        const selector = this.pendingTransfer;
+        this.pendingTransfer = undefined;
+        this.transferRequested?.(selector);
       }
       return;
     }
@@ -665,6 +723,28 @@ export class AzureRealtimeBridge implements AIBridge {
         }
       });
       this.transcript?.({ role: "tool", content: "end_call -> {\"ended\":true}", at: new Date() });
+      return;
+    }
+
+    if (name === "transfer_to_staff") {
+      let selector: StaffSelector = {};
+      try {
+        const parsed = rawArguments ? JSON.parse(rawArguments) : {};
+        selector = { staffId: parsed.staffId, staffName: parsed.staffName };
+      } catch {
+        // Malformed arguments still transfer with no selector — findStaff
+        // returning nothing is handled the same as "staff not found" below.
+      }
+      this.pendingTransfer = selector;
+      this.send({
+        type: "conversation.item.create",
+        item: {
+          type: "function_call_output",
+          call_id: callId,
+          output: JSON.stringify({ transferring: true })
+        }
+      });
+      this.transcript?.({ role: "tool", content: "transfer_to_staff -> {\"transferring\":true}", at: new Date() });
       return;
     }
 

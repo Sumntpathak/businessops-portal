@@ -140,6 +140,37 @@ function publicWebSocketUrl(path: string): string {
   return url.toString();
 }
 
+/**
+ * Builds a TwilioAdapter scoped to whichever Twilio account actually owns a
+ * given call. A call REDIRECT (unlike hangup, which works from either
+ * account for a call the receiving number answered) must be issued from the
+ * same account that owns the call — so transfer specifically needs the
+ * tenant's own credentials when they've connected their own Twilio account,
+ * not the platform-wide default used elsewhere in this file.
+ */
+async function getTenantTwilioAdapter(tenantId: string): Promise<TwilioAdapter> {
+  const [credentials] = await db
+    .select({
+      accountSid: schema.tenantTwilioCredentials.accountSid,
+      authTokenCiphertext: schema.tenantTwilioCredentials.authTokenCiphertext
+    })
+    .from(schema.tenantTwilioCredentials)
+    .where(eq(schema.tenantTwilioCredentials.tenantId, tenantId))
+    .limit(1);
+
+  if (!credentials) {
+    return new TwilioAdapter({
+      accountSid: env.TWILIO_ACCOUNT_SID,
+      authToken: env.TWILIO_AUTH_TOKEN
+    });
+  }
+
+  return new TwilioAdapter({
+    accountSid: credentials.accountSid,
+    authToken: decryptTwilioAuthToken(credentials.authTokenCiphertext, env.SESSION_SECRET)
+  });
+}
+
 function requestHeaders(
   headers: Record<string, string | string[] | undefined>
 ): Record<string, string | string[] | undefined> {
@@ -301,6 +332,231 @@ app.post("/twilio/incoming", async (request, reply) => {
     request.log.error({ err: error }, "Inbound Twilio webhook failed");
     return reply.code(500).send({
       error: { code: "CALL_SETUP_FAILED", message: "Could not set up the call." }
+    });
+  }
+});
+
+/**
+ * Looks up which tenant a call belongs to, for verifying webhook signatures
+ * on the transfer/recording callbacks below (same trust model as
+ * /twilio/incoming: each tenant may bring their own Twilio account).
+ */
+async function tenantForCall(
+  callId: string
+): Promise<{ tenantId: string; authToken: string; transferRecordingEnabled: boolean } | null> {
+  const [call] = await db
+    .select({ tenantId: schema.calls.tenantId })
+    .from(schema.calls)
+    .where(eq(schema.calls.id, callId))
+    .limit(1);
+  if (!call) return null;
+
+  const [tenant] = await db
+    .select({ transferRecordingEnabled: schema.tenants.transferRecordingEnabled })
+    .from(schema.tenants)
+    .where(eq(schema.tenants.id, call.tenantId))
+    .limit(1);
+  if (!tenant) return null;
+
+  const [credentials] = await db
+    .select({ authTokenCiphertext: schema.tenantTwilioCredentials.authTokenCiphertext })
+    .from(schema.tenantTwilioCredentials)
+    .where(eq(schema.tenantTwilioCredentials.tenantId, call.tenantId))
+    .limit(1);
+  const authToken = credentials
+    ? decryptTwilioAuthToken(credentials.authTokenCiphertext, env.SESSION_SECRET)
+    : env.TWILIO_AUTH_TOKEN;
+
+  return {
+    tenantId: call.tenantId,
+    authToken,
+    transferRecordingEnabled: tenant.transferRecordingEnabled
+  };
+}
+
+const dialCallbackSchema = z.object({
+  DialCallStatus: z.string().optional()
+});
+
+const recordingCallbackSchema = z.object({
+  RecordingUrl: z.string().optional(),
+  RecordingStatus: z.string().optional()
+});
+
+app.post("/twilio/transfer/:callId", async (request, reply) => {
+  const callId = z.string().uuid().safeParse((request.params as { callId?: string }).callId);
+  if (!callId.success) {
+    return reply.code(400).send({ error: { code: "INVALID_INPUT", message: "Invalid call ID." } });
+  }
+
+  try {
+    const tenant = await tenantForCall(callId.data);
+    if (!tenant) {
+      return reply.code(404).send({ error: { code: "CALL_NOT_FOUND", message: "Call not found." } });
+    }
+
+    const verified = twilioHttp.verifyWebhook(
+      {
+        url: publicHttpUrl(`twilio/transfer/${callId.data}`),
+        headers: requestHeaders(request.headers),
+        body: (z.record(z.string()).safeParse(request.body).data as Record<string, string>) ?? {}
+      },
+      tenant.authToken
+    );
+    if (!verified) {
+      return reply.code(403).send({
+        error: { code: "INVALID_SIGNATURE", message: "Webhook signature is invalid." }
+      });
+    }
+
+    const scoped = withTenant(db, tenant.tenantId);
+    const [call] = await db
+      .select({ transferredToStaffId: schema.calls.transferredToStaffId })
+      .from(schema.calls)
+      .where(scoped.where(schema.calls, eq(schema.calls.id, callId.data)))
+      .limit(1);
+    const staffId = call?.transferredToStaffId;
+    const [staffMember] = staffId
+      ? await db
+          .select({ phoneE164: schema.staff.phoneE164 })
+          .from(schema.staff)
+          .where(scoped.where(schema.staff, eq(schema.staff.id, staffId)))
+          .limit(1)
+      : [];
+
+    if (!staffMember?.phoneE164) {
+      return reply
+        .type("text/xml")
+        .send(twilioHttp.unavailableInstructions("Sorry, that transfer is no longer available."));
+    }
+
+    return reply.type("text/xml").send(
+      twilioHttp.transferInstructions(staffMember.phoneE164, {
+        record: tenant.transferRecordingEnabled,
+        actionUrl: publicHttpUrl(`twilio/transfer-complete/${callId.data}`),
+        recordingStatusCallbackUrl: tenant.transferRecordingEnabled
+          ? publicHttpUrl(`twilio/recording-status/${callId.data}`)
+          : undefined
+      })
+    );
+  } catch (error) {
+    request.log.error({ err: error, callId: callId.data }, "Transfer webhook failed");
+    return reply.code(500).send({
+      error: { code: "TRANSFER_FAILED", message: "Could not transfer the call." }
+    });
+  }
+});
+
+app.post("/twilio/transfer-complete/:callId", async (request, reply) => {
+  const callId = z.string().uuid().safeParse((request.params as { callId?: string }).callId);
+  if (!callId.success) {
+    return reply.code(400).send({ error: { code: "INVALID_INPUT", message: "Invalid call ID." } });
+  }
+
+  const parsed = dialCallbackSchema.safeParse(request.body);
+  const dialStatus = parsed.success ? parsed.data.DialCallStatus : undefined;
+
+  try {
+    const tenant = await tenantForCall(callId.data);
+    if (!tenant) {
+      return reply.code(404).send({ error: { code: "CALL_NOT_FOUND", message: "Call not found." } });
+    }
+
+    const verified = twilioHttp.verifyWebhook(
+      {
+        url: publicHttpUrl(`twilio/transfer-complete/${callId.data}`),
+        headers: requestHeaders(request.headers),
+        body: (z.record(z.string()).safeParse(request.body).data as Record<string, string>) ?? {}
+      },
+      tenant.authToken
+    );
+    if (!verified) {
+      return reply.code(403).send({
+        error: { code: "INVALID_SIGNATURE", message: "Webhook signature is invalid." }
+      });
+    }
+
+    const scoped = withTenant(db, tenant.tenantId);
+
+    if (dialStatus === "completed") {
+      const endedAt = new Date();
+      const [call] = await db
+        .select({ startedAt: schema.calls.startedAt })
+        .from(schema.calls)
+        .where(scoped.where(schema.calls, eq(schema.calls.id, callId.data)))
+        .limit(1);
+      const durationSeconds = call
+        ? Math.max(0, Math.round((endedAt.getTime() - new Date(call.startedAt).getTime()) / 1000))
+        : undefined;
+      await db
+        .update(schema.calls)
+        .set({ status: "transferred", endedAt, durationSeconds, updatedAt: endedAt })
+        .where(scoped.where(schema.calls, eq(schema.calls.id, callId.data)));
+      return reply.type("text/xml").send(twilioHttp.hangupInstructions());
+    }
+
+    // no-answer | busy | failed: the caller falls back into the AI agent
+    // rather than being left on a dead line.
+    request.log.info(
+      { callId: callId.data, tenantId: tenant.tenantId, dialStatus },
+      "Transfer did not complete — falling back to the AI agent"
+    );
+    await db
+      .update(schema.calls)
+      .set({ status: "in_progress", transferredToStaffId: null, updatedAt: new Date() })
+      .where(scoped.where(schema.calls, eq(schema.calls.id, callId.data)));
+    return reply
+      .type("text/xml")
+      .send(twilioHttp.answerInstructions(publicWebSocketUrl("media/" + callId.data)));
+  } catch (error) {
+    request.log.error({ err: error, callId: callId.data }, "Transfer-complete webhook failed");
+    return reply.code(500).send({
+      error: { code: "TRANSFER_COMPLETE_FAILED", message: "Could not finalize the transfer." }
+    });
+  }
+});
+
+app.post("/twilio/recording-status/:callId", async (request, reply) => {
+  const callId = z.string().uuid().safeParse((request.params as { callId?: string }).callId);
+  if (!callId.success) {
+    return reply.code(400).send({ error: { code: "INVALID_INPUT", message: "Invalid call ID." } });
+  }
+
+  const parsed = recordingCallbackSchema.safeParse(request.body);
+  if (!parsed.success || parsed.data.RecordingStatus !== "completed" || !parsed.data.RecordingUrl) {
+    return reply.code(200).send({ ok: true });
+  }
+
+  try {
+    const tenant = await tenantForCall(callId.data);
+    if (!tenant) {
+      return reply.code(404).send({ error: { code: "CALL_NOT_FOUND", message: "Call not found." } });
+    }
+
+    const verified = twilioHttp.verifyWebhook(
+      {
+        url: publicHttpUrl(`twilio/recording-status/${callId.data}`),
+        headers: requestHeaders(request.headers),
+        body: (z.record(z.string()).safeParse(request.body).data as Record<string, string>) ?? {}
+      },
+      tenant.authToken
+    );
+    if (!verified) {
+      return reply.code(403).send({
+        error: { code: "INVALID_SIGNATURE", message: "Webhook signature is invalid." }
+      });
+    }
+
+    const scoped = withTenant(db, tenant.tenantId);
+    await db
+      .update(schema.calls)
+      .set({ recordingUrl: parsed.data.RecordingUrl, updatedAt: new Date() })
+      .where(scoped.where(schema.calls, eq(schema.calls.id, callId.data)));
+    return reply.code(200).send({ ok: true });
+  } catch (error) {
+    request.log.error({ err: error, callId: callId.data }, "Recording-status webhook failed");
+    return reply.code(500).send({
+      error: { code: "RECORDING_STATUS_FAILED", message: "Could not save the recording." }
     });
   }
 });
@@ -788,6 +1044,43 @@ mediaStreams.on("connection", (socket, request) => {
         app.log.error({ err: error, callId }, "Twilio hangup after end_call failed");
       }
       socket.close(1000, "Call ended by agent");
+    })();
+  });
+  bridge.onTransferRequested((selector) => {
+    void (async () => {
+      if (!session) return;
+      try {
+        const staffMember = await toolRepository.findStaffPhoneForTransfer(
+          session.tenantId,
+          selector
+        );
+        if (!staffMember?.phoneE164) {
+          app.log.info(
+            { callId, tenantId: session.tenantId, selector },
+            "Transfer requested but no matching staff phone number on file"
+          );
+          return;
+        }
+
+        const tenantAdapter = await getTenantTwilioAdapter(session.tenantId);
+        const scoped = withTenant(db, session.tenantId);
+        await db
+          .update(schema.calls)
+          .set({ status: "transferred", transferredToStaffId: staffMember.id, updatedAt: new Date() })
+          .where(scoped.where(schema.calls, eq(schema.calls.id, session.callId)));
+
+        await tenantAdapter.transferCall(
+          session.providerCallSid,
+          publicHttpUrl(`twilio/transfer/${session.callId}`)
+        );
+        // The call is still live, just handed off to new TwiML — do not
+        // finalize()/hangup here. /twilio/transfer-complete reports the
+        // outcome once the dialed leg ends.
+        await bridge.stop();
+        socket.close(1000, "Call transferred to staff");
+      } catch (error) {
+        app.log.error({ err: error, callId }, "Call transfer failed");
+      }
     })();
   });
 

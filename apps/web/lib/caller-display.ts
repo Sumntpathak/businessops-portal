@@ -11,7 +11,8 @@ export const STATUS_STYLES: Record<string, string> = {
   completed: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
   failed: "bg-red-500/10 text-red-600 dark:text-red-400",
   in_progress: "bg-amber-500/10 text-amber-600 dark:text-amber-400",
-  ringing: "bg-sky-500/10 text-sky-600 dark:text-sky-400"
+  ringing: "bg-sky-500/10 text-sky-600 dark:text-sky-400",
+  transferred: "bg-violet-500/10 text-violet-600 dark:text-violet-400"
 };
 
 export function paletteFor(key: string): string {

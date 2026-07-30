@@ -37,13 +37,15 @@ export default async function CallDetailPage({
       durationSeconds: schema.calls.durationSeconds,
       status: schema.calls.status,
       providerCallSid: schema.calls.providerCallSid,
+      recordingUrl: schema.calls.recordingUrl,
       callerId: schema.callers.id,
       callerName: schema.callers.displayName,
       callerPhone: schema.callers.phoneE164,
       callerCountry: schema.callers.country,
       callerTimezone: schema.callers.timezone,
       callerProfile: schema.callers.profile,
-      callerStage: schema.callers.stage
+      callerStage: schema.callers.stage,
+      transferredToStaffName: schema.staff.name
     })
     .from(schema.calls)
     .innerJoin(
@@ -51,6 +53,13 @@ export default async function CallDetailPage({
       and(
         eq(schema.callers.id, schema.calls.callerId),
         eq(schema.callers.tenantId, context.tenantId)
+      )
+    )
+    .leftJoin(
+      schema.staff,
+      and(
+        eq(schema.staff.id, schema.calls.transferredToStaffId),
+        eq(schema.staff.tenantId, context.tenantId)
       )
     )
     .where(scoped.where(schema.calls, eq(schema.calls.id, parsed.data)))
@@ -175,6 +184,23 @@ export default async function CallDetailPage({
             <p className="mt-1.5 text-muted-foreground">
               {formatDuration(call.durationSeconds)}
             </p>
+            {call.transferredToStaffName && (
+              <p className="mt-1.5 text-muted-foreground">
+                Transferred to {call.transferredToStaffName}
+              </p>
+            )}
+            {call.recordingUrl && (
+              <p className="mt-1.5">
+                <a
+                  href={call.recordingUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-primary hover:underline"
+                >
+                  Play recording
+                </a>
+              </p>
+            )}
           </div>
         }
       />

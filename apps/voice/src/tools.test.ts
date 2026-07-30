@@ -30,6 +30,12 @@ function harness() {
     name: "Consultation",
     durationMinutes: 30
   };
+  const staffMember = {
+    id: "018f5f86-9cf1-7f4d-81d2-6f11a3e841f8",
+    name: "Gagandeep Singh",
+    isRegisteredAgent: true,
+    credentialLabel: "MARA registered"
+  };
   const dependencies: ToolExecutorDependencies = {
     availability: {
       getSlots: async (...args: any[]) => {
@@ -49,6 +55,12 @@ function harness() {
     },
     repository: {
       findService: async (...args: any[]) => { calls.push({ name: "findService", args }); return service; },
+      findStaff: async (...args: any[]) => { calls.push({ name: "findStaff", args }); return staffMember; },
+      listStaff: async (...args: any[]) => { calls.push({ name: "listStaff", args }); return [staffMember]; },
+      findStaffPhoneForTransfer: async (...args: any[]) => {
+        calls.push({ name: "findStaffPhoneForTransfer", args });
+        return { id: staffMember.id, name: staffMember.name, phoneE164: "+15558675309" };
+      },
       updateCallerName: async (...args: any[]) => { calls.push({ name: "updateCallerName", args }); },
       updateCallerProfile: async (...args: any[]) => { calls.push({ name: "updateCallerProfile", args }); return { updated: ["name"], rejected: [], name: "Asha", profile: {} }; },
       createBooking: async (...args: any[]) => { calls.push({ name: "createBooking", args }); return { id: "booking-1" }; },
@@ -58,7 +70,7 @@ function harness() {
       getCallerContext: async (...args: any[]) => { calls.push({ name: "getCallerContext", args }); return { caller: session.caller, memories: [], upcomingBookings: [], intakeFields: [] }; }
     }
   };
-  return { executor: new ToolExecutor(session, dependencies), calls, service, dependencies };
+  return { executor: new ToolExecutor(session, dependencies), calls, service, staffMember, dependencies };
 }
 
 describe("ToolExecutor", () => {
@@ -67,9 +79,26 @@ describe("ToolExecutor", () => {
     const result = await executor.execute("check_availability", {
       serviceName: "Consultation", date: "2027-01-07"
     });
-    assert.deepEqual(result, { serviceId: service.id, callerTimezone: "Asia/Kolkata", slots: [{ startsAt: "2027-01-07T03:30:00.000Z", endsAt: "2027-01-07T04:00:00.000Z", callerLocalTime: "7 Jan 2027, 09:00", businessLocalTime: "7 Jan 2027, 09:00" }] });
+    assert.deepEqual(result, { serviceId: service.id, staffId: null, callerTimezone: "Asia/Kolkata", slots: [{ startsAt: "2027-01-07T03:30:00.000Z", endsAt: "2027-01-07T04:00:00.000Z", callerLocalTime: "7 Jan 2027, 09:00", businessLocalTime: "7 Jan 2027, 09:00" }] });
     assert.deepEqual(calls.find((call) => call.name === "findService")?.args, [session.tenantId, { serviceName: "Consultation" }]);
-    assert.deepEqual(calls.find((call) => call.name === "getSlots")?.args, [session.tenantId, service.id, "2027-01-07"]);
+    assert.deepEqual(calls.find((call) => call.name === "getSlots")?.args, [session.tenantId, service.id, "2027-01-07", undefined]);
+  });
+
+  it("resolves a named staff member and scopes availability to them", async () => {
+    const { executor, calls, service, staffMember } = harness();
+    const result = await executor.execute("check_availability", {
+      serviceName: "Consultation", staffName: "Gagandeep", date: "2027-01-07"
+    }) as { staffId: string };
+    assert.equal(result.staffId, staffMember.id);
+    assert.deepEqual(calls.find((call) => call.name === "findStaff")?.args, [session.tenantId, { staffName: "Gagandeep" }]);
+    assert.deepEqual(calls.find((call) => call.name === "getSlots")?.args, [session.tenantId, service.id, "2027-01-07", staffMember.id]);
+  });
+
+  it("lists active staff for the tenant", async () => {
+    const { executor, calls, staffMember } = harness();
+    const result = await executor.execute("list_staff", {});
+    assert.deepEqual(result, { staff: [staffMember] });
+    assert.deepEqual(calls.find((call) => call.name === "listStaff")?.args, [session.tenantId]);
   });
 
   it("filters adjacent business dates into the caller's local date", async () => {
@@ -96,10 +125,25 @@ describe("ToolExecutor", () => {
       startsAt: "2027-01-07T03:30:00.000Z",
       callerName: "Asha Patel"
     });
-    assert.deepEqual(result, { bookingId: "booking-1", eventId: "gcal-1", calendarSynced: true, startsAt: "2027-01-07T03:30:00.000Z", endsAt: "2027-01-07T04:00:00.000Z", callerLocalTime: "7 Jan 2027, 09:00", businessLocalTime: "7 Jan 2027, 09:00", serviceName: "Consultation" });
+    assert.deepEqual(result, { bookingId: "booking-1", eventId: "gcal-1", calendarSynced: true, startsAt: "2027-01-07T03:30:00.000Z", endsAt: "2027-01-07T04:00:00.000Z", callerLocalTime: "7 Jan 2027, 09:00", businessLocalTime: "7 Jan 2027, 09:00", serviceName: "Consultation", staffId: null });
     const create = calls.find((call) => call.name === "createBooking");
     assert.equal(create?.args[0], session.tenantId);
     assert.equal(create?.args[1], session.caller.id);
+    assert.equal((create?.args[2] as { staffId: string | null }).staffId, null);
+  });
+
+  it("assigns a booking to a specific requested staff member", async () => {
+    const { executor, calls, service, staffMember } = harness();
+    const result = await executor.execute("create_booking", {
+      serviceId: service.id,
+      staffId: staffMember.id,
+      startsAt: "2027-01-07T03:30:00.000Z",
+      callerName: "Asha Patel"
+    }) as { staffId: string };
+    assert.equal(result.staffId, staffMember.id);
+    const create = calls.find((call) => call.name === "createBooking");
+    assert.equal((create?.args[2] as { staffId: string | null }).staffId, staffMember.id);
+    assert.deepEqual(calls.find((call) => call.name === "findStaff")?.args, [session.tenantId, { staffId: staffMember.id }]);
   });
 
   it("only cancels a confirmed booking belonging to the session caller", async () => {

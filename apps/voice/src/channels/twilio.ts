@@ -47,14 +47,15 @@ export interface TwilioAdapterOptions {
 export class TwilioAdapter implements VoiceChannelAdapter {
   private readonly validator: Validator;
   private readonly hangupCall: (callSid: string) => Promise<void>;
+  private readonly client: ReturnType<typeof twilio>;
   private streamSid?: string;
   private callSid?: string;
 
   constructor(private readonly options: TwilioAdapterOptions) {
     this.validator = options.validator ?? twilio.validateRequest;
-    const client = twilio(options.accountSid, options.authToken);
+    this.client = twilio(options.accountSid, options.authToken);
     this.hangupCall = options.hangup ?? (async (callSid) => {
-      await client.calls(callSid).update({ status: "completed" });
+      await this.client.calls(callSid).update({ status: "completed" });
     });
   }
 
@@ -93,6 +94,47 @@ export class TwilioAdapter implements VoiceChannelAdapter {
     response.say({ voice: "alice" }, message);
     response.hangup();
     return response.toString();
+  }
+
+  /** Ends the call cleanly with no message — for a transfer that already concluded normally. */
+  hangupInstructions(): string {
+    const response = new twilio.twiml.VoiceResponse();
+    response.hangup();
+    return response.toString();
+  }
+
+  /**
+   * TwiML that connects the live call to a staff member's phone. Twilio's
+   * `<Dial record="...">` has no documented automatic consent beep (unlike
+   * `<Record>`'s `playBeep`), so when recording is enabled we say an explicit
+   * consent line ourselves rather than relying on a Twilio default.
+   */
+  transferInstructions(
+    staffPhoneE164: string,
+    options: { record: boolean; actionUrl: string; recordingStatusCallbackUrl?: string }
+  ): string {
+    const response = new twilio.twiml.VoiceResponse();
+    if (options.record) {
+      response.say(
+        { voice: "alice" },
+        "This call may be recorded for quality and compliance purposes."
+      );
+    }
+    response
+      .dial({
+        action: options.actionUrl,
+        method: "POST",
+        record: options.record ? "record-from-answer-dual" : "do-not-record",
+        recordingStatusCallback: options.recordingStatusCallbackUrl,
+        recordingStatusCallbackMethod: options.recordingStatusCallbackUrl ? "POST" : undefined
+      })
+      .number(staffPhoneE164);
+    return response.toString();
+  }
+
+  /** Redirects an in-progress call to new TwiML (e.g. transferInstructions). */
+  async transferCall(callSid: string, redirectUrl: string): Promise<void> {
+    await this.client.calls(callSid).update({ url: redirectUrl, method: "POST" });
   }
 
   parseStreamEvent(raw: string | Buffer): StreamEvent {

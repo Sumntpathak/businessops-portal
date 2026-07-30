@@ -5,7 +5,7 @@ import type {
   LiveServerMessage,
   Session
 } from "@google/genai";
-import type { AIBridge, TranscriptEvent } from "./ai-bridge.js";
+import type { AIBridge, StaffSelector, TranscriptEvent } from "./ai-bridge.js";
 import type { CallSession } from "./call-session.js";
 import { buildInstructions } from "./azure-realtime-bridge.js";
 import {
@@ -115,6 +115,8 @@ export const REALTIME_TOOLS: FunctionDeclaration[] = [
       properties: {
         serviceId: { type: "string", description: "UUID of the service, if already known from a previous tool result." },
         serviceName: { type: "string", description: "Name of the service as the caller said it (fuzzy matched)." },
+        staffId: { type: "string", description: "UUID of a specific staff member, if already known from a previous tool result." },
+        staffName: { type: "string", description: "Name of a specific staff member the caller asked for (fuzzy matched). Omit to check availability across any staff member." },
         date: { type: "string", description: "Requested date in YYYY-MM-DD, in the caller's local timezone shown in instructions." }
       },
       required: ["date"]
@@ -128,6 +130,7 @@ export const REALTIME_TOOLS: FunctionDeclaration[] = [
       type: "object",
       properties: {
         serviceId: { type: "string", description: "UUID of the service from check_availability." },
+        staffId: { type: "string", description: "UUID of the specific staff member to assign, from check_availability, if the caller requested a specific person." },
         startsAt: { type: "string", description: "Slot start time, copied verbatim from a check_availability slot (ISO 8601 with offset)." },
         callerName: { type: "string", description: "Caller's name if they shared it." }
       },
@@ -180,6 +183,24 @@ export const REALTIME_TOOLS: FunctionDeclaration[] = [
     parametersJsonSchema: { type: "object", properties: {} }
   },
   {
+    name: "list_staff",
+    description:
+      "Look up the business's staff members, including which are registered agents and what that credential is called. Call this when the caller asks who they'll be speaking with, whether a specific person is registered/qualified, or wants to know their options before choosing someone.",
+    parametersJsonSchema: { type: "object", properties: {} }
+  },
+  {
+    name: "transfer_to_staff",
+    description:
+      "Transfer the live call to a real staff member's phone. Only call this when the caller EXPLICITLY asks to speak to a person or names a specific staff member — never on your own judgement. Say a short natural line first ('Sure, connecting you to Gagandeep now' / 'One moment, transferring you to the team'), THEN call this tool.",
+    parametersJsonSchema: {
+      type: "object",
+      properties: {
+        staffId: { type: "string", description: "UUID of a specific staff member, if already known from a previous tool result." },
+        staffName: { type: "string", description: "Name of a specific staff member the caller asked for. Omit if the caller just asked for \"a person\" generically." }
+      }
+    }
+  },
+  {
     name: "end_call",
     description:
       "End the phone call. Call this when the caller confirms there is nothing else they need ('no that's all', 'that's it, thanks'), OR whenever the caller says goodbye or clearly wants to end the call ('bye', 'have a good day', 'not now', 'I'll call back later') — even if you have not collected their name or handled any request. Say a short natural goodbye in your reply FIRST, then call this tool.",
@@ -204,7 +225,9 @@ export class GeminiLiveBridge implements AIBridge {
   private bargeIn?: () => void;
   private closed?: () => void;
   private endCall?: () => void;
+  private transferRequested?: (selector: StaffSelector) => void;
   private endCallRequested = false;
+  private pendingTransfer?: StaffSelector;
   private readonly pendingAudio: Buffer[] = [];
   private readonly handledToolCalls = new Set<string>();
   private ready = false;
@@ -336,6 +359,11 @@ export class GeminiLiveBridge implements AIBridge {
     this.endCall = callback;
   }
 
+  /** Fired when the agent calls transfer_to_staff after the caller explicitly asks for a human. */
+  onTransferRequested(callback: (selector: StaffSelector) => void): void {
+    this.transferRequested = callback;
+  }
+
   async stop(): Promise<void> {
     this.stopped = true;
     this.ready = false;
@@ -346,6 +374,7 @@ export class GeminiLiveBridge implements AIBridge {
     this.audioOut = undefined;
     this.toolCall = undefined;
     this.bargeIn = undefined;
+    this.transferRequested = undefined;
   }
 
   private forwardAudio(buffer: Buffer): void {
@@ -395,6 +424,13 @@ export class GeminiLiveBridge implements AIBridge {
       this.endCallRequested = false;
       this.clearSilenceTimer();
       setTimeout(() => this.endCall?.(), END_CALL_DRAIN_MS);
+    } else if (content?.turnComplete && this.pendingTransfer) {
+      // Same reasoning as end_call: wait for the "connecting you now" line to
+      // finish streaming before actually redirecting the call.
+      const selector = this.pendingTransfer;
+      this.pendingTransfer = undefined;
+      this.clearSilenceTimer();
+      setTimeout(() => this.transferRequested?.(selector), END_CALL_DRAIN_MS);
     } else if (content?.turnComplete) {
       // Only start watching for silence once the agent has asked its closing
       // "anything else?" question (per agent.md's ENDING THE CALL rule) —
@@ -415,7 +451,7 @@ export class GeminiLiveBridge implements AIBridge {
   private armSilenceTimer(): void {
     this.clearSilenceTimer();
     this.silenceTimer = setTimeout(() => {
-      if (this.endCallRequested || this.stopped) return;
+      if (this.endCallRequested || this.pendingTransfer || this.stopped) return;
       this.options.logger?.info(
         { callId: this.callSession?.callId },
         "Caller silent after agent turn — prompting once"
@@ -425,7 +461,7 @@ export class GeminiLiveBridge implements AIBridge {
         turnComplete: true
       });
       this.silenceTimer = setTimeout(() => {
-        if (this.endCallRequested || this.stopped) return;
+        if (this.endCallRequested || this.pendingTransfer || this.stopped) return;
         this.options.logger?.info(
           { callId: this.callSession?.callId },
           "Caller still silent after prompt — ending call"
@@ -447,6 +483,16 @@ export class GeminiLiveBridge implements AIBridge {
         functionResponses: [{ id: callId, name, response: { output: { ended: true } } }]
       });
       this.transcript?.({ role: "tool", content: 'end_call -> {"ended":true}', at: new Date() });
+      return;
+    }
+
+    if (name === "transfer_to_staff") {
+      const args = (call.args ?? {}) as StaffSelector;
+      this.pendingTransfer = { staffId: args.staffId, staffName: args.staffName };
+      this.session?.sendToolResponse({
+        functionResponses: [{ id: callId, name, response: { output: { transferring: true } } }]
+      });
+      this.transcript?.({ role: "tool", content: 'transfer_to_staff -> {"transferring":true}', at: new Date() });
       return;
     }
 

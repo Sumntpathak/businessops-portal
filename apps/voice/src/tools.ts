@@ -37,11 +37,32 @@ export interface ToolService {
   durationMinutes: number;
 }
 
+export interface ToolStaff {
+  id: string;
+  name: string;
+  isRegisteredAgent: boolean;
+  credentialLabel: string;
+}
+
 export interface ToolRepository {
   findService(
     tenantId: string,
     selector: { serviceId?: string; serviceName?: string }
   ): Promise<ToolService | null>;
+  findStaff(
+    tenantId: string,
+    selector: { staffId?: string; staffName?: string }
+  ): Promise<ToolStaff | null>;
+  listStaff(tenantId: string): Promise<ToolStaff[]>;
+  /**
+   * Resolves a staff member's phone number for call transfer. Deliberately
+   * separate from findStaff/ToolStaff, which are model-facing and must never
+   * expose a phone number to the AI or a tool-call transcript.
+   */
+  findStaffPhoneForTransfer(
+    tenantId: string,
+    selector: { staffId?: string; staffName?: string }
+  ): Promise<{ id: string; name: string; phoneE164: string | null } | null>;
   updateCallerName(
     tenantId: string,
     callerId: string,
@@ -62,6 +83,7 @@ export interface ToolRepository {
     callerId: string,
     values: {
       serviceId: string;
+      staffId: string | null;
       startsAt: Date;
       endsAt: Date;
       gcalEventId: string | null;
@@ -109,6 +131,8 @@ const availabilityInput = z
   .object({
     serviceId: z.string().uuid().optional(),
     serviceName: z.string().trim().min(1).max(160).optional(),
+    staffId: z.string().uuid().optional(),
+    staffName: z.string().trim().min(1).max(160).optional(),
     date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
   })
   .refine((value) => Boolean(value.serviceId || value.serviceName), {
@@ -117,6 +141,7 @@ const availabilityInput = z
 
 const createBookingInput = z.object({
   serviceId: z.string().uuid(),
+  staffId: z.string().uuid().optional(),
   startsAt: z.string().datetime({ offset: true }),
   callerName: z.string().trim().min(1).max(120).optional()
 });
@@ -152,6 +177,9 @@ export class ToolExecutor {
       case "get_caller_context":
         emptyInput.parse(rawInput);
         return this.getCallerContext();
+      case "list_staff":
+        emptyInput.parse(rawInput);
+        return this.listStaff();
       default:
         throw new Error("Unknown tool: " + name);
     }
@@ -167,13 +195,23 @@ export class ToolExecutor {
     );
     if (!service) throw new Error("Service not found");
 
+    let staffId: string | undefined;
+    if (input.staffId || input.staffName) {
+      const staff = await this.dependencies.repository.findStaff(
+        this.session.tenantId,
+        input.staffId ? { staffId: input.staffId } : { staffName: input.staffName }
+      );
+      if (!staff) throw new Error("Staff member not found");
+      staffId = staff.id;
+    }
+
     const callerTimezone = this.session.caller.timezone ?? this.session.timezone;
     const businessDates = callerTimezone === this.session.timezone
       ? [input.date]
       : adjacentIsoDates(input.date);
     const candidateGroups = await Promise.all(
       businessDates.map((date) =>
-        this.dependencies.availability.getSlots(this.session.tenantId, service.id, date)
+        this.dependencies.availability.getSlots(this.session.tenantId, service.id, date, staffId)
       )
     );
     const slots = candidateGroups
@@ -184,6 +222,7 @@ export class ToolExecutor {
       .filter((slot) => localDateInTimezone(slot.startsAt, callerTimezone) === input.date);
     return {
       serviceId: service.id,
+      staffId: staffId ?? null,
       callerTimezone,
       slots: slots.map((slot) => ({
         startsAt: slot.startsAt.toISOString(),
@@ -194,12 +233,27 @@ export class ToolExecutor {
     };
   }
 
+  private async listStaff() {
+    const staff = await this.dependencies.repository.listStaff(this.session.tenantId);
+    return { staff };
+  }
+
   private async createBooking(input: z.infer<typeof createBookingInput>) {
     const service = await this.dependencies.repository.findService(
       this.session.tenantId,
       { serviceId: input.serviceId }
     );
     if (!service) throw new Error("Service not found");
+
+    let staffId: string | null = null;
+    if (input.staffId) {
+      const staff = await this.dependencies.repository.findStaff(
+        this.session.tenantId,
+        { staffId: input.staffId }
+      );
+      if (!staff) throw new Error("Staff member not found");
+      staffId = staff.id;
+    }
 
     const startsAt = new Date(input.startsAt);
     if (startsAt <= new Date()) throw new Error("Booking must be in the future");
@@ -215,7 +269,8 @@ export class ToolExecutor {
     const slots = await this.dependencies.availability.getSlots(
       this.session.tenantId,
       service.id,
-      localDate
+      localDate,
+      staffId ?? undefined
     );
     const selected = slots.find(
       (slot) => slot.startsAt.getTime() === startsAt.getTime()
@@ -255,6 +310,7 @@ export class ToolExecutor {
         this.session.caller.id,
         {
           serviceId: service.id,
+          staffId,
           startsAt,
           endsAt,
           gcalEventId: eventId
@@ -271,7 +327,8 @@ export class ToolExecutor {
           this.session.caller.timezone ?? this.session.timezone
         ),
         businessLocalTime: formatCallerLocalTime(startsAt, this.session.timezone),
-        serviceName: service.name
+        serviceName: service.name,
+        staffId
       };
     } catch (error) {
       if (eventId) {
@@ -434,6 +491,105 @@ export class DrizzleToolRepository implements ToolRepository {
     return bestScore > 0 ? best : null;
   }
 
+  async findStaff(
+    tenantId: string,
+    selector: { staffId?: string; staffName?: string }
+  ): Promise<ToolStaff | null> {
+    const scoped = withTenant(this.db, tenantId);
+    const columns = {
+      id: schema.staff.id,
+      name: schema.staff.name,
+      isRegisteredAgent: schema.staff.isRegisteredAgent,
+      credentialLabel: schema.staff.credentialLabel
+    };
+
+    if (selector.staffId) {
+      const [staffMember] = await this.db
+        .select(columns)
+        .from(schema.staff)
+        .where(
+          scoped.where(
+            schema.staff,
+            and(eq(schema.staff.id, selector.staffId), eq(schema.staff.active, true))
+          )
+        )
+        .limit(1);
+      return staffMember ?? null;
+    }
+
+    const query = (selector.staffName ?? "").trim();
+    if (!query) return null;
+    const likeQuery = query.replace(/[\\%_]/g, "\\$&");
+
+    const [match] = await this.db
+      .select(columns)
+      .from(schema.staff)
+      .where(
+        scoped.where(
+          schema.staff,
+          and(ilike(schema.staff.name, `%${likeQuery}%`), eq(schema.staff.active, true))
+        )
+      )
+      .limit(1);
+    return match ?? null;
+  }
+
+  async findStaffPhoneForTransfer(
+    tenantId: string,
+    selector: { staffId?: string; staffName?: string }
+  ): Promise<{ id: string; name: string; phoneE164: string | null } | null> {
+    const scoped = withTenant(this.db, tenantId);
+    const columns = {
+      id: schema.staff.id,
+      name: schema.staff.name,
+      phoneE164: schema.staff.phoneE164
+    };
+
+    if (selector.staffId) {
+      const [staffMember] = await this.db
+        .select(columns)
+        .from(schema.staff)
+        .where(
+          scoped.where(
+            schema.staff,
+            and(eq(schema.staff.id, selector.staffId), eq(schema.staff.active, true))
+          )
+        )
+        .limit(1);
+      return staffMember ?? null;
+    }
+
+    const query = (selector.staffName ?? "").trim();
+    if (!query) return null;
+    const likeQuery = query.replace(/[\\%_]/g, "\\$&");
+
+    const [match] = await this.db
+      .select(columns)
+      .from(schema.staff)
+      .where(
+        scoped.where(
+          schema.staff,
+          and(ilike(schema.staff.name, `%${likeQuery}%`), eq(schema.staff.active, true))
+        )
+      )
+      .limit(1);
+    return match ?? null;
+  }
+
+  async listStaff(tenantId: string): Promise<ToolStaff[]> {
+    const scoped = withTenant(this.db, tenantId);
+    return this.db
+      .select({
+        id: schema.staff.id,
+        name: schema.staff.name,
+        isRegisteredAgent: schema.staff.isRegisteredAgent,
+        credentialLabel: schema.staff.credentialLabel
+      })
+      .from(schema.staff)
+      .where(scoped.where(schema.staff, eq(schema.staff.active, true)))
+      .orderBy(asc(schema.staff.name));
+  }
+
   async updateCallerName(
     tenantId: string,
     callerId: string,
@@ -505,6 +661,7 @@ export class DrizzleToolRepository implements ToolRepository {
     callerId: string,
     values: {
       serviceId: string;
+      staffId: string | null;
       startsAt: Date;
       endsAt: Date;
       gcalEventId: string | null;
@@ -517,6 +674,7 @@ export class DrizzleToolRepository implements ToolRepository {
         scoped.values({
           callerId,
           serviceId: values.serviceId,
+          staffId: values.staffId,
           startsAt: values.startsAt,
           endsAt: values.endsAt,
           status: "confirmed" as const,

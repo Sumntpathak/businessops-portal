@@ -26,6 +26,7 @@ type Booking = {
   serviceName: string;
   callerName: string | null;
   callerPhone: string;
+  staffName: string | null;
 };
 type Service = { id: string; name: string; durationMinutes: number };
 type Slot = { startsAt: string; endsAt: string };
@@ -178,6 +179,7 @@ export function BookingsCalendar() {
                     <article key={booking.id} className="rounded-md border bg-card p-2 text-xs">
                       <p className="font-semibold">{localTime(booking.startsAt)} · {booking.serviceName}</p>
                       <p className="mt-1 text-muted-foreground">{booking.callerName || booking.callerPhone}</p>
+                      {booking.staffName && <p className="mt-0.5 text-muted-foreground">with {booking.staffName}</p>}
                     </article>
                   ))}
                   {!loading && dayBookings.length === 0 && <p className="text-xs text-muted-foreground">No bookings</p>}
@@ -194,7 +196,10 @@ export function BookingsCalendar() {
           {bookings.map((booking) => (
             <div key={booking.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
               <div>
-                <p className="text-sm font-medium">{booking.serviceName} · {booking.callerName || booking.callerPhone}</p>
+                <p className="text-sm font-medium">
+                  {booking.serviceName} · {booking.callerName || booking.callerPhone}
+                  {booking.staffName ? ` · ${booking.staffName}` : ""}
+                </p>
                 <p className="text-xs text-muted-foreground">{localDate(booking.startsAt)} at {localTime(booking.startsAt)} · {booking.status}</p>
               </div>
               {booking.status === "confirmed" && <button className="text-sm text-destructive hover:underline" onClick={() => void cancelBooking(booking.id)}>Cancel</button>}

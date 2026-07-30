@@ -3,6 +3,7 @@ import { schema, withTenant } from "@recepto/db";
 import { PageBody, PageHeader, PageShell } from "@/components/dashboard/page-shell";
 import { GoogleCalendarIntegration } from "@/components/settings/google-calendar-integration";
 import { IntakeFieldsSettings } from "@/components/settings/intake-fields-settings";
+import { TelephonySettings } from "@/components/settings/telephony-settings";
 import { TwilioIntegration } from "@/components/settings/twilio-integration";
 import { requireTenant } from "@/lib/auth-helpers";
 import { db } from "@/lib/db";
@@ -39,6 +40,7 @@ export default async function SettingsPage() {
           canEdit={canManageIntakeFields(context.tenant.role)}
         />
         <GoogleCalendarIntegration />
+        <TelephonySettings />
       </PageBody>
     </PageShell>
   );

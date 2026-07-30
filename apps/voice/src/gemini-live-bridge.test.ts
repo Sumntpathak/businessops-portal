@@ -9,6 +9,8 @@ const AZURE_TOOL_NAMES = [
   "save_memory",
   "update_caller_profile",
   "get_caller_context",
+  "list_staff",
+  "transfer_to_staff",
   "end_call"
 ];
 
@@ -32,12 +34,18 @@ describe("Gemini Live tool declarations", () => {
     assert.deepEqual(schema?.required, ["fields"]);
   });
 
-  it("takes no parameters for end_call and get_caller_context", () => {
-    for (const name of ["end_call", "get_caller_context"]) {
+  it("takes no parameters for end_call, get_caller_context, and list_staff", () => {
+    for (const name of ["end_call", "get_caller_context", "list_staff"]) {
       const tool = REALTIME_TOOLS.find((entry) => entry.name === name);
       const schema = tool?.parametersJsonSchema as { properties?: Record<string, unknown> } | undefined;
       assert.deepEqual(schema?.properties, {});
     }
+  });
+
+  it("never exposes a staff phone number as a transfer_to_staff parameter", () => {
+    const tool = REALTIME_TOOLS.find((entry) => entry.name === "transfer_to_staff");
+    const schema = tool?.parametersJsonSchema as { properties?: Record<string, unknown> } | undefined;
+    assert.deepEqual(Object.keys(schema?.properties ?? {}).sort(), ["staffId", "staffName"]);
   });
 });
 

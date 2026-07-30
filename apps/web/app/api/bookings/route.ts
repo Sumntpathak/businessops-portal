@@ -46,7 +46,8 @@ export async function GET(request: NextRequest) {
           notes: schema.bookings.notes,
           serviceName: schema.services.name,
           callerName: schema.callers.displayName,
-          callerPhone: schema.callers.phoneE164
+          callerPhone: schema.callers.phoneE164,
+          staffName: schema.staff.name
         })
         .from(schema.bookings)
         .innerJoin(
@@ -61,6 +62,15 @@ export async function GET(request: NextRequest) {
           and(
             eq(schema.callers.id, schema.bookings.callerId),
             eq(schema.callers.tenantId, tenantId)
+          )
+        )
+        // A booking may have no staff assigned (auto-assign mode) — left join
+        // so those bookings still appear, just with staffName null.
+        .leftJoin(
+          schema.staff,
+          and(
+            eq(schema.staff.id, schema.bookings.staffId),
+            eq(schema.staff.tenantId, tenantId)
           )
         )
         .where(

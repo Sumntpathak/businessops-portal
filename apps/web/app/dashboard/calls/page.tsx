@@ -21,10 +21,12 @@ export default async function CallsPage() {
       durationSeconds: schema.calls.durationSeconds,
       status: schema.calls.status,
       providerCallSid: schema.calls.providerCallSid,
+      recordingUrl: schema.calls.recordingUrl,
       callerId: schema.callers.id,
       callerName: schema.callers.displayName,
       callerPhone: schema.callers.phoneE164,
-      callerStage: schema.callers.stage
+      callerStage: schema.callers.stage,
+      transferredToStaffName: schema.staff.name
     })
     .from(schema.calls)
     .innerJoin(
@@ -32,6 +34,14 @@ export default async function CallsPage() {
       and(
         eq(schema.callers.id, schema.calls.callerId),
         eq(schema.callers.tenantId, context.tenantId)
+      )
+    )
+    // A call may have no staff assigned — left join so those calls still appear.
+    .leftJoin(
+      schema.staff,
+      and(
+        eq(schema.staff.id, schema.calls.transferredToStaffId),
+        eq(schema.staff.tenantId, context.tenantId)
       )
     )
     .where(scoped.where(schema.calls))
@@ -89,7 +99,9 @@ export default async function CallsPage() {
       durationSeconds: call.durationSeconds,
       status: call.status,
       summary: summaryByCall.get(call.id) ?? null,
-      callNumber: 0
+      callNumber: 0,
+      transferredToStaffName: call.transferredToStaffName,
+      recordingUrl: call.recordingUrl
     });
     groupByCaller.set(call.callerId, group);
   }
@@ -107,7 +119,9 @@ export default async function CallsPage() {
     durationSeconds: call.durationSeconds,
     status: call.status,
     summary: summaryByCall.get(call.id) ?? null,
-    callNumber: 1
+    callNumber: 1,
+    transferredToStaffName: call.transferredToStaffName,
+    recordingUrl: call.recordingUrl
   }));
 
   return (

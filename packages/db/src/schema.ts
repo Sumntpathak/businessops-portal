@@ -54,7 +54,8 @@ export const callStatusEnum = pgEnum("call_status", [
   "in_progress",
   "completed",
   "failed",
-  "abandoned"
+  "abandoned",
+  "transferred"
 ]);
 export const transcriptRoleEnum = pgEnum("transcript_role", [
   "caller",
@@ -113,6 +114,9 @@ export const tenants = pgTable(
     businessPhone: text("business_phone").notNull(),
     websiteUrl: text("website_url").notNull(),
     timezone: text("timezone").notNull().default("Asia/Kolkata"),
+    // Opt-in: Twilio places caller-consent/compliance responsibility on us, not
+    // them, so recording the transferred call segment defaults off per tenant.
+    transferRecordingEnabled: boolean("transfer_recording_enabled").notNull().default(false),
     deletedAt: timestamp("deleted_at", { withTimezone: true, mode: "date" }),
     ...auditColumns()
   },
@@ -279,13 +283,19 @@ export const calls = pgTable(
       .defaultNow(),
     endedAt: timestamp("ended_at", { withTimezone: true, mode: "date" }),
     durationSeconds: integer("duration_seconds"),
+    // Reused for the transferred segment's recording when a tenant has
+    // transferRecordingEnabled — nothing else populates this column today.
     recordingUrl: text("recording_url"),
+    transferredToStaffId: uuid("transferred_to_staff_id").references(() => staff.id, {
+      onDelete: "set null"
+    }),
     ...auditColumns()
   },
   (table) => [
     uniqueIndex("calls_provider_call_sid_uidx").on(table.providerCallSid),
     index("calls_tenant_id_idx").on(table.tenantId),
-    index("calls_caller_id_idx").on(table.callerId)
+    index("calls_caller_id_idx").on(table.callerId),
+    index("calls_transferred_to_staff_id_idx").on(table.transferredToStaffId)
   ]
 );
 
@@ -356,6 +366,30 @@ export const services = pgTable(
   ]
 );
 
+export const staff = pgTable(
+  "staff",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    // Nullable today; call transfer (a later phase) will require this to be set
+    // before a staff member can receive a live transferred call.
+    phoneE164: text("phone_e164"),
+    isRegisteredAgent: boolean("is_registered_agent").notNull().default(false),
+    // Free text so the credential this flag represents stays business-specific
+    // (e.g. "MARA registered") rather than hardcoding one industry's term.
+    credentialLabel: text("credential_label").notNull().default(""),
+    active: boolean("active").notNull().default(true),
+    ...auditColumns()
+  },
+  (table) => [
+    uniqueIndex("staff_tenant_name_uidx").on(table.tenantId, table.name),
+    index("staff_tenant_id_idx").on(table.tenantId)
+  ]
+);
+
 export const bookings = pgTable(
   "bookings",
   {
@@ -369,6 +403,9 @@ export const bookings = pgTable(
     serviceId: uuid("service_id")
       .notNull()
       .references(() => services.id, { onDelete: "restrict" }),
+    // Nullable: a booking may have no specific staff assigned (auto-assign
+    // mode, or tenants that never add staff) — must stay backward compatible.
+    staffId: uuid("staff_id").references(() => staff.id, { onDelete: "set null" }),
     startsAt: timestamp("starts_at", { withTimezone: true, mode: "date" }).notNull(),
     endsAt: timestamp("ends_at", { withTimezone: true, mode: "date" }).notNull(),
     status: bookingStatusEnum("status").notNull().default("confirmed"),
@@ -385,6 +422,7 @@ export const bookings = pgTable(
     index("bookings_tenant_id_idx").on(table.tenantId),
     index("bookings_caller_id_idx").on(table.callerId),
     index("bookings_service_id_idx").on(table.serviceId),
+    index("bookings_staff_id_idx").on(table.staffId),
     index("bookings_source_call_id_idx").on(table.sourceCallId)
   ]
 );
