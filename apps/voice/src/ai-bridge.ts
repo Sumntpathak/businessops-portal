@@ -29,6 +29,15 @@ export interface AIBridge {
    * channel is responsible for redirecting it to the staff member's phone.
    */
   onTransferRequested(callback: (selector: StaffSelector) => void): void;
+  /**
+   * Reports that a requested transfer could not go through (no matching
+   * staff phone on file, or the Twilio redirect itself failed) after the
+   * model already committed to transferring. Without this the caller is
+   * silently left on the same AI session with no explanation, and the model
+   * has no way to know the transfer didn't happen — it will keep treating
+   * its own earlier tool results as still valid instead of re-checking.
+   */
+  notifyTransferFailed(reason: string): void;
   stop(): Promise<void>;
 }
 
@@ -82,6 +91,10 @@ export class StubAIBridge implements AIBridge {
 
   onTransferRequested(callback: (selector: StaffSelector) => void): void {
     this.transferRequested = callback;
+  }
+
+  notifyTransferFailed(_reason: string): void {
+    // No-op: this stub is never wired into a live call.
   }
 
   async stop(): Promise<void> {

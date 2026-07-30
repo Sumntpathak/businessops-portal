@@ -1059,20 +1059,25 @@ mediaStreams.on("connection", (socket, request) => {
             { callId, tenantId: session.tenantId, selector },
             "Transfer requested but no matching staff phone number on file"
           );
+          bridge.notifyTransferFailed("no matching staff member with a phone number on file");
           return;
         }
 
         const tenantAdapter = await getTenantTwilioAdapter(session.tenantId);
+        await tenantAdapter.transferCall(
+          session.providerCallSid,
+          publicHttpUrl(`twilio/transfer/${session.callId}`)
+        );
+
+        // Only record the transfer once the redirect call itself succeeded —
+        // marking this beforehand would leave the row saying "transferred"
+        // even if the Twilio call above throws.
         const scoped = withTenant(db, session.tenantId);
         await db
           .update(schema.calls)
           .set({ status: "transferred", transferredToStaffId: staffMember.id, updatedAt: new Date() })
           .where(scoped.where(schema.calls, eq(schema.calls.id, session.callId)));
 
-        await tenantAdapter.transferCall(
-          session.providerCallSid,
-          publicHttpUrl(`twilio/transfer/${session.callId}`)
-        );
         // The call is still live, just handed off to new TwiML — do not
         // finalize()/hangup here. /twilio/transfer-complete reports the
         // outcome once the dialed leg ends.
@@ -1080,6 +1085,7 @@ mediaStreams.on("connection", (socket, request) => {
         socket.close(1000, "Call transferred to staff");
       } catch (error) {
         app.log.error({ err: error, callId }, "Call transfer failed");
+        bridge.notifyTransferFailed("a technical issue on our end");
       }
     })();
   });

@@ -528,6 +528,22 @@ export class AzureRealtimeBridge implements AIBridge {
     this.transferRequested = callback;
   }
 
+  notifyTransferFailed(reason: string): void {
+    this.send({
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "system",
+        content: [{
+          type: "input_text",
+          text: `The transfer you just attempted did not go through (${reason}). Briefly and naturally let the caller know you couldn't connect them, without repeating internal details, and keep helping them yourself.`
+        }]
+      }
+    });
+    this.send({ type: "response.create" });
+    this.activeResponse = true;
+  }
+
   async stop(): Promise<void> {
     this.stopped = true;
     this.ready = false;
