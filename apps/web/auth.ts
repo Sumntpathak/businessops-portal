@@ -4,11 +4,11 @@ import Google from "next-auth/providers/google";
 import bcrypt from "bcryptjs";
 import { eq } from "drizzle-orm";
 import { schema } from "@recepto/db";
-import { validateEnv } from "@recepto/shared/env";
+import { validateCoreEnv } from "@recepto/shared/env";
 import { db } from "@/lib/db";
 import { loginSchema } from "@/lib/auth-schemas";
 
-const env = validateEnv(process.env);
+const env = validateCoreEnv(process.env);
 const secureCookies = process.env.NODE_ENV === "production";
 
 export const { handlers, auth, signIn, signOut } = NextAuth({

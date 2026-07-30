@@ -4,7 +4,7 @@ import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { encryptRefreshToken, schema, withTenant } from "@recepto/db";
-import { validateEnv } from "@recepto/shared/env";
+import { validateCoreEnv } from "@recepto/shared/env";
 import { getSessionUser } from "@/lib/auth-helpers";
 import { calendarService } from "@/lib/calendar";
 import { db } from "@/lib/db";
@@ -40,7 +40,7 @@ export async function GET(request: NextRequest) {
     return settingsRedirect(request, "denied");
   }
 
-  const env = validateEnv(process.env);
+  const env = validateCoreEnv(process.env);
   const payload = verifyGoogleOAuthState(
     parsed.data.state,
     cookieValue,

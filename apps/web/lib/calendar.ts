@@ -2,10 +2,10 @@ import {
   AvailabilityService,
   CalendarService
 } from "@recepto/calendar";
-import { validateEnv } from "@recepto/shared/env";
+import { validateCoreEnv } from "@recepto/shared/env";
 import { db } from "@/lib/db";
 
-const env = validateEnv(process.env);
+const env = validateCoreEnv(process.env);
 const globalCalendar = globalThis as unknown as {
   calendarService?: CalendarService;
   availabilityService?: AvailabilityService;

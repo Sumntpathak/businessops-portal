@@ -1,7 +1,7 @@
 import { createDatabase } from "@recepto/db";
-import { validateEnv } from "@recepto/shared/env";
+import { validateCoreEnv } from "@recepto/shared/env";
 
-const env = validateEnv(process.env);
+const env = validateCoreEnv(process.env);
 type Database = ReturnType<typeof createDatabase>;
 const globalDatabase = globalThis as unknown as { receptoDb?: Database };
 

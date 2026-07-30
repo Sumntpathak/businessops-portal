@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import twilio from "twilio";
 import { z } from "zod";
 import { encryptTwilioAuthToken, schema, withTenant } from "@recepto/db";
-import { validateEnv } from "@recepto/shared/env";
+import { validateCoreEnv } from "@recepto/shared/env";
 import { apiError } from "@/lib/api";
 import { getApiTenantContext } from "@/lib/api-auth";
 import { db } from "@/lib/db";
@@ -18,7 +18,7 @@ const connectSchema = z.object({
 });
 
 function voiceWebhookUrl(): string {
-  const env = validateEnv(process.env);
+  const env = validateCoreEnv(process.env);
   const base = env.PUBLIC_VOICE_URL.endsWith("/")
     ? env.PUBLIC_VOICE_URL
     : env.PUBLIC_VOICE_URL + "/";
@@ -127,7 +127,7 @@ export async function POST(request: Request) {
     );
   }
 
-  const env = validateEnv(process.env);
+  const env = validateCoreEnv(process.env);
   const now = new Date();
 
   await db.transaction(async (tx) => {

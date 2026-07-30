@@ -1,7 +1,7 @@
-import { validateEnv } from "@recepto/shared/env";
+import { validateCoreEnv } from "@recepto/shared/env";
 
 export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME === "nodejs") {
-    validateEnv(process.env);
+    validateCoreEnv(process.env);
   }
 }
