@@ -5,6 +5,7 @@ import {
   eq,
   gte,
   ilike,
+  isNotNull,
   isNull,
   sql
 } from "drizzle-orm";
@@ -560,7 +561,19 @@ export class DrizzleToolRepository implements ToolRepository {
     }
 
     const query = (selector.staffName ?? "").trim();
-    if (!query) return null;
+    if (!query) {
+      const [anyStaff] = await this.db
+        .select(columns)
+        .from(schema.staff)
+        .where(
+          scoped.where(
+            schema.staff,
+            and(eq(schema.staff.active, true), isNotNull(schema.staff.phoneE164))
+          )
+        )
+        .limit(1);
+      return anyStaff ?? null;
+    }
     const likeQuery = query.replace(/[\\%_]/g, "\\$&");
 
     const [match] = await this.db

@@ -413,6 +413,12 @@ export class GeminiLiveBridge implements AIBridge {
       this.audioOut?.(pcmToTwilioMulaw(base64PcmToInt16(audioBase64), OUTPUT_SAMPLE_RATE));
     }
 
+    for (const part of content?.modelTurn?.parts ?? []) {
+      if (part.inlineData?.data) {
+        this.audioOut?.(pcmToTwilioMulaw(base64PcmToInt16(part.inlineData.data), OUTPUT_SAMPLE_RATE));
+      }
+    }
+
     const inputText = content?.inputTranscription?.text?.trim();
     if (inputText) {
       this.transcript?.({ role: "caller", content: inputText, at: new Date() });
