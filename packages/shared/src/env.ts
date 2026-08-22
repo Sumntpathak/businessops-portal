@@ -42,7 +42,7 @@ export const voiceEnvSchema = z.object({
   // preserves current behavior; "gemini-live" requires the GOOGLE_CLOUD_*
   // vars below. Kept flag-switchable so a bad Gemini Live call can be
   // reverted to Azure instantly without a deploy of logic changes.
-  VOICE_PROVIDER: z.enum(["azure", "gemini-live"]).default("azure"),
+  VOICE_PROVIDER: z.enum(["azure", "gemini-live"]).default("gemini-live"),
   // Vertex AI auth for Gemini Live — a GCP service account (not an AI Studio
   // API key) so usage draws from Vertex billing/credit. Optional at the
   // schema level so Azure-only deployments don't need them; enforced at the

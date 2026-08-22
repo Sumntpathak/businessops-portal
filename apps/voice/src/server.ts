@@ -1015,7 +1015,16 @@ mediaStreams.on("connection", (socket, request) => {
     }
   };
 
+  app.log.info(
+    { callId, voiceProvider: env.VOICE_PROVIDER, model: env.VOICE_PROVIDER === "gemini-live" ? env.GEMINI_LIVE_MODEL : env.AZURE_REALTIME_MODEL },
+    "Initializing AI voice bridge"
+  );
+  let audioOutFrames = 0;
   bridge.onAudioOut((audio) => {
+    audioOutFrames += 1;
+    if (audioOutFrames === 1 || audioOutFrames % 100 === 0) {
+      app.log.info({ callId, audioOutFrames, bytes: audio.length }, "Sending audio frame to Twilio");
+    }
     if (socket.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify(adapter.encodeAudioOut(audio)));
     }
