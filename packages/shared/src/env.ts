@@ -93,6 +93,19 @@ export function validateEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
 /** For apps/web: validates only the fields the web app actually reads. */
 export function validateCoreEnv(source: NodeJS.ProcessEnv = process.env): CoreEnv {
   const result = coreEnvSchema.safeParse(source);
-  if (!result.success) throw new Error(formatIssues(result.error));
+  if (!result.success) {
+    if (source.NEXT_PHASE === "phase-production-build" || process.env.NEXT_PHASE === "phase-production-build") {
+      return {
+        DATABASE_URL: source.DATABASE_URL || "postgresql://dummy:dummy@localhost:5432/dummy",
+        SESSION_SECRET: source.SESSION_SECRET || "01234567890123456789012345678901",
+        GOOGLE_CLIENT_ID: source.GOOGLE_CLIENT_ID || "dummy",
+        GOOGLE_CLIENT_SECRET: source.GOOGLE_CLIENT_SECRET || "dummy",
+        GOOGLE_REDIRECT_URI: source.GOOGLE_REDIRECT_URI || "http://localhost:3000/api/auth/callback/google",
+        PUBLIC_WEB_URL: source.PUBLIC_WEB_URL || "http://localhost:3000",
+        PUBLIC_VOICE_URL: source.PUBLIC_VOICE_URL || "http://localhost:3001"
+      };
+    }
+    throw new Error(formatIssues(result.error));
+  }
   return result.data;
 }
