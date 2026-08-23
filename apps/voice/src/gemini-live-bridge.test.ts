@@ -52,11 +52,21 @@ describe("Gemini Live tool declarations", () => {
 describe("closing-question detection for the silence timer", () => {
   it("matches the agent's English closing question", () => {
     assert.ok(CLOSING_QUESTION_PATTERN.test("Is there anything else I can help you with today?"));
+    assert.ok(CLOSING_QUESTION_PATTERN.test("Is there anything else?"));
+    assert.ok(CLOSING_QUESTION_PATTERN.test("Anything else I can help with?"));
   });
 
   it("matches Hinglish/Hindi closing phrasing", () => {
     assert.ok(CLOSING_QUESTION_PATTERN.test("Aur kuch aur chahiye aapko?"));
     assert.ok(CLOSING_QUESTION_PATTERN.test("क्या आपको कुछ और चाहिए?"));
+    assert.ok(CLOSING_QUESTION_PATTERN.test("kuch and chahiye aapko?"));
+  });
+
+  it("does not match opening greetings", () => {
+    assert.ok(!CLOSING_QUESTION_PATTERN.test("Hello! Thank you for calling. How can I help you today?"));
+    assert.ok(!CLOSING_QUESTION_PATTERN.test("Hello! Thank you for calling BrightSmile Dental. How can I help you today?"));
+    assert.ok(!CLOSING_QUESTION_PATTERN.test("Hi there, how may I assist you today?"));
+    assert.ok(!CLOSING_QUESTION_PATTERN.test("Good morning, how can I help?"));
   });
 
   it("does not match an ordinary mid-conversation turn", () => {

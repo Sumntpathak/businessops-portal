@@ -68,22 +68,23 @@ const END_CALL_DRAIN_MS = 800;
 
 /**
  * Silence-timeout: if the caller says nothing for this long after the agent
- * finishes a turn, prompt once ("anything else?"). If still silent after
- * SILENCE_HANGUP_MS more, end the call. Model-driven end_call already covers
+ * finishes a closing question ("anything else?"), prompt once. If still silent
+ * after SILENCE_HANGUP_MS more, end the call. Model-driven end_call already covers
  * the caller saying goodbye; this covers the caller just going quiet and
- * never responding, which end_call alone has no way to detect.
+ * abandoning the line at the end of the call.
  */
-const SILENCE_PROMPT_MS = 2_000;
-const SILENCE_HANGUP_MS = 3_000;
+const SILENCE_PROMPT_MS = 6_000;
+const SILENCE_HANGUP_MS = 6_000;
 
 /**
  * Matches the agent's closing "anything else?" question (agent.md's ENDING
  * THE CALL rule) in English or Hinglish/Hindi phrasing, so the silence timer
- * only arms once the conversation is actually winding down — not after every
- * ordinary mid-call turn, which would misfire on normal thinking pauses.
+ * only arms once the conversation is actually winding down — not after an opening
+ * greeting ("How can I help you today?") or ordinary mid-call turns.
  */
 export const CLOSING_QUESTION_PATTERN =
-  /anything else|kuch aur|कुछ और|kuch and chahiye|else i can help|help you with today/i;
+  /anything else|kuch aur|कुछ और|kuch and chahiye|else (?:i|we) can help/i;
+
 
 export interface GeminiLiveBridgeOptions {
   project?: string;
