@@ -86,10 +86,11 @@ export const CLOSING_QUESTION_PATTERN =
   /anything else|kuch aur|कुछ और|kuch and chahiye|else i can help|help you with today/i;
 
 export interface GeminiLiveBridgeOptions {
-  project: string;
-  location: string;
+  project?: string;
+  location?: string;
   model: string;
   voice?: string;
+  apiKey?: string;
   /**
    * Parsed GCP service-account JSON (the JWTInput shape: client_email,
    * private_key, etc). Used when the credentials are supplied inline via an
@@ -236,12 +237,16 @@ export class GeminiLiveBridge implements AIBridge {
   private currentAgentTurnText = "";
 
   constructor(private readonly options: GeminiLiveBridgeOptions) {
-    this.client = new GoogleGenAI({
-      vertexai: true,
-      project: options.project,
-      location: options.location,
-      ...(options.credentials ? { googleAuthOptions: { credentials: options.credentials } } : {})
-    });
+    if (options.apiKey) {
+      this.client = new GoogleGenAI({ apiKey: options.apiKey });
+    } else {
+      this.client = new GoogleGenAI({
+        vertexai: true,
+        project: options.project ?? "savr-457c4",
+        location: options.location ?? "global",
+        ...(options.credentials ? { googleAuthOptions: { credentials: options.credentials } } : {})
+      });
+    }
   }
 
   async start(session: CallSession): Promise<void> {

@@ -947,10 +947,11 @@ mediaStreams.on("connection", (socket, request) => {
   const bridge: AIBridge =
     env.VOICE_PROVIDER === "gemini-live"
       ? new GeminiLiveBridge({
-          project: requireEnv(env.GOOGLE_CLOUD_PROJECT, "GOOGLE_CLOUD_PROJECT"),
+          project: env.GOOGLE_CLOUD_PROJECT || "savr-457c4",
           location: env.GOOGLE_CLOUD_LOCATION,
           model: env.GEMINI_LIVE_MODEL,
           voice: env.GEMINI_LIVE_VOICE,
+          apiKey: env.GEMINI_API_KEY,
           credentials: parseInlineGoogleCredentials(),
           logger: app.log
         })
