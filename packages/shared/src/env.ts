@@ -62,6 +62,7 @@ export const voiceEnvSchema = z.object({
   // this project on 2026-07-23. Vertex's Live model catalog is preview-stage and
   // moves fast — re-verify if this starts 404ing.
   GEMINI_LIVE_MODEL: z.string().default("gemini-live-2.5-flash"),
+  GEMINI_LIVE_VOICE: z.string().default("Kore"),
   // Repurposed to hold a Cloudflare Workers AI API token (used for both the
   // call-summary worker and the onboarding distiller, via GLM-4.7-Flash).
   ANTHROPIC_API_KEY: z.string().min(1),

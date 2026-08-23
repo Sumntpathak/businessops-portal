@@ -950,6 +950,7 @@ mediaStreams.on("connection", (socket, request) => {
           project: requireEnv(env.GOOGLE_CLOUD_PROJECT, "GOOGLE_CLOUD_PROJECT"),
           location: env.GOOGLE_CLOUD_LOCATION,
           model: env.GEMINI_LIVE_MODEL,
+          voice: env.GEMINI_LIVE_VOICE,
           credentials: parseInlineGoogleCredentials(),
           logger: app.log
         })

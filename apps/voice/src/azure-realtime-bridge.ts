@@ -367,7 +367,7 @@ export function buildSessionConfig(
       },
       output: {
         format: { type: "audio/pcmu" },
-        voice: voice ?? "marin"
+        voice: voice ?? "shimmer"
       }
     }
   };
