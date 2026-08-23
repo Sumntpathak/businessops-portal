@@ -67,14 +67,12 @@ function languageHintCodes(languages: string[]): string[] {
 const END_CALL_DRAIN_MS = 800;
 
 /**
- * Silence-timeout: if the caller says nothing for this long after the agent
- * finishes a closing question ("anything else?"), prompt once. If still silent
- * after SILENCE_HANGUP_MS more, end the call. Model-driven end_call already covers
- * the caller saying goodbye; this covers the caller just going quiet and
- * abandoning the line at the end of the call.
+ * Silence-timeout: if the caller says nothing for 20s after the agent
+ * finishes a closing question ("anything else?"), end the call cleanly.
+ * Model-driven end_call already covers the caller saying goodbye; this covers
+ * the caller just going quiet and abandoning the line at the end of the call.
  */
-const SILENCE_PROMPT_MS = 6_000;
-const SILENCE_HANGUP_MS = 6_000;
+const SILENCE_HANGUP_MS = 20_000;
 
 /**
  * Matches the agent's closing "anything else?" question (agent.md's ENDING
@@ -236,6 +234,7 @@ export class GeminiLiveBridge implements AIBridge {
   private stopped = false;
   private silenceTimer?: NodeJS.Timeout;
   private currentAgentTurnText = "";
+  private currentCallerTurnText = "";
 
   constructor(private readonly options: GeminiLiveBridgeOptions) {
     if (options.apiKey) {
@@ -428,43 +427,54 @@ export class GeminiLiveBridge implements AIBridge {
 
     const inputText = content?.inputTranscription?.text?.trim();
     if (inputText) {
-      this.transcript?.({ role: "caller", content: inputText, at: new Date() });
+      this.currentCallerTurnText += (this.currentCallerTurnText ? " " : "") + inputText;
       this.clearSilenceTimer();
     }
 
     const outputText = content?.outputTranscription?.text?.trim();
     if (outputText) {
-      this.transcript?.({ role: "agent", content: outputText, at: new Date() });
-      this.currentAgentTurnText += ` ${outputText}`;
+      if (this.currentCallerTurnText.trim()) {
+        this.transcript?.({ role: "caller", content: this.currentCallerTurnText.trim(), at: new Date() });
+        this.currentCallerTurnText = "";
+      }
+      this.currentAgentTurnText += (this.currentAgentTurnText ? " " : "") + outputText;
     }
 
     for (const call of message.toolCall?.functionCalls ?? []) {
+      if (this.currentCallerTurnText.trim()) {
+        this.transcript?.({ role: "caller", content: this.currentCallerTurnText.trim(), at: new Date() });
+        this.currentCallerTurnText = "";
+      }
       void this.executeToolCall(call);
     }
 
     // Gemini's own turnComplete already waits for its modeled realtime playback
     // to finish (see LiveServerContent docs); add a short drain margin for the
     // downstream Twilio leg before actually disconnecting.
-    if (content?.turnComplete && this.endCallRequested) {
-      this.endCallRequested = false;
-      this.clearSilenceTimer();
-      setTimeout(() => this.endCall?.(), END_CALL_DRAIN_MS);
-    } else if (content?.turnComplete && this.pendingTransfer) {
-      // Same reasoning as end_call: wait for the "connecting you now" line to
-      // finish streaming before actually redirecting the call.
-      const selector = this.pendingTransfer;
-      this.pendingTransfer = undefined;
-      this.clearSilenceTimer();
-      setTimeout(() => this.transferRequested?.(selector), END_CALL_DRAIN_MS);
-    } else if (content?.turnComplete) {
-      // Only start watching for silence once the agent has asked its closing
-      // "anything else?" question (per agent.md's ENDING THE CALL rule) —
-      // arming this after every turn would fire during completely normal
-      // mid-conversation thinking pauses, not just an abandoned call.
-      if (CLOSING_QUESTION_PATTERN.test(this.currentAgentTurnText)) {
-        this.armSilenceTimer();
+    if (content?.turnComplete) {
+      if (this.currentCallerTurnText.trim()) {
+        this.transcript?.({ role: "caller", content: this.currentCallerTurnText.trim(), at: new Date() });
+        this.currentCallerTurnText = "";
       }
-      this.currentAgentTurnText = "";
+      if (this.currentAgentTurnText.trim()) {
+        this.transcript?.({ role: "agent", content: this.currentAgentTurnText.trim(), at: new Date() });
+      }
+
+      if (this.endCallRequested) {
+        this.endCallRequested = false;
+        this.clearSilenceTimer();
+        setTimeout(() => this.endCall?.(), END_CALL_DRAIN_MS);
+      } else if (this.pendingTransfer) {
+        const selector = this.pendingTransfer;
+        this.pendingTransfer = undefined;
+        this.clearSilenceTimer();
+        setTimeout(() => this.transferRequested?.(selector), END_CALL_DRAIN_MS);
+      } else {
+        if (CLOSING_QUESTION_PATTERN.test(this.currentAgentTurnText)) {
+          this.armSilenceTimer();
+        }
+        this.currentAgentTurnText = "";
+      }
     }
   }
 
@@ -479,21 +489,10 @@ export class GeminiLiveBridge implements AIBridge {
       if (this.endCallRequested || this.pendingTransfer || this.stopped) return;
       this.options.logger?.info(
         { callId: this.callSession?.callId },
-        "Caller silent after agent turn — prompting once"
+        "Caller silent after closing question — ending call cleanly"
       );
-      this.session?.sendClientContent({
-        turns: [{ role: "user", parts: [{ text: "[SYSTEM: The caller has gone silent. Briefly check if they are still there or need anything else.]" }] }],
-        turnComplete: true
-      });
-      this.silenceTimer = setTimeout(() => {
-        if (this.endCallRequested || this.pendingTransfer || this.stopped) return;
-        this.options.logger?.info(
-          { callId: this.callSession?.callId },
-          "Caller still silent after prompt — ending call"
-        );
-        this.endCall?.();
-      }, SILENCE_HANGUP_MS);
-    }, SILENCE_PROMPT_MS);
+      this.endCall?.();
+    }, SILENCE_HANGUP_MS);
   }
 
   private async executeToolCall(call: FunctionCall): Promise<void> {
