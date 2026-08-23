@@ -414,15 +414,16 @@ export class GeminiLiveBridge implements AIBridge {
       this.clearSilenceTimer();
     }
 
-    const audioBase64 = message.data;
-    if (audioBase64) {
-      this.audioOut?.(pcmToTwilioMulaw(base64PcmToInt16(audioBase64), OUTPUT_SAMPLE_RATE));
-    }
-
+    let sentAudio = false;
     for (const part of content?.modelTurn?.parts ?? []) {
       if (part.inlineData?.data) {
+        sentAudio = true;
         this.audioOut?.(pcmToTwilioMulaw(base64PcmToInt16(part.inlineData.data), OUTPUT_SAMPLE_RATE));
       }
+    }
+
+    if (!sentAudio && message.data) {
+      this.audioOut?.(pcmToTwilioMulaw(base64PcmToInt16(message.data), OUTPUT_SAMPLE_RATE));
     }
 
     const inputText = content?.inputTranscription?.text?.trim();

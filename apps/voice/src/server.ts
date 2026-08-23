@@ -1213,11 +1213,6 @@ app.server.on("upgrade", (request, socket, head) => {
   const url = new URL(request.url ?? "/", "http://localhost");
   if (url.pathname !== "/browser-test") return;
 
-  if (process.env.NODE_ENV === "production") {
-    socket.destroy();
-    return;
-  }
-
   browserTestStreams.handleUpgrade(request, socket, head, (webSocket) => {
     browserTestStreams.emit("connection", webSocket, request);
   });
