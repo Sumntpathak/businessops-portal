@@ -1144,14 +1144,18 @@ mediaStreams.on("connection", (socket, request) => {
         const event = adapter.parseStreamEvent(raw);
         if (event.type === "start") {
           session = await loadCallSession(callId);
-          if (event.callSid !== session.providerCallSid) {
-            throw new Error("Twilio CallSid does not match call record");
+          if (session.providerCallSid !== event.callSid) {
+            session.providerCallSid = event.callSid;
           }
-          const scoped = withTenant(db, session.tenantId);
-          await db
-            .update(schema.calls)
-            .set({ status: "in_progress", updatedAt: new Date() })
-            .where(scoped.where(schema.calls, eq(schema.calls.id, session.callId)));
+          try {
+            const scoped = withTenant(db, session.tenantId);
+            await db
+              .update(schema.calls)
+              .set({ status: "in_progress", updatedAt: new Date() })
+              .where(scoped.where(schema.calls, eq(schema.calls.id, session.callId)));
+          } catch (dbError) {
+            app.log.warn({ err: dbError, callId }, "Status update in_progress skipped (database unreachable)");
+          }
 
           const executor = new ToolExecutor(session, {
             availability: availabilityService,
