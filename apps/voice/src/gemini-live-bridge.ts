@@ -409,6 +409,8 @@ export class GeminiLiveBridge implements AIBridge {
       );
       this.bargeIn?.();
       this.clearSilenceTimer();
+      this.currentAgentTurnText = "";
+      return;
     }
 
     let sentAudio = false;
