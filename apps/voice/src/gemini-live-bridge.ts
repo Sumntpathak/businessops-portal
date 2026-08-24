@@ -268,11 +268,11 @@ export class GeminiLiveBridge implements AIBridge {
         },
         inputAudioTranscription: transcriptionConfig,
         outputAudioTranscription: {},
-        // Set to END_SENSITIVITY_DEFAULT for snappy ~400ms natural human turn-taking
+        // Set to END_SENSITIVITY_UNSPECIFIED for snappy ~400ms natural human turn-taking
         // gap without sluggish pauses after the caller finishes speaking.
         realtimeInputConfig: {
           automaticActivityDetection: {
-            endOfSpeechSensitivity: EndSensitivity.END_SENSITIVITY_DEFAULT
+            endOfSpeechSensitivity: EndSensitivity.END_SENSITIVITY_UNSPECIFIED
           }
         }
       },
