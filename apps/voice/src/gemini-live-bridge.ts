@@ -7,82 +7,45 @@ import type {
 } from "@google/genai";
 import type { AIBridge, StaffSelector, TranscriptEvent } from "./ai-bridge.js";
 import type { CallSession } from "./call-session.js";
-import { buildInstructions } from "./azure-realtime-bridge.js";
+import { buildInstructions, languageHintCodes } from "./instructions.js";
 import {
   base64PcmToInt16,
   int16ToBase64Pcm,
   pcmToTwilioMulaw,
   twilioMulawToPcm
 } from "./audio/mulaw-pcm.js";
+import { VoiceLatencyTracker } from "./latency-tracker.js";
 
 /** Gemini Live streams PCM16 in at 16kHz and out at 24kHz. */
 const INPUT_SAMPLE_RATE = 16_000;
 const OUTPUT_SAMPLE_RATE = 24_000;
 
 /**
- * BCP-47 codes for Gemini Live's transcription languageHints. Hindi maps to
- * hi-IN specifically (not the bare "hi") per direct request — this business's
- * callers are Indian, and India is the intended locale for these languages.
- * Anything not listed falls back to auto-detect (no hints sent).
- */
-const TRANSCRIBE_LANGUAGE_CODES: Record<string, string> = {
-  english: "en-IN",
-  hindi: "hi-IN",
-  punjabi: "pa-IN",
-  tamil: "ta-IN",
-  telugu: "te-IN",
-  bengali: "bn-IN",
-  marathi: "mr-IN",
-  gujarati: "gu-IN",
-  kannada: "kn-IN",
-  malayalam: "ml-IN",
-  urdu: "ur-IN",
-  spanish: "es-ES",
-  french: "fr-FR",
-  german: "de-DE",
-  arabic: "ar-SA",
-  mandarin: "zh-CN",
-  chinese: "zh-CN",
-  japanese: "ja-JP"
-};
-
-/**
- * Anchors transcription to the tenant's configured languages, same intent as
- * transcriptionConfig() in azure-realtime-bridge.ts — without hints the
- * transcriber guesses per utterance and can write Hindi speech in the wrong
- * script or drift to an unrelated language mid-call.
- */
-function languageHintCodes(languages: string[]): string[] {
-  return languages
-    .map((language) => TRANSCRIBE_LANGUAGE_CODES[language.toLowerCase()])
-    .filter((code): code is string => Boolean(code));
-}
-
-/**
- * Grace period after `turnComplete` before actually hanging up. Gemini's own
- * turnComplete already accounts for its internal realtime-playback wait (see
- * LiveServerContent docs), but that covers Gemini's model of playback, not the
- * downstream Twilio leg's actual buffered audio reaching the phone line.
+ * Grace period after `turnComplete` before actually hanging up.
  */
 const END_CALL_DRAIN_MS = 800;
 
 /**
  * Silence-timeout: if the caller says nothing for 20s after the agent
  * finishes a closing question ("anything else?"), end the call cleanly.
- * Model-driven end_call already covers the caller saying goodbye; this covers
- * the caller just going quiet and abandoning the line at the end of the call.
  */
 const SILENCE_HANGUP_MS = 20_000;
 
 /**
- * Matches the agent's closing "anything else?" question (agent.md's ENDING
- * THE CALL rule) in English or Hinglish/Hindi phrasing, so the silence timer
- * only arms once the conversation is actually winding down — not after an opening
- * greeting ("How can I help you today?") or ordinary mid-call turns.
+ * Matches the agent's closing "anything else?" question in English or Hinglish/Hindi phrasing.
  */
 export const CLOSING_QUESTION_PATTERN =
   /anything else|kuch aur|कुछ और|kuch and chahiye|else (?:i|we) can help/i;
 
+export type BridgeState =
+  | "READY"
+  | "USER_SPEAKING"
+  | "WAITING_FOR_MODEL"
+  | "TOOL_REQUESTED"
+  | "TOOL_EXECUTING"
+  | "TOOL_RESULT_SENT"
+  | "MODEL_RESPONDING"
+  | "TURN_COMPLETE";
 
 export interface GeminiLiveBridgeOptions {
   project?: string;
@@ -90,18 +53,13 @@ export interface GeminiLiveBridgeOptions {
   model: string;
   voice?: string;
   apiKey?: string;
-  /**
-   * Parsed GCP service-account JSON (the JWTInput shape: client_email,
-   * private_key, etc). Used when the credentials are supplied inline via an
-   * env var rather than a file path — e.g. on hosts without secret-file
-   * support, where GOOGLE_APPLICATION_CREDENTIALS can't point at a mounted
-   * file. When omitted, falls back to standard Application Default
-   * Credentials (GOOGLE_APPLICATION_CREDENTIALS file path, workload identity, etc).
-   */
+  vadSensitivity?: "strict" | "unspecified" | "relaxed";
   credentials?: Record<string, unknown>;
   logger?: {
     info(values: Record<string, unknown>, message: string): void;
     error(values: Record<string, unknown>, message: string): void;
+    warn?(values: Record<string, unknown>, message: string): void;
+    debug?(values: Record<string, unknown>, message: string): void;
   };
 }
 
@@ -154,10 +112,10 @@ export const REALTIME_TOOLS: FunctionDeclaration[] = [
     parametersJsonSchema: {
       type: "object",
       properties: {
-        kind: { type: "string", enum: ["fact", "preference"] },
+        kind: { type: "string", enum: ["fact", "preference", "summary"] },
         content: { type: "string", description: "One short sentence describing the fact or preference." }
       },
-      required: ["kind", "content"]
+      required: ["content"]
     }
   },
   {
@@ -208,33 +166,48 @@ export const REALTIME_TOOLS: FunctionDeclaration[] = [
   }
 ];
 
+function resolveEndSensitivity(sensitivity?: "strict" | "unspecified" | "relaxed"): EndSensitivity {
+  if (sensitivity === "strict") {
+    return (EndSensitivity as unknown as { END_SENSITIVITY_STRICT?: EndSensitivity }).END_SENSITIVITY_STRICT ?? EndSensitivity.END_SENSITIVITY_UNSPECIFIED;
+  }
+  if (sensitivity === "relaxed") {
+    return (EndSensitivity as unknown as { END_SENSITIVITY_RELAXED?: EndSensitivity }).END_SENSITIVITY_RELAXED ?? EndSensitivity.END_SENSITIVITY_UNSPECIFIED;
+  }
+  return EndSensitivity.END_SENSITIVITY_UNSPECIFIED;
+}
+
 /**
- * Bridges a Twilio G.711 mu-law media stream to Gemini Live (Vertex AI),
- * which does STT+LLM+TTS+tool-calling in one bidirectional WebSocket. Audio
- * is transcoded mulaw8k <-> pcm16 at Gemini's expected rates (16k in / 24k
- * out). Tool calls are delegated to the ToolExecutor registered via
- * onToolCall, mirroring AzureRealtimeBridge's contract.
+ * Bridges a Twilio G.711 mu-law media stream to Gemini Live (Vertex AI / Google AI Studio),
+ * with a deterministic state machine, zero-PII latency tracking, and robust function call lifecycle.
  */
 export class GeminiLiveBridge implements AIBridge {
   private readonly client: GoogleGenAI;
   private session?: Session;
   private callSession?: CallSession;
+  private latencyTracker?: VoiceLatencyTracker;
   private audioOut?: (buffer: Buffer) => void;
   private toolCall?: (name: string, input: unknown) => Promise<unknown> | unknown;
   private transcript?: (event: TranscriptEvent) => void;
   private bargeIn?: () => void;
   private closed?: () => void;
   private endCall?: () => void;
+  private turnComplete?: () => void;
+  private stateChange?: (from: BridgeState, to: BridgeState) => void;
   private transferRequested?: (selector: StaffSelector) => void;
   private endCallRequested = false;
   private pendingTransfer?: StaffSelector;
   private readonly pendingAudio: Buffer[] = [];
   private readonly handledToolCalls = new Set<string>();
+  private readonly activeToolCalls = new Set<string>();
   private ready = false;
   private stopped = false;
   private silenceTimer?: NodeJS.Timeout;
   private currentAgentTurnText = "";
   private currentCallerTurnText = "";
+  private isUserSpeaking = false;
+  private state: BridgeState = "READY";
+  private lastEventTime = Date.now();
+  private lastEventName = "NONE";
 
   constructor(private readonly options: GeminiLiveBridgeOptions) {
     if (options.apiKey) {
@@ -249,14 +222,47 @@ export class GeminiLiveBridge implements AIBridge {
     }
   }
 
+  public getState(): BridgeState {
+    return this.state;
+  }
+
+  public getPendingToolCount(): number {
+    return this.activeToolCalls.size;
+  }
+
+  public getLastEvent(): { name: string; timestamp: number } {
+    return { name: this.lastEventName, timestamp: this.lastEventTime };
+  }
+
+  public isSessionReady(): boolean {
+    return this.ready && !this.stopped && this.state === "READY" && this.activeToolCalls.size === 0;
+  }
+
+  public onStateChange(callback: (from: BridgeState, to: BridgeState) => void): void {
+    this.stateChange = callback;
+  }
+
+  private transitionTo(newState: BridgeState): void {
+    const oldState = this.state;
+    if (oldState === newState) return;
+    this.state = newState;
+    this.stateChange?.(oldState, newState);
+  }
+
+  private recordEvent(name: string): void {
+    this.lastEventTime = Date.now();
+    this.lastEventName = name;
+  }
+
   async start(session: CallSession): Promise<void> {
     this.callSession = session;
+    this.latencyTracker = new VoiceLatencyTracker(session.callId, this.options.logger);
+    this.transitionTo("READY");
 
     const hints = languageHintCodes(session.agent.languages);
     const transcriptionConfig = hints.length ? { languageHints: { languageCodes: hints } } : {};
+    const endSensitivity = resolveEndSensitivity(this.options.vadSensitivity);
 
-    // client.live.connect() resolves only once the session is genuinely ready
-    // (after setupComplete) — no separate onopen-driven promise needed.
     const connectPromise = this.client.live.connect({
       model: this.options.model,
       config: {
@@ -268,30 +274,33 @@ export class GeminiLiveBridge implements AIBridge {
         },
         inputAudioTranscription: transcriptionConfig,
         outputAudioTranscription: {},
-        // Set to END_SENSITIVITY_UNSPECIFIED for snappy ~400ms natural human turn-taking
-        // gap without sluggish pauses after the caller finishes speaking.
         realtimeInputConfig: {
           automaticActivityDetection: {
-            endOfSpeechSensitivity: EndSensitivity.END_SENSITIVITY_UNSPECIFIED
+            endOfSpeechSensitivity: endSensitivity
           }
         }
       },
       callbacks: {
         onopen: () => {
+          this.recordEvent("WEBSOCKET_OPEN");
           this.options.logger?.info({ callId: this.callSession?.callId }, "Gemini Live WebSocket open");
         },
         onmessage: (message: LiveServerMessage) => this.handleServerMessage(message),
         onerror: (event) => {
+          this.recordEvent("WEBSOCKET_ERROR");
           this.options.logger?.error(
             { callId: this.callSession?.callId, error: String(event?.message ?? event) },
             "Gemini Live WebSocket error"
           );
         },
         onclose: (event) => {
+          this.recordEvent(`WEBSOCKET_CLOSE:code=${event?.code}:reason=${event?.reason}`);
           this.ready = false;
+          this.activeToolCalls.clear();
+          this.transitionTo("READY");
           if (!this.stopped) {
             this.options.logger?.info(
-              { callId: this.callSession?.callId, reason: event?.reason },
+              { callId: this.callSession?.callId, reason: event?.reason, code: event?.code },
               "Gemini Live WebSocket closed"
             );
             this.closed?.();
@@ -305,6 +314,9 @@ export class GeminiLiveBridge implements AIBridge {
     );
     this.session = await Promise.race([connectPromise, timeout]);
 
+    // Send greeting turn
+    this.recordEvent("GREETING_START");
+    this.transitionTo("WAITING_FOR_MODEL");
     this.session.sendClientContent({
       turns: [
         {
@@ -335,6 +347,16 @@ export class GeminiLiveBridge implements AIBridge {
     this.forwardAudio(buffer);
   }
 
+  sendUserText(text: string): void {
+    if (!this.session) return;
+    this.recordEvent("USER_TEXT_SENT");
+    this.transitionTo("WAITING_FOR_MODEL");
+    this.session.sendClientContent({
+      turns: [{ role: "user", parts: [{ text }] }],
+      turnComplete: true
+    });
+  }
+
   onAudioOut(callback: (buffer: Buffer) => void): void {
     this.audioOut = callback;
   }
@@ -347,22 +369,22 @@ export class GeminiLiveBridge implements AIBridge {
     this.transcript = callback;
   }
 
-  /** Fired when the caller starts talking over the agent; the server should flush buffered playback. */
   onBargeIn(callback: () => void): void {
     this.bargeIn = callback;
   }
 
-  /** Fired when the Gemini Live WebSocket closes unexpectedly. */
   onClose(callback: () => void): void {
     this.closed = callback;
   }
 
-  /** Fired when the agent calls end_call after the caller confirms nothing else is needed. */
   onEndCall(callback: () => void): void {
     this.endCall = callback;
   }
 
-  /** Fired when the agent calls transfer_to_staff after the caller explicitly asks for a human. */
+  onTurnComplete(callback: () => void): void {
+    this.turnComplete = callback;
+  }
+
   onTransferRequested(callback: (selector: StaffSelector) => void): void {
     this.transferRequested = callback;
   }
@@ -383,16 +405,25 @@ export class GeminiLiveBridge implements AIBridge {
     this.stopped = true;
     this.ready = false;
     this.pendingAudio.length = 0;
+    this.activeToolCalls.clear();
     this.clearSilenceTimer();
     this.session?.close();
     this.session = undefined;
     this.audioOut = undefined;
     this.toolCall = undefined;
     this.bargeIn = undefined;
+    this.turnComplete = undefined;
     this.transferRequested = undefined;
+    this.transitionTo("READY");
   }
 
   private forwardAudio(buffer: Buffer): void {
+    if (!this.isUserSpeaking) {
+      this.isUserSpeaking = true;
+      this.recordEvent("USER_SPEECH_STARTED");
+      this.transitionTo("USER_SPEAKING");
+      this.latencyTracker?.onUserSpeechStarted();
+    }
     const pcm = twilioMulawToPcm(buffer, INPUT_SAMPLE_RATE);
     this.session?.sendRealtimeInput({
       audio: { data: int16ToBase64Pcm(pcm), mimeType: `audio/pcm;rate=${INPUT_SAMPLE_RATE}` }
@@ -400,39 +431,66 @@ export class GeminiLiveBridge implements AIBridge {
   }
 
   private handleServerMessage(message: LiveServerMessage): void {
+    this.recordEvent("SERVER_MESSAGE_RECEIVED");
     const content = message.serverContent;
 
+    // 1. Handle Interruption (Barge-in)
     if (content?.interrupted) {
+      this.recordEvent("INTERRUPTED");
       this.options.logger?.info(
         { callId: this.callSession?.callId },
         "Gemini Live reported interrupted (barge-in) — flushing playback"
       );
+      this.activeToolCalls.clear();
+      this.latencyTracker?.onBargeIn();
       this.bargeIn?.();
       this.clearSilenceTimer();
       this.currentAgentTurnText = "";
+      this.isUserSpeaking = false;
+      this.transitionTo("READY");
       return;
     }
 
+    // 2. Explicitly route Model Turn Parts (audio vs text vs thought)
     let sentAudio = false;
     for (const part of content?.modelTurn?.parts ?? []) {
       if (part.inlineData?.data) {
         sentAudio = true;
+        this.recordEvent("AUDIO_CHUNK_RECEIVED");
+        this.isUserSpeaking = false;
+        this.transitionTo("MODEL_RESPONDING");
+        this.latencyTracker?.onFirstAudioChunk();
         this.audioOut?.(pcmToTwilioMulaw(base64PcmToInt16(part.inlineData.data), OUTPUT_SAMPLE_RATE));
+      } else if (part.text) {
+        this.recordEvent("TEXT_PART_RECEIVED");
+        this.latencyTracker?.onFirstLlmToken();
       }
+      // Note: part.thought is internal CoT reasoning — safely ignored from audio output.
     }
 
+    // Direct data message audio fallback
     if (!sentAudio && message.data) {
+      this.recordEvent("DIRECT_AUDIO_RECEIVED");
+      this.isUserSpeaking = false;
+      this.transitionTo("MODEL_RESPONDING");
+      this.latencyTracker?.onFirstAudioChunk();
       this.audioOut?.(pcmToTwilioMulaw(base64PcmToInt16(message.data), OUTPUT_SAMPLE_RATE));
     }
 
+    // 3. Handle Input (Caller) Transcription
     const inputText = content?.inputTranscription?.text?.trim();
     if (inputText) {
+      this.recordEvent("INPUT_TRANSCRIPTION_RECEIVED");
+      this.latencyTracker?.onCallerTranscriptReceived();
       this.currentCallerTurnText += (this.currentCallerTurnText ? " " : "") + inputText;
       this.clearSilenceTimer();
     }
 
+    // 4. Handle Output (Agent) Transcription
     const outputText = content?.outputTranscription?.text?.trim();
     if (outputText) {
+      this.recordEvent("OUTPUT_TRANSCRIPTION_RECEIVED");
+      this.latencyTracker?.onFirstLlmToken();
       if (this.currentCallerTurnText.trim()) {
         this.transcript?.({ role: "caller", content: this.currentCallerTurnText.trim(), at: new Date() });
         this.currentCallerTurnText = "";
@@ -440,18 +498,43 @@ export class GeminiLiveBridge implements AIBridge {
       this.currentAgentTurnText += (this.currentAgentTurnText ? " " : "") + outputText;
     }
 
-    for (const call of message.toolCall?.functionCalls ?? []) {
+    // 5. Collect and Execute Function Calls (checking both message.toolCall and modelTurn parts)
+    const functionCalls: FunctionCall[] = [
+      ...(message.toolCall?.functionCalls ?? [])
+    ];
+    for (const part of content?.modelTurn?.parts ?? []) {
+      if (part.functionCall) {
+        functionCalls.push(part.functionCall);
+      }
+    }
+
+    if (functionCalls.length > 0) {
+      this.recordEvent("FUNCTION_CALL_RECEIVED");
+      this.transitionTo("TOOL_REQUESTED");
       if (this.currentCallerTurnText.trim()) {
         this.transcript?.({ role: "caller", content: this.currentCallerTurnText.trim(), at: new Date() });
         this.currentCallerTurnText = "";
       }
-      void this.executeToolCall(call);
+      for (const call of functionCalls) {
+        const callId = call.id ?? "";
+        if (callId && !this.handledToolCalls.has(callId)) {
+          this.activeToolCalls.add(callId);
+          void this.executeToolCall(call);
+        }
+      }
     }
 
-    // Gemini's own turnComplete already waits for its modeled realtime playback
-    // to finish (see LiveServerContent docs); add a short drain margin for the
-    // downstream Twilio leg before actually disconnecting.
+    // 6. Handle Turn Complete
     if (content?.turnComplete) {
+      this.recordEvent("TURN_COMPLETE_RECEIVED");
+      this.isUserSpeaking = false;
+
+      // If tool calls are still executing or awaiting their post-tool spoken response,
+      // do NOT conclude the turn prematurely.
+      if (this.activeToolCalls.size > 0 || this.state === "TOOL_EXECUTING" || this.state === "TOOL_RESULT_SENT") {
+        return;
+      }
+
       if (this.currentCallerTurnText.trim()) {
         this.transcript?.({ role: "caller", content: this.currentCallerTurnText.trim(), at: new Date() });
         this.currentCallerTurnText = "";
@@ -459,6 +542,10 @@ export class GeminiLiveBridge implements AIBridge {
       if (this.currentAgentTurnText.trim()) {
         this.transcript?.({ role: "agent", content: this.currentAgentTurnText.trim(), at: new Date() });
       }
+
+      this.transitionTo("TURN_COMPLETE");
+      this.turnComplete?.();
+      this.transitionTo("READY");
 
       if (this.endCallRequested) {
         this.endCallRequested = false;
@@ -501,34 +588,47 @@ export class GeminiLiveBridge implements AIBridge {
     if (!callId || !name || this.handledToolCalls.has(callId)) return;
     this.handledToolCalls.add(callId);
 
+    this.recordEvent(`TOOL_START:${name}`);
+    this.transitionTo("TOOL_EXECUTING");
+
     if (name === "end_call") {
       this.endCallRequested = true;
+      this.activeToolCalls.delete(callId);
       this.session?.sendToolResponse({
         functionResponses: [{ id: callId, name, response: { output: { ended: true } } }]
       });
       this.transcript?.({ role: "tool", content: 'end_call -> {"ended":true}', at: new Date() });
+      this.recordEvent("TOOL_RESPONSE_SENT:end_call");
+      this.transitionTo("MODEL_RESPONDING");
       return;
     }
 
     if (name === "transfer_to_staff") {
       const args = (call.args ?? {}) as StaffSelector;
       this.pendingTransfer = { staffId: args.staffId, staffName: args.staffName };
+      this.activeToolCalls.delete(callId);
       this.session?.sendToolResponse({
         functionResponses: [{ id: callId, name, response: { output: { transferring: true } } }]
       });
       this.transcript?.({ role: "tool", content: 'transfer_to_staff -> {"transferring":true}', at: new Date() });
+      this.recordEvent("TOOL_RESPONSE_SENT:transfer_to_staff");
+      this.transitionTo("MODEL_RESPONDING");
       return;
     }
 
     let output: unknown;
+    this.latencyTracker?.onToolStart();
     try {
+      // Execute the registered ToolExecutor
       output = await this.toolCall?.(name, call.args ?? {});
+      this.latencyTracker?.onToolEnd();
       this.transcript?.({
         role: "tool",
         content: `${name} -> ${JSON.stringify(output).slice(0, 1_500)}`,
         at: new Date()
       });
     } catch (error) {
+      this.latencyTracker?.onToolEnd();
       const message = error instanceof Error ? error.message : "Tool execution failed";
       output = { error: message };
       this.transcript?.({ role: "tool", content: `${name} failed: ${message}`, at: new Date() });
@@ -536,10 +636,15 @@ export class GeminiLiveBridge implements AIBridge {
         { callId: this.callSession?.callId, tool: name, error: message },
         "Gemini Live tool call failed"
       );
+    } finally {
+      this.activeToolCalls.delete(callId);
     }
 
+    this.recordEvent(`TOOL_RESPONSE_SENT:${name}`);
+    this.transitionTo("TOOL_RESULT_SENT");
     this.session?.sendToolResponse({
-      functionResponses: [{ id: callId, name, response: { output: output ?? null } }]
+      functionResponses: [{ id: callId, name, response: { output: output ?? {} } }]
     });
+    this.transitionTo("MODEL_RESPONDING");
   }
 }

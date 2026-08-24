@@ -152,9 +152,10 @@ async function seed(): Promise<void> {
           updatedAt: now
         })
         .onConflictDoUpdate({
-          target: tenants.slug,
+          target: tenants.id,
           set: {
             name: "Holistic Migration Solutions",
+            slug: "holistic-migration-solutions",
             status: "live",
             businessPhone: "+61399997994",
             websiteUrl: "https://holisticmigrationsolutions.com.au/",

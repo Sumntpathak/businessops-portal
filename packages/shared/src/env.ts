@@ -28,8 +28,8 @@ export const voiceEnvSchema = z.object({
   TWILIO_ACCOUNT_SID: z.string().min(1),
   TWILIO_AUTH_TOKEN: z.string().min(1),
   TWILIO_NUMBER: z.string().min(1),
-  AZURE_REALTIME_URL: z.string().url(),
-  AZURE_REALTIME_KEY: z.string().min(1),
+  AZURE_REALTIME_URL: z.string().url().optional(),
+  AZURE_REALTIME_KEY: z.string().min(1).optional(),
   AZURE_REALTIME_MODEL: z.string().default("gpt-realtime-mini"),
   // Present only once the Azure SIP connector is configured; the /azure/incoming
   // webhook route stays disabled until both are set.
@@ -38,10 +38,7 @@ export const voiceEnvSchema = z.object({
     .enum(["true", "false"])
     .default("false")
     .transform((value) => value === "true"),
-  // Selects which AI bridge the Twilio call handler uses. "azure" (default)
-  // preserves current behavior; "gemini-live" requires the GOOGLE_CLOUD_*
-  // vars below. Kept flag-switchable so a bad Gemini Live call can be
-  // reverted to Azure instantly without a deploy of logic changes.
+  // Selects which AI bridge the Twilio call handler uses. "gemini-live" is primary.
   VOICE_PROVIDER: z.enum(["azure", "gemini-live"]).default("gemini-live"),
   // Vertex AI auth for Gemini Live — a GCP service account (not an AI Studio
   // API key) so usage draws from Vertex billing/credit. Optional at the
@@ -56,19 +53,22 @@ export const voiceEnvSchema = z.object({
   // files (e.g. Render's "Secret Files"). On hosts without that feature, set
   // GOOGLE_APPLICATION_CREDENTIALS_JSON (the raw JSON contents) instead; the
   // gemini-live construction site prefers the inline JSON when both are set.
-  GOOGLE_APPLICATION_CREDENTIALS: z.string().min(1).optional(),
-  GOOGLE_APPLICATION_CREDENTIALS_JSON: z.string().min(1).optional(),
+  GOOGLE_APPLICATION_CREDENTIALS: z.string().optional().transform((v) => (v && v.trim().length > 0 ? v : undefined)),
+  GOOGLE_APPLICATION_CREDENTIALS_JSON: z.string().optional().transform((v) => (v && v.trim().length > 0 ? v : undefined)),
   // Confirmed via a live smoke test (audio streamed, turnComplete fired) against
-  // this project on 2026-07-23. Vertex's Live model catalog is preview-stage and
-  // moves fast — re-verify if this starts 404ing.
+  // this project on 2026-07-23.
   GEMINI_LIVE_MODEL: z.string().default("gemini-2.5-flash-native-audio-latest"),
   GEMINI_LIVE_VOICE: z.string().default("Aoede"),
-  GEMINI_API_KEY: z.string().min(1).optional(),
+  GEMINI_API_KEY: z.string().optional().transform((v) => (v && v.trim().length > 0 ? v : undefined)),
+  // VAD end-of-speech sensitivity for Gemini Live.
+  // "strict" cuts silence after user speech for snappy (~300-400ms) responses.
+  // "unspecified" uses Google default. "relaxed" allows longer customer pauses.
+  GEMINI_VAD_END_SENSITIVITY: z.enum(["strict", "unspecified", "relaxed"]).default("strict"),
   // Repurposed to hold a Cloudflare Workers AI API token (used for both the
   // call-summary worker and the onboarding distiller, via GLM-4.7-Flash).
-  ANTHROPIC_API_KEY: z.string().min(1),
-  CLOUDFLARE_ACCOUNT_ID: z.string().min(1),
-  BRAVE_SEARCH_API_KEY: z.string().min(1)
+  ANTHROPIC_API_KEY: z.string().optional().transform((v) => (v && v.trim().length > 0 ? v : undefined)),
+  CLOUDFLARE_ACCOUNT_ID: z.string().optional().transform((v) => (v && v.trim().length > 0 ? v : undefined)),
+  BRAVE_SEARCH_API_KEY: z.string().optional().transform((v) => (v && v.trim().length > 0 ? v : undefined))
 });
 
 /** Full schema (core + voice) — used by apps/voice, which needs both. */

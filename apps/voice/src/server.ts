@@ -567,7 +567,7 @@ app.post("/twilio/recording-status/:callId", async (request, reply) => {
 });
 
 const azureSip =
-  env.AZURE_SIP_ENABLED && env.AZURE_WEBHOOK_SECRET
+  env.AZURE_SIP_ENABLED && env.AZURE_WEBHOOK_SECRET && env.AZURE_REALTIME_URL && env.AZURE_REALTIME_KEY
     ? new AzureSipClient({
         realtimeUrl: env.AZURE_REALTIME_URL,
         apiKey: env.AZURE_REALTIME_KEY
@@ -718,8 +718,8 @@ async function handleAzureSipCall(
   });
 
   const bridge = new AzureRealtimeBridge({
-    url: env.AZURE_REALTIME_URL,
-    apiKey: env.AZURE_REALTIME_KEY,
+    url: env.AZURE_REALTIME_URL ?? "",
+    apiKey: env.AZURE_REALTIME_KEY ?? "",
     model: env.AZURE_REALTIME_MODEL,
     attachCallId: providerCallId,
     logger: app.log
@@ -976,19 +976,20 @@ mediaStreams.on("connection", (socket, request) => {
     authToken: env.TWILIO_AUTH_TOKEN
   });
   const bridge: AIBridge =
-    env.VOICE_PROVIDER === "gemini-live"
+    env.VOICE_PROVIDER === "gemini-live" || !env.AZURE_REALTIME_URL
       ? new GeminiLiveBridge({
           project: env.GOOGLE_CLOUD_PROJECT || "savr-457c4",
           location: env.GOOGLE_CLOUD_LOCATION,
           model: env.GEMINI_LIVE_MODEL,
           voice: env.GEMINI_LIVE_VOICE,
           apiKey: env.GEMINI_API_KEY,
+          vadSensitivity: env.GEMINI_VAD_END_SENSITIVITY,
           credentials: parseInlineGoogleCredentials(),
           logger: app.log
         })
       : new AzureRealtimeBridge({
           url: env.AZURE_REALTIME_URL,
-          apiKey: env.AZURE_REALTIME_KEY,
+          apiKey: env.AZURE_REALTIME_KEY ?? "",
           model: env.AZURE_REALTIME_MODEL,
           logger: app.log
         });
@@ -1226,13 +1227,25 @@ browserTestStreams.on("connection", (socket, request) => {
     const requestedVoice = browserTestVoiceSchema.safeParse(
       url.searchParams.get("voice") ?? undefined
     );
-    const bridge = new AzureRealtimeBridge({
-      url: env.AZURE_REALTIME_URL,
-      apiKey: env.AZURE_REALTIME_KEY,
-      model: env.AZURE_REALTIME_MODEL,
-      voice: requestedVoice.success ? requestedVoice.data : undefined,
-      logger: app.log
-    });
+    const bridge: AIBridge =
+      env.VOICE_PROVIDER === "gemini-live" || !env.AZURE_REALTIME_URL
+        ? new GeminiLiveBridge({
+            project: env.GOOGLE_CLOUD_PROJECT || "savr-457c4",
+            location: env.GOOGLE_CLOUD_LOCATION,
+            model: env.GEMINI_LIVE_MODEL,
+            voice: requestedVoice.success ? requestedVoice.data : env.GEMINI_LIVE_VOICE,
+            apiKey: env.GEMINI_API_KEY,
+            vadSensitivity: env.GEMINI_VAD_END_SENSITIVITY,
+            credentials: parseInlineGoogleCredentials(),
+            logger: app.log
+          })
+        : new AzureRealtimeBridge({
+            url: env.AZURE_REALTIME_URL,
+            apiKey: env.AZURE_REALTIME_KEY ?? "",
+            model: env.AZURE_REALTIME_MODEL,
+            voice: requestedVoice.success ? requestedVoice.data : undefined,
+            logger: app.log
+          });
     let session: CallSession | undefined;
     let transcriptSeq = 0;
     let finalized = false;

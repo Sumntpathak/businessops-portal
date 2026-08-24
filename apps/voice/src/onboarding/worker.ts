@@ -85,7 +85,7 @@ export function startOnboardingWorker(logger: WorkerLogger) {
         try {
           searchUrls = await braveSearch(
             [tenant.name, city].filter(Boolean).join(" "),
-            env.BRAVE_SEARCH_API_KEY
+            env.BRAVE_SEARCH_API_KEY ?? ""
           );
         } catch (searchError) {
           logger.error(
@@ -118,8 +118,8 @@ export function startOnboardingWorker(logger: WorkerLogger) {
               timezone: tenant.timezone,
               pages
             },
-            env.ANTHROPIC_API_KEY,
-            env.CLOUDFLARE_ACCOUNT_ID
+            env.ANTHROPIC_API_KEY ?? "",
+            env.CLOUDFLARE_ACCOUNT_ID ?? ""
           );
         } catch (distillError) {
           // Claude failure must not dead-end onboarding: fall back to the

@@ -25,8 +25,8 @@ function cloudflareChatUrl(accountId: string): string {
   return `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1/chat/completions`;
 }
 
-function isConfigured(apiKey: string): boolean {
-  return apiKey.length > 0 && apiKey !== "change-me";
+function isConfigured(apiKey: string | undefined): apiKey is string {
+  return typeof apiKey === "string" && apiKey.length > 0 && apiKey !== "change-me";
 }
 
 const resultSchema = z.object({
@@ -178,8 +178,10 @@ export function createCallSummarizer(logger: SummaryLogger) {
 
   return async (input: SummaryJobData): Promise<void> => {
       const data = summaryJobSchema.parse(input);
+      const anthropicApiKey = env.ANTHROPIC_API_KEY;
+      const cloudflareAccountId = env.CLOUDFLARE_ACCOUNT_ID;
 
-      if (!isConfigured(env.ANTHROPIC_API_KEY) || !isConfigured(env.CLOUDFLARE_ACCOUNT_ID)) {
+      if (!isConfigured(anthropicApiKey) || !isConfigured(cloudflareAccountId)) {
         logger.info(
           { callId: data.callId, tenantId: data.tenantId },
           "ANTHROPIC_API_KEY / CLOUDFLARE_ACCOUNT_ID not configured; skipping call summary"
@@ -244,8 +246,8 @@ export function createCallSummarizer(logger: SummaryLogger) {
         .slice(0, MAX_TRANSCRIPT_CHARS);
 
       const result = await summarizeWithClaude(
-        env.ANTHROPIC_API_KEY,
-        env.CLOUDFLARE_ACCOUNT_ID,
+        anthropicApiKey,
+        cloudflareAccountId,
         transcript,
         existing.map((memory) => memory.content),
         intakeFields

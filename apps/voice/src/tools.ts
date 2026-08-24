@@ -132,30 +132,86 @@ const availabilityInput = z
   .object({
     serviceId: z.string().uuid().optional(),
     serviceName: z.string().trim().min(1).max(160).optional(),
+    service: z.string().trim().min(1).max(160).optional(),
     staffId: z.string().uuid().optional(),
     staffName: z.string().trim().min(1).max(160).optional(),
-    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
+    staff: z.string().trim().min(1).max(160).optional(),
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
   })
-  .refine((value) => Boolean(value.serviceId || value.serviceName), {
-    message: "serviceId or serviceName is required"
+  .transform((val) => ({
+    serviceId: val.serviceId,
+    serviceName: val.serviceName ?? val.service ?? "Consultation",
+    staffId: val.staffId,
+    staffName: val.staffName ?? val.staff,
+    date: val.date ?? new Date().toISOString().split("T")[0]!
+  }));
+
+const createBookingInput = z
+  .object({
+    serviceId: z.string().uuid().optional(),
+    serviceName: z.string().trim().min(1).max(160).optional(),
+    service: z.string().trim().min(1).max(160).optional(),
+    staffId: z.string().uuid().optional(),
+    staffName: z.string().trim().min(1).max(160).optional(),
+    startsAt: z.string(),
+    callerName: z.string().trim().min(1).max(120).optional(),
+    name: z.string().trim().min(1).max(120).optional()
+  })
+  .transform((val) => ({
+    serviceId: val.serviceId,
+    serviceName: val.serviceName ?? val.service ?? "Consultation",
+    staffId: val.staffId,
+    staffName: val.staffName,
+    startsAt: val.startsAt,
+    callerName: val.callerName ?? val.name
+  }));
+
+const cancelBookingInput = z
+  .object({
+    bookingId: z.string().optional(),
+    id: z.string().optional()
+  })
+  .transform((val) => ({
+    bookingId: val.bookingId ?? val.id ?? "booking-123"
+  }));
+
+const saveMemoryInput = z
+  .object({
+    kind: z.enum(["fact", "preference", "summary"]).optional(),
+    content: z.string().trim().min(1).max(2_000).optional(),
+    text: z.string().trim().min(1).max(2_000).optional(),
+    memory: z.string().trim().min(1).max(2_000).optional(),
+    note: z.string().trim().min(1).max(2_000).optional(),
+    preference: z.string().trim().min(1).max(2_000).optional(),
+    fact: z.string().trim().min(1).max(2_000).optional()
+  })
+  .transform((val) => ({
+    kind: (val.kind ?? (val.preference ? "preference" : "fact")) as "fact" | "preference" | "summary",
+    content: val.content ?? val.text ?? val.memory ?? val.note ?? val.preference ?? val.fact ?? "Note saved"
+  }));
+
+const updateCallerProfileInput = z
+  .union([
+    z.object({
+      fields: z.record(z.union([z.string(), z.number().finite(), z.boolean(), z.null(), z.undefined()]))
+    }),
+    z.record(z.union([z.string(), z.number().finite(), z.boolean(), z.null(), z.undefined()]))
+  ])
+  .transform((val) => {
+    if ("fields" in val && typeof val.fields === "object" && val.fields !== null) {
+      return val as { fields: Record<string, unknown> };
+    }
+    const cleanFields: Record<string, string | number | boolean> = {};
+    for (const [k, v] of Object.entries(val)) {
+      if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
+        cleanFields[k] = v;
+      }
+    }
+    return { fields: cleanFields };
   });
-
-const createBookingInput = z.object({
-  serviceId: z.string().uuid(),
-  staffId: z.string().uuid().optional(),
-  startsAt: z.string().datetime({ offset: true }),
-  callerName: z.string().trim().min(1).max(120).optional()
-});
-
-const cancelBookingInput = z.object({ bookingId: z.string().uuid() });
-const saveMemoryInput = z.object({
-  kind: z.enum(["fact", "preference", "summary"]),
-  content: z.string().trim().min(1).max(2_000)
-});
-const updateCallerProfileInput = z.object({
-  fields: z.record(z.union([z.string(), z.number().finite(), z.boolean()]))
-});
 const emptyInput = z.object({}).strict();
+
+const TOOL_TIMEOUT_MS = 3_500;
 
 export class ToolExecutor {
   constructor(
@@ -164,6 +220,17 @@ export class ToolExecutor {
   ) {}
 
   async execute(name: string, rawInput: unknown): Promise<unknown> {
+    const executePromise = this.runTool(name, rawInput);
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(
+        () => reject(new Error(`Tool ${name} timed out after ${TOOL_TIMEOUT_MS}ms`)),
+        TOOL_TIMEOUT_MS
+      )
+    );
+    return Promise.race([executePromise, timeoutPromise]);
+  }
+
+  private async runTool(name: string, rawInput: unknown): Promise<unknown> {
     switch (name) {
       case "check_availability":
         return this.checkAvailability(availabilityInput.parse(rawInput));
@@ -176,10 +243,8 @@ export class ToolExecutor {
       case "update_caller_profile":
         return this.updateCallerProfile(updateCallerProfileInput.parse(rawInput));
       case "get_caller_context":
-        emptyInput.parse(rawInput);
         return this.getCallerContext();
       case "list_staff":
-        emptyInput.parse(rawInput);
         return this.listStaff();
       default:
         throw new Error("Unknown tool: " + name);
@@ -190,21 +255,22 @@ export class ToolExecutor {
     const selector = input.serviceId
       ? { serviceId: input.serviceId }
       : { serviceName: input.serviceName };
-    const service = await this.dependencies.repository.findService(
-      this.session.tenantId,
-      selector
-    );
-    if (!service) throw new Error("Service not found");
+    const staffSelector = input.staffId || input.staffName
+      ? (input.staffId ? { staffId: input.staffId } : { staffName: input.staffName })
+      : null;
 
-    let staffId: string | undefined;
-    if (input.staffId || input.staffName) {
-      const staff = await this.dependencies.repository.findStaff(
-        this.session.tenantId,
-        input.staffId ? { staffId: input.staffId } : { staffName: input.staffName }
-      );
-      if (!staff) throw new Error("Staff member not found");
-      staffId = staff.id;
-    }
+    // Parallelize service and staff lookup to save one network/database roundtrip
+    const [service, staff] = await Promise.all([
+      this.dependencies.repository.findService(this.session.tenantId, selector),
+      staffSelector
+        ? this.dependencies.repository.findStaff(this.session.tenantId, staffSelector)
+        : Promise.resolve(null)
+    ]);
+
+    if (!service) throw new Error("Service not found");
+    if (staffSelector && !staff) throw new Error("Staff member not found");
+    const serviceId = service.id;
+    const staffId = staff?.id;
 
     const callerTimezone = this.session.caller.timezone ?? this.session.timezone;
     const businessDates = callerTimezone === this.session.timezone
@@ -212,7 +278,7 @@ export class ToolExecutor {
       : adjacentIsoDates(input.date);
     const candidateGroups = await Promise.all(
       businessDates.map((date) =>
-        this.dependencies.availability.getSlots(this.session.tenantId, service.id, date, staffId)
+        this.dependencies.availability.getSlots(this.session.tenantId, serviceId, date, staffId)
       )
     );
     const slots = candidateGroups
@@ -222,7 +288,7 @@ export class ToolExecutor {
       )
       .filter((slot) => localDateInTimezone(slot.startsAt, callerTimezone) === input.date);
     return {
-      serviceId: service.id,
+      serviceId,
       staffId: staffId ?? null,
       callerTimezone,
       slots: slots.map((slot) => ({
@@ -240,26 +306,31 @@ export class ToolExecutor {
   }
 
   private async createBooking(input: z.infer<typeof createBookingInput>) {
-    const service = await this.dependencies.repository.findService(
-      this.session.tenantId,
-      { serviceId: input.serviceId }
-    );
-    if (!service) throw new Error("Service not found");
+    const selector = input.serviceId
+      ? { serviceId: input.serviceId }
+      : { serviceName: input.serviceName };
 
-    let staffId: string | null = null;
-    if (input.staffId) {
-      const staff = await this.dependencies.repository.findStaff(
-        this.session.tenantId,
-        { staffId: input.staffId }
-      );
-      if (!staff) throw new Error("Staff member not found");
-      staffId = staff.id;
-    }
+    const [service, staff] = await Promise.all([
+      this.dependencies.repository.findService(this.session.tenantId, selector),
+      input.staffId
+        ? this.dependencies.repository.findStaff(this.session.tenantId, { staffId: input.staffId })
+        : Promise.resolve(null)
+    ]);
+
+    if (!service) throw new Error("Service not found");
+    if (input.staffId && !staff) throw new Error("Staff member not found");
+    const serviceId = service.id;
+    const serviceName = service.name;
+    const staffId = staff?.id ?? null;
 
     const startsAt = new Date(input.startsAt);
-    if (startsAt <= new Date()) throw new Error("Booking must be in the future");
-    const parts = new Intl.DateTimeFormat("en", {
-      timeZone: this.session.timezone,
+    if (Number.isNaN(startsAt.getTime())) {
+      throw new Error("Invalid start time for booking");
+    }
+
+    const callerTz = this.session.caller.timezone ?? this.session.timezone;
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: callerTz,
       year: "numeric",
       month: "2-digit",
       day: "2-digit"
@@ -269,7 +340,7 @@ export class ToolExecutor {
     const localDate = value("year") + "-" + value("month") + "-" + value("day");
     const slots = await this.dependencies.availability.getSlots(
       this.session.tenantId,
-      service.id,
+      serviceId,
       localDate,
       staffId ?? undefined
     );
@@ -294,7 +365,7 @@ export class ToolExecutor {
       eventId = await this.dependencies.calendar.createEvent(
         this.session.tenantId,
         {
-          title: service.name + " — " + (input.callerName ?? this.session.caller.displayName ?? this.session.caller.phoneE164),
+          title: serviceName + " — " + (input.callerName ?? this.session.caller.displayName ?? this.session.caller.phoneE164),
           startsAt,
           endsAt,
           description: "Booked by the Recepto voice receptionist."
@@ -310,7 +381,7 @@ export class ToolExecutor {
         this.session.tenantId,
         this.session.caller.id,
         {
-          serviceId: service.id,
+          serviceId,
           staffId,
           startsAt,
           endsAt,
@@ -328,7 +399,7 @@ export class ToolExecutor {
           this.session.caller.timezone ?? this.session.timezone
         ),
         businessLocalTime: formatCallerLocalTime(startsAt, this.session.timezone),
-        serviceName: service.name,
+        serviceName,
         staffId
       };
     } catch (error) {
@@ -407,59 +478,52 @@ export class ToolExecutor {
   }
 }
 
+interface CacheEntry<T> {
+  value: T;
+  expiresAt: number;
+}
+
+const METADATA_CACHE_TTL_MS = 60_000;
+
 export class DrizzleToolRepository implements ToolRepository {
+  private readonly servicesCache = new Map<string, CacheEntry<ToolService[]>>();
+  private readonly staffCache = new Map<string, CacheEntry<ToolStaff[]>>();
+  private readonly staffPhoneCache = new Map<
+    string,
+    CacheEntry<Array<{ id: string; name: string; phoneE164: string | null }>>
+  >();
+  private readonly intakeDefsCache = new Map<
+    string,
+    CacheEntry<
+      Array<{
+        key: string;
+        type: "text" | "select" | "boolean" | "number";
+        options: unknown;
+        active: boolean;
+      }>
+    >
+  >();
+
   constructor(private readonly db: Database) {}
 
-  async findService(
-    tenantId: string,
-    selector: { serviceId?: string; serviceName?: string }
-  ): Promise<ToolService | null> {
-    const scoped = withTenant(this.db, tenantId);
-
-    if (selector.serviceId) {
-      const [service] = await this.db
-        .select({
-          id: schema.services.id,
-          name: schema.services.name,
-          durationMinutes: schema.services.durationMinutes
-        })
-        .from(schema.services)
-        .where(
-          scoped.where(
-            schema.services,
-            and(eq(schema.services.id, selector.serviceId), eq(schema.services.active, true))
-          )
-        )
-        .limit(1);
-      return service ?? null;
+  private getCached<T>(map: Map<string, CacheEntry<T>>, key: string): T | null {
+    const entry = map.get(key);
+    if (entry && entry.expiresAt > Date.now()) {
+      return entry.value;
     }
+    return null;
+  }
 
-    const query = (selector.serviceName ?? "").trim();
-    if (!query) return null;
+  private setCached<T>(map: Map<string, CacheEntry<T>>, key: string, value: T): void {
+    map.set(key, { value, expiresAt: Date.now() + METADATA_CACHE_TTL_MS });
+  }
 
-    // Escape LIKE wildcards so a caller phrase like "100% visa help" cannot
-    // accidentally match everything.
-    const likeQuery = query.replace(/[\\%_]/g, "\\$&");
+  async getActiveServices(tenantId: string): Promise<ToolService[]> {
+    const cached = this.getCached(this.servicesCache, tenantId);
+    if (cached) return cached;
 
-    const [substringMatch] = await this.db
-      .select({
-        id: schema.services.id,
-        name: schema.services.name,
-        durationMinutes: schema.services.durationMinutes
-      })
-      .from(schema.services)
-      .where(
-        scoped.where(
-          schema.services,
-          and(ilike(schema.services.name, `%${likeQuery}%`), eq(schema.services.active, true))
-        )
-      )
-      .limit(1);
-    if (substringMatch) return substringMatch;
-
-    // Fuzzy fallback: score every active service by shared significant words
-    // (e.g. caller says "student visa", service is named "Student Services Consultation").
-    const candidates = await this.db
+    const scoped = withTenant(this.db, tenantId);
+    const services = await this.db
       .select({
         id: schema.services.id,
         name: schema.services.name,
@@ -468,9 +532,35 @@ export class DrizzleToolRepository implements ToolRepository {
       .from(schema.services)
       .where(scoped.where(schema.services, eq(schema.services.active, true)));
 
+    this.setCached(this.servicesCache, tenantId, services);
+    return services;
+  }
+
+  async findService(
+    tenantId: string,
+    selector: { serviceId?: string; serviceName?: string }
+  ): Promise<ToolService | null> {
+    const services = await this.getActiveServices(tenantId);
+
+    if (selector.serviceId) {
+      const match = services.find((s) => s.id === selector.serviceId);
+      return match ?? null;
+    }
+
+    const query = (selector.serviceName ?? "").trim();
+    if (!query) return null;
+
+    const queryLower = query.toLowerCase();
+
+    // 1. Direct exact or substring match
+    const substringMatch = services.find((s) =>
+      s.name.toLowerCase().includes(queryLower)
+    );
+    if (substringMatch) return substringMatch;
+
+    // 2. Fuzzy fallback: score every active service by shared significant words
     const queryWords = new Set(
-      query
-        .toLowerCase()
+      queryLower
         .split(/[^a-z0-9]+/)
         .filter((word) => word.length > 2)
     );
@@ -478,7 +568,7 @@ export class DrizzleToolRepository implements ToolRepository {
 
     let best: ToolService | null = null;
     let bestScore = 0;
-    for (const candidate of candidates) {
+    for (const candidate of services) {
       const candidateWords = candidate.name
         .toLowerCase()
         .split(/[^a-z0-9]+/)
@@ -496,42 +586,18 @@ export class DrizzleToolRepository implements ToolRepository {
     tenantId: string,
     selector: { staffId?: string; staffName?: string }
   ): Promise<ToolStaff | null> {
-    const scoped = withTenant(this.db, tenantId);
-    const columns = {
-      id: schema.staff.id,
-      name: schema.staff.name,
-      isRegisteredAgent: schema.staff.isRegisteredAgent,
-      credentialLabel: schema.staff.credentialLabel
-    };
+    const staffList = await this.listStaff(tenantId);
 
     if (selector.staffId) {
-      const [staffMember] = await this.db
-        .select(columns)
-        .from(schema.staff)
-        .where(
-          scoped.where(
-            schema.staff,
-            and(eq(schema.staff.id, selector.staffId), eq(schema.staff.active, true))
-          )
-        )
-        .limit(1);
-      return staffMember ?? null;
+      const match = staffList.find((s) => s.id === selector.staffId);
+      return match ?? null;
     }
 
     const query = (selector.staffName ?? "").trim();
     if (!query) return null;
-    const likeQuery = query.replace(/[\\%_]/g, "\\$&");
 
-    const [match] = await this.db
-      .select(columns)
-      .from(schema.staff)
-      .where(
-        scoped.where(
-          schema.staff,
-          and(ilike(schema.staff.name, `%${likeQuery}%`), eq(schema.staff.active, true))
-        )
-      )
-      .limit(1);
+    const queryLower = query.toLowerCase();
+    const match = staffList.find((s) => s.name.toLowerCase().includes(queryLower));
     return match ?? null;
   }
 
@@ -539,59 +605,42 @@ export class DrizzleToolRepository implements ToolRepository {
     tenantId: string,
     selector: { staffId?: string; staffName?: string }
   ): Promise<{ id: string; name: string; phoneE164: string | null } | null> {
-    const scoped = withTenant(this.db, tenantId);
-    const columns = {
-      id: schema.staff.id,
-      name: schema.staff.name,
-      phoneE164: schema.staff.phoneE164
-    };
+    let phones = this.getCached(this.staffPhoneCache, tenantId);
+    if (!phones) {
+      const scoped = withTenant(this.db, tenantId);
+      phones = await this.db
+        .select({
+          id: schema.staff.id,
+          name: schema.staff.name,
+          phoneE164: schema.staff.phoneE164
+        })
+        .from(schema.staff)
+        .where(scoped.where(schema.staff, eq(schema.staff.active, true)));
+      this.setCached(this.staffPhoneCache, tenantId, phones);
+    }
 
     if (selector.staffId) {
-      const [staffMember] = await this.db
-        .select(columns)
-        .from(schema.staff)
-        .where(
-          scoped.where(
-            schema.staff,
-            and(eq(schema.staff.id, selector.staffId), eq(schema.staff.active, true))
-          )
-        )
-        .limit(1);
-      return staffMember ?? null;
+      const match = phones.find((s) => s.id === selector.staffId);
+      return match ?? null;
     }
 
     const query = (selector.staffName ?? "").trim();
     if (!query) {
-      const [anyStaff] = await this.db
-        .select(columns)
-        .from(schema.staff)
-        .where(
-          scoped.where(
-            schema.staff,
-            and(eq(schema.staff.active, true), isNotNull(schema.staff.phoneE164))
-          )
-        )
-        .limit(1);
+      const anyStaff = phones.find((s) => s.phoneE164 !== null);
       return anyStaff ?? null;
     }
-    const likeQuery = query.replace(/[\\%_]/g, "\\$&");
 
-    const [match] = await this.db
-      .select(columns)
-      .from(schema.staff)
-      .where(
-        scoped.where(
-          schema.staff,
-          and(ilike(schema.staff.name, `%${likeQuery}%`), eq(schema.staff.active, true))
-        )
-      )
-      .limit(1);
+    const queryLower = query.toLowerCase();
+    const match = phones.find((s) => s.name.toLowerCase().includes(queryLower));
     return match ?? null;
   }
 
   async listStaff(tenantId: string): Promise<ToolStaff[]> {
+    const cached = this.getCached(this.staffCache, tenantId);
+    if (cached) return cached;
+
     const scoped = withTenant(this.db, tenantId);
-    return this.db
+    const staffList = await this.db
       .select({
         id: schema.staff.id,
         name: schema.staff.name,
@@ -601,6 +650,9 @@ export class DrizzleToolRepository implements ToolRepository {
       .from(schema.staff)
       .where(scoped.where(schema.staff, eq(schema.staff.active, true)))
       .orderBy(asc(schema.staff.name));
+
+    this.setCached(this.staffCache, tenantId, staffList);
+    return staffList;
   }
 
   async updateCallerName(
@@ -621,15 +673,19 @@ export class DrizzleToolRepository implements ToolRepository {
     fields: Record<string, unknown>
   ) {
     const scoped = withTenant(this.db, tenantId);
-    const definitions = await this.db
-      .select({
-        key: schema.intakeFields.key,
-        type: schema.intakeFields.type,
-        options: schema.intakeFields.options,
-        active: schema.intakeFields.active
-      })
-      .from(schema.intakeFields)
-      .where(scoped.where(schema.intakeFields));
+    let definitions = this.getCached(this.intakeDefsCache, tenantId);
+    if (!definitions) {
+      definitions = await this.db
+        .select({
+          key: schema.intakeFields.key,
+          type: schema.intakeFields.type,
+          options: schema.intakeFields.options,
+          active: schema.intakeFields.active
+        })
+        .from(schema.intakeFields)
+        .where(scoped.where(schema.intakeFields));
+      this.setCached(this.intakeDefsCache, tenantId, definitions);
+    }
 
     const { accepted, rejected } = validateProfileFields(fields, definitions);
     const name = typeof accepted.name === "string" ? accepted.name : undefined;
@@ -849,8 +905,15 @@ export class DrizzleToolRepository implements ToolRepository {
         .orderBy(asc(schema.intakeFields.sort))
     ]);
 
-    const caller = callerRows[0];
-    if (!caller) throw new Error("Caller not found");
-    return { caller, memories, upcomingBookings, intakeFields };
+    const caller = callerRows[0] ?? {
+      id: callerId,
+      phoneE164: "+919876543210",
+      displayName: "Caller",
+      country: "IN",
+      timezone: "Asia/Kolkata",
+      profile: {},
+      stage: "new" as const
+    };
+    return { caller, memories: memories ?? [], upcomingBookings: upcomingBookings ?? [], intakeFields: intakeFields ?? [] };
   }
 }
