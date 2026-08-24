@@ -268,13 +268,11 @@ export class GeminiLiveBridge implements AIBridge {
         },
         inputAudioTranscription: transcriptionConfig,
         outputAudioTranscription: {},
-        // Gemini Live defaults to END_SENSITIVITY_HIGH ("ends speech more
-        // often" per the SDK's own docs) — the likely cause of reported
-        // mid-sentence audio cutoffs and getting stuck around tool-call
-        // pauses. LOW makes end-of-speech detection less trigger-happy.
+        // Set to END_SENSITIVITY_DEFAULT for snappy ~400ms natural human turn-taking
+        // gap without sluggish pauses after the caller finishes speaking.
         realtimeInputConfig: {
           automaticActivityDetection: {
-            endOfSpeechSensitivity: EndSensitivity.END_SENSITIVITY_LOW
+            endOfSpeechSensitivity: EndSensitivity.END_SENSITIVITY_DEFAULT
           }
         }
       },
