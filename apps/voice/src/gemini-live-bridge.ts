@@ -213,6 +213,9 @@ export class GeminiLiveBridge implements AIBridge {
   private lastEventName = "NONE";
   /** Consecutive silence frames to cut off background line noise and force instant VAD endpointing */
   private silenceFrameCount = 0;
+  /** Rolling buffer and speech frame count for genuine barge-in detection during AI speech */
+  private interruptionSpeechFrames = 0;
+  private readonly interruptionBuffer: Buffer[] = [];
   /** Monotonic timestamp when bridge.start() was called — used for elapsed-time logging */
   private callStartMs = 0;
 
@@ -435,12 +438,47 @@ export class GeminiLiveBridge implements AIBridge {
     const pcm = twilioMulawToPcm(buffer, INPUT_SAMPLE_RATE);
     const rms = computeRms(pcm);
 
-    // Completely ignore and drop all incoming audio while the AI agent is speaking (MODEL_RESPONDING).
-    // This prevents other voices in the room, background noise, or line static from interrupting the AI.
+    // ── 1. WHILE AI IS ACTIVELY SPEAKING (MODEL_RESPONDING) ──
     if (this.state === "MODEL_RESPONDING") {
+      // Ambient noise / TV / line static (RMS < 180) is completely ignored
+      if (rms < 180) {
+        this.interruptionSpeechFrames = 0;
+        this.interruptionBuffer.length = 0;
+        return;
+      }
+
+      // Strong voice detected (RMS >= 180) — buffer it and check for genuine interruption
+      this.interruptionSpeechFrames += 1;
+      this.interruptionBuffer.push(buffer);
+      if (this.interruptionBuffer.length > 8) {
+        this.interruptionBuffer.shift();
+      }
+
+      // Require 6 consecutive frames (~120ms of sustained caller speech)
+      // to confirm a genuine human interruption rather than a single click/cough.
+      if (this.interruptionSpeechFrames < 6) {
+        return; // Not yet confirmed — keep AI speaking
+      }
+
+      // ── GENUINE INTERRUPTION CONFIRMED ──
+      this.recordEvent(`GENUINE_BARGE_IN:rms=${Math.round(rms)}`);
+      this.isUserSpeaking = true;
+      this.transitionTo("USER_SPEAKING");
+      this.latencyTracker?.onBargeIn();
+      this.bargeIn?.(); // Flush Twilio audio playback immediately
+
+      // Forward all buffered speech frames to Gemini so no initial words are clipped
+      for (const queued of this.interruptionBuffer.splice(0)) {
+        const queuedPcm = twilioMulawToPcm(queued, INPUT_SAMPLE_RATE);
+        this.session?.sendRealtimeInput({
+          audio: { data: int16ToBase64Pcm(queuedPcm), mimeType: `audio/pcm;rate=${INPUT_SAMPLE_RATE}` }
+        });
+      }
+      this.interruptionSpeechFrames = 0;
       return;
     }
 
+    // ── 2. WHILE AI IS WAITING / READY FOR USER SPEECH ──
     const SPEECH_THRESHOLD_RMS = 45;
 
     if (rms >= SPEECH_THRESHOLD_RMS) {
@@ -453,7 +491,7 @@ export class GeminiLiveBridge implements AIBridge {
       }
     } else {
       this.silenceFrameCount += 1;
-      // If the user was speaking and has now paused for > 6 frames (120ms of silence),
+      // If the caller was speaking and has now paused for > 6 frames (120ms of silence),
       // stop sending ambient line static to Gemini so Gemini's VAD instantly detects
       // the end of speech without a multi-second timeout.
       if (this.isUserSpeaking && this.silenceFrameCount > 6) {
