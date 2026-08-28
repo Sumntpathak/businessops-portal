@@ -435,9 +435,9 @@ export class GeminiLiveBridge implements AIBridge {
     const pcm = twilioMulawToPcm(buffer, INPUT_SAMPLE_RATE);
     const rms = computeRms(pcm);
 
-    // While agent is actively speaking (MODEL_RESPONDING), gate out line noise (< 120 RMS)
-    // so ambient static does not trigger false barge-in interruptions.
-    if (this.state === "MODEL_RESPONDING" && rms < 120) {
+    // Completely ignore and drop all incoming audio while the AI agent is speaking (MODEL_RESPONDING).
+    // This prevents other voices in the room, background noise, or line static from interrupting the AI.
+    if (this.state === "MODEL_RESPONDING") {
       return;
     }
 
