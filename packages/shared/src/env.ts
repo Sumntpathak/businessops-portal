@@ -57,8 +57,8 @@ export const voiceEnvSchema = z.object({
   GOOGLE_APPLICATION_CREDENTIALS_JSON: z.string().optional().transform((v) => (v && v.trim().length > 0 ? v : undefined)),
   // Confirmed via a live smoke test (audio streamed, turnComplete fired) against
   // this project on 2026-07-23.
-  GEMINI_LIVE_MODEL: z.string().default("gemini-2.5-flash-native-audio-latest"),
-  GEMINI_LIVE_VOICE: z.string().default("Aoede"),
+  GEMINI_LIVE_MODEL: z.string().default("gemini-live-2.5-flash"),
+  GEMINI_LIVE_VOICE: z.string().default("Kore"),
   GEMINI_API_KEY: z.string().optional().transform((v) => (v && v.trim().length > 0 ? v : undefined)),
   // VAD end-of-speech sensitivity for Gemini Live.
   // "strict" cuts silence after user speech for snappy (~300-400ms) responses.
