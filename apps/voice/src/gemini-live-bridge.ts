@@ -473,8 +473,11 @@ export class GeminiLiveBridge implements AIBridge {
       // Forward all buffered speech frames to Gemini so no initial words are clipped
       for (const queued of this.interruptionBuffer.splice(0)) {
         const queuedPcm = twilioMulawToPcm(queued, INPUT_SAMPLE_RATE);
+        const data = int16ToBase64Pcm(queuedPcm);
+        const mimeType = `audio/pcm;rate=${INPUT_SAMPLE_RATE}`;
         this.session?.sendRealtimeInput({
-          audio: { data: int16ToBase64Pcm(queuedPcm), mimeType: `audio/pcm;rate=${INPUT_SAMPLE_RATE}` }
+          media: { data, mimeType },
+          audio: { data, mimeType }
         });
       }
       this.interruptionSpeechFrames = 0;
@@ -496,8 +499,11 @@ export class GeminiLiveBridge implements AIBridge {
     // Continuously stream all audio frames (speech and trailing ambient silence)
     // so Gemini Live's native VAD (automaticActivityDetection) has an uninterrupted stream
     // and endpoints turns instantly (~300ms) without packet starvation.
+    const data = int16ToBase64Pcm(pcm);
+    const mimeType = `audio/pcm;rate=${INPUT_SAMPLE_RATE}`;
     this.session?.sendRealtimeInput({
-      audio: { data: int16ToBase64Pcm(pcm), mimeType: `audio/pcm;rate=${INPUT_SAMPLE_RATE}` }
+      media: { data, mimeType },
+      audio: { data, mimeType }
     });
   }
 
