@@ -1230,16 +1230,20 @@ const browserTestVoiceSchema = z.string().regex(/^[a-z-]{1,32}$/).optional();
 browserTestStreams.on("connection", (socket, request) => {
   void (async () => {
     const url = new URL(request.url ?? "/", "http://localhost");
-    const requestedVoice = browserTestVoiceSchema.safeParse(
-      url.searchParams.get("voice") ?? undefined
+    const VALID_GEMINI_VOICES = ["Kore", "Aoede", "Charon", "Fenrir", "Puck"];
+    const rawVoice = url.searchParams.get("voice")?.trim() ?? "";
+    const matchedGeminiVoice = VALID_GEMINI_VOICES.find(
+      (v) => v.toLowerCase() === rawVoice.toLowerCase()
     );
+    const geminiVoice = matchedGeminiVoice ?? env.GEMINI_LIVE_VOICE ?? "Kore";
+
     const bridge: AIBridge =
       env.VOICE_PROVIDER === "gemini-live" || !env.AZURE_REALTIME_URL
         ? new GeminiLiveBridge({
             project: env.GOOGLE_CLOUD_PROJECT || "savr-457c4",
             location: env.GOOGLE_CLOUD_LOCATION,
             model: env.GEMINI_LIVE_MODEL,
-            voice: requestedVoice.success ? requestedVoice.data : env.GEMINI_LIVE_VOICE,
+            voice: geminiVoice,
             apiKey: env.GEMINI_API_KEY,
             vadSensitivity: env.GEMINI_VAD_END_SENSITIVITY,
             credentials: parseInlineGoogleCredentials(),
@@ -1249,7 +1253,7 @@ browserTestStreams.on("connection", (socket, request) => {
             url: env.AZURE_REALTIME_URL,
             apiKey: env.AZURE_REALTIME_KEY ?? "",
             model: env.AZURE_REALTIME_MODEL,
-            voice: requestedVoice.success ? requestedVoice.data : undefined,
+            voice: rawVoice || undefined,
             logger: app.log
           });
     let session: CallSession | undefined;

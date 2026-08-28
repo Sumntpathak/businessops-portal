@@ -11,16 +11,11 @@ const VOICE_SERVER_WS_URL =
 const TARGET_SAMPLE_RATE = 8000;
 
 const VOICE_OPTIONS = [
-  "marin",
-  "cedar",
-  "alloy",
-  "ash",
-  "ballad",
-  "coral",
-  "echo",
-  "sage",
-  "shimmer",
-  "verse"
+  "Kore",
+  "Aoede",
+  "Puck",
+  "Charon",
+  "Fenrir"
 ] as const;
 
 type CallState = "idle" | "connecting" | "live" | "ended";
@@ -58,7 +53,7 @@ function roleStyle(role: TranscriptRole): string {
 export default function VoiceTestPage() {
   const [state, setState] = useState<CallState>("idle");
   const [errorMessage, setErrorMessage] = useState("");
-  const [voice, setVoice] = useState<(typeof VOICE_OPTIONS)[number]>("marin");
+  const [voice, setVoice] = useState<(typeof VOICE_OPTIONS)[number]>("Kore");
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
 
   const socketRef = useRef<WebSocket>();

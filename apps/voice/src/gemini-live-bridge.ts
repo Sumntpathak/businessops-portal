@@ -211,8 +211,6 @@ export class GeminiLiveBridge implements AIBridge {
   private state: BridgeState = "READY";
   private lastEventTime = Date.now();
   private lastEventName = "NONE";
-  /** Consecutive silence frames to cut off background line noise and force instant VAD endpointing */
-  private silenceFrameCount = 0;
   /** Rolling buffer and speech frame count for genuine barge-in detection during AI speech */
   private interruptionSpeechFrames = 0;
   private readonly interruptionBuffer: Buffer[] = [];
@@ -440,23 +438,23 @@ export class GeminiLiveBridge implements AIBridge {
 
     // ── 1. WHILE AI IS ACTIVELY SPEAKING (MODEL_RESPONDING) ──
     if (this.state === "MODEL_RESPONDING") {
-      // Ambient noise / TV / line static (RMS < 180) is completely ignored
-      if (rms < 180) {
+      // Ambient noise / TV / line static (RMS < 150) is ignored during AI speech
+      if (rms < 150) {
         this.interruptionSpeechFrames = 0;
         this.interruptionBuffer.length = 0;
         return;
       }
 
-      // Strong voice detected (RMS >= 180) — buffer it and check for genuine interruption
+      // Strong voice detected (RMS >= 150) — buffer it and check for genuine interruption
       this.interruptionSpeechFrames += 1;
       this.interruptionBuffer.push(buffer);
-      if (this.interruptionBuffer.length > 8) {
+      if (this.interruptionBuffer.length > 6) {
         this.interruptionBuffer.shift();
       }
 
-      // Require 6 consecutive frames (~120ms of sustained caller speech)
+      // Require 4 consecutive frames (~80ms of sustained caller speech)
       // to confirm a genuine human interruption rather than a single click/cough.
-      if (this.interruptionSpeechFrames < 6) {
+      if (this.interruptionSpeechFrames < 4) {
         return; // Not yet confirmed — keep AI speaking
       }
 
@@ -478,31 +476,21 @@ export class GeminiLiveBridge implements AIBridge {
       return;
     }
 
-    // ── 2. WHILE AI IS WAITING / READY FOR USER SPEECH ──
-    const SPEECH_THRESHOLD_RMS = 45;
+    // ── 2. WHILE AI IS LISTENING / WAITING FOR USER SPEECH ──
+    const SPEECH_THRESHOLD_RMS = 40;
 
     if (rms >= SPEECH_THRESHOLD_RMS) {
-      this.silenceFrameCount = 0;
       if (!this.isUserSpeaking) {
         this.isUserSpeaking = true;
         this.recordEvent(`USER_SPEECH_STARTED:rms=${Math.round(rms)}`);
         this.transitionTo("USER_SPEAKING");
         this.latencyTracker?.onUserSpeechStarted();
       }
-    } else {
-      this.silenceFrameCount += 1;
-      // If the caller was speaking and has now paused for > 6 frames (120ms of silence),
-      // stop sending ambient line static to Gemini so Gemini's VAD instantly detects
-      // the end of speech without a multi-second timeout.
-      if (this.isUserSpeaking && this.silenceFrameCount > 6) {
-        return;
-      }
-      // If user has not started speaking yet and audio is ambient noise (< 45 RMS), gate it out.
-      if (!this.isUserSpeaking && rms < SPEECH_THRESHOLD_RMS) {
-        return;
-      }
     }
 
+    // Continuously stream all audio frames (speech and trailing ambient silence)
+    // so Gemini Live's native VAD (automaticActivityDetection) has an uninterrupted stream
+    // and endpoints turns instantly (~300ms) without packet starvation.
     this.session?.sendRealtimeInput({
       audio: { data: int16ToBase64Pcm(pcm), mimeType: `audio/pcm;rate=${INPUT_SAMPLE_RATE}` }
     });
