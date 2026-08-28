@@ -286,12 +286,17 @@ export class GeminiLiveBridge implements AIBridge {
         speechConfig: {
           voiceConfig: { prebuiltVoiceConfig: { voiceName: this.options.voice ?? "Kore" } }
         },
+        thinkingConfig: {
+          thinkingBudget: 0
+        },
         inputAudioTranscription: transcriptionConfig,
         outputAudioTranscription: {},
         realtimeInputConfig: {
           automaticActivityDetection: {
             endOfSpeechSensitivity: endSensitivity,
-            startOfSpeechSensitivity: StartSensitivity.START_SENSITIVITY_HIGH
+            startOfSpeechSensitivity: StartSensitivity.START_SENSITIVITY_HIGH,
+            silenceDurationMs: 400,
+            prefixPaddingMs: 100
           }
         }
       },
