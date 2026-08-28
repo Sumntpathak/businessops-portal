@@ -212,6 +212,10 @@ export class GeminiLiveBridge implements AIBridge {
   private state: BridgeState = "READY";
   private lastEventTime = Date.now();
   private lastEventName = "NONE";
+  /** Consecutive frames above the barge-in threshold — avoids single-frame noise spikes */
+  private consecutiveLoudFrames = 0;
+  /** Monotonic timestamp when bridge.start() was called — used for elapsed-time logging */
+  private callStartMs = 0;
 
   constructor(private readonly options: GeminiLiveBridgeOptions) {
     if (options.apiKey) {
@@ -256,10 +260,16 @@ export class GeminiLiveBridge implements AIBridge {
   private recordEvent(name: string): void {
     this.lastEventTime = Date.now();
     this.lastEventName = name;
+    const elapsed = this.callStartMs ? this.lastEventTime - this.callStartMs : 0;
+    this.options.logger?.info(
+      { callId: this.callSession?.callId, event: name, state: this.state, elapsedMs: elapsed },
+      `[TIMING] ${name} @ +${elapsed}ms (state=${this.state})`
+    );
   }
 
   async start(session: CallSession): Promise<void> {
     this.callSession = session;
+    this.callStartMs = Date.now();
     this.latencyTracker = new VoiceLatencyTracker(session.callId, this.options.logger);
     this.transitionTo("READY");
 
@@ -426,21 +436,45 @@ export class GeminiLiveBridge implements AIBridge {
     const pcm = twilioMulawToPcm(buffer, INPUT_SAMPLE_RATE);
     const rms = computeRms(pcm);
 
-    // If greeting is still generating/speaking, only forward if the caller is speaking firmly (RMS >= 280)
-    if (!this.greetingCompleted && rms < 280) {
-      return;
+    // ── BARGE-IN THRESHOLD ──
+    // During greeting or agent speech, we need SUSTAINED loud frames to confirm
+    // the caller is actually speaking (not just a phone line click or static burst).
+    // Require 4 consecutive frames above RMS 500 before forwarding audio.
+    const BARGE_IN_RMS = 500;
+    const BARGE_IN_FRAMES_REQUIRED = 4;
+
+    // During READY/USER_SPEAKING states (agent is NOT speaking), use a lower
+    // threshold for responsive turn-taking.
+    const QUIET_STATE_RMS = 200;
+
+    const agentIsSpeaking = !this.greetingCompleted || this.state === "MODEL_RESPONDING";
+
+    if (agentIsSpeaking) {
+      // Count consecutive loud frames
+      if (rms >= BARGE_IN_RMS) {
+        this.consecutiveLoudFrames += 1;
+      } else {
+        this.consecutiveLoudFrames = 0;
+        return; // Below threshold — gate out
+      }
+
+      // Not enough sustained loudness yet — gate out
+      if (this.consecutiveLoudFrames < BARGE_IN_FRAMES_REQUIRED) {
+        return;
+      }
+      // Sustained speech confirmed — fall through and forward
+    } else {
+      // Agent is quiet / waiting — lower threshold, no sustained detection needed
+      this.consecutiveLoudFrames = 0;
+      if (rms < QUIET_STATE_RMS) {
+        return;
+      }
     }
 
-    // If agent is currently speaking, gate out line noise and ambient background (RMS < 280)
-    // so background clicks or line static do NOT cut off the agent mid-sentence.
-    if (this.state === "MODEL_RESPONDING" && rms < 280) {
-      return;
-    }
-
-    if (!this.isUserSpeaking && rms >= 220) {
+    if (!this.isUserSpeaking && rms >= QUIET_STATE_RMS) {
       this.isUserSpeaking = true;
       this.greetingCompleted = true;
-      this.recordEvent("USER_SPEECH_STARTED");
+      this.recordEvent(`USER_SPEECH_STARTED:rms=${Math.round(rms)}`);
       this.transitionTo("USER_SPEAKING");
       this.latencyTracker?.onUserSpeechStarted();
     }
@@ -451,7 +485,8 @@ export class GeminiLiveBridge implements AIBridge {
   }
 
   private handleServerMessage(message: LiveServerMessage): void {
-    this.recordEvent("SERVER_MESSAGE_RECEIVED");
+    // Don't log SERVER_MESSAGE_RECEIVED — it fires on every audio chunk (~50/sec)
+    this.lastEventTime = Date.now();
     const content = message.serverContent;
 
     // 1. Handle Interruption (Barge-in)

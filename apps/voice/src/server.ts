@@ -1144,10 +1144,13 @@ mediaStreams.on("connection", (socket, request) => {
 
         const event = adapter.parseStreamEvent(raw);
         if (event.type === "start") {
+          const t0 = Date.now();
           session = await loadCallSession(callId);
+          const dbLoadMs = Date.now() - t0;
           if (session.providerCallSid !== event.callSid) {
             session.providerCallSid = event.callSid;
           }
+          const dbUpdateStart = Date.now();
           try {
             const scoped = withTenant(db, session.tenantId);
             await db
@@ -1157,6 +1160,7 @@ mediaStreams.on("connection", (socket, request) => {
           } catch (dbError) {
             app.log.warn({ err: dbError, callId }, "Status update in_progress skipped (database unreachable)");
           }
+          const dbUpdateMs = Date.now() - dbUpdateStart;
 
           const executor = new ToolExecutor(session, {
             availability: availabilityService,
@@ -1164,10 +1168,12 @@ mediaStreams.on("connection", (socket, request) => {
             repository: toolRepository
           });
           bridge.onToolCall((name, input) => executor.execute(name, input));
+          const bridgeStart = Date.now();
           await bridge.start(session);
+          const bridgeStartMs = Date.now() - bridgeStart;
           app.log.info(
-            { callId: session.callId, tenantId: session.tenantId },
-            "Twilio media stream started"
+            { callId: session.callId, tenantId: session.tenantId, dbLoadMs, dbUpdateMs, bridgeStartMs, totalSetupMs: Date.now() - t0 },
+            `[TIMING] Twilio stream started — dbLoad=${dbLoadMs}ms, dbUpdate=${dbUpdateMs}ms, bridgeStart=${bridgeStartMs}ms, total=${Date.now() - t0}ms`
           );
           return;
         }
