@@ -77,13 +77,16 @@ export function resampleLinear(
 
   // Fast path: 24kHz -> 8kHz (Gemini Live 24k output to Twilio 8k telephony)
   if (fromRate === 24_000 && toRate === 8_000) {
-    // 3:1 integer decimation with low-pass filter (cutoff 4kHz)
-    const filtered = lowPassFilter(samples, 24_000, 4_000);
-    const outLength = Math.max(1, Math.round(samples.length / 3));
+    // Low-pass filter to attenuate near-Nyquist content, followed by 3:1 decimation
+    const filtered = lowPassFilter(samples, 24_000, 3_200);
+    const outLength = Math.max(1, Math.floor(filtered.length / 3));
     const output = new Int16Array(outLength);
     for (let i = 0; i < outLength; i += 1) {
-      const srcIdx = Math.min(i * 3, filtered.length - 1);
-      output[i] = filtered[srcIdx] ?? 0;
+      const idx = i * 3;
+      const s0 = filtered[idx] ?? 0;
+      const s1 = filtered[idx + 1] ?? s0;
+      const s2 = filtered[idx + 2] ?? s1;
+      output[i] = Math.round((s0 + s1 + s2) / 3);
     }
     return output;
   }

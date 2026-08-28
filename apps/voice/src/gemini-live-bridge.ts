@@ -274,7 +274,7 @@ export class GeminiLiveBridge implements AIBridge {
         systemInstruction: { parts: [{ text: buildInstructions(session) }] },
         tools: [{ functionDeclarations: REALTIME_TOOLS }],
         speechConfig: {
-          voiceConfig: { prebuiltVoiceConfig: { voiceName: this.options.voice ?? "Aoede" } }
+          voiceConfig: { prebuiltVoiceConfig: { voiceName: this.options.voice ?? "Kore" } }
         },
         inputAudioTranscription: transcriptionConfig,
         outputAudioTranscription: {},
@@ -329,7 +329,7 @@ export class GeminiLiveBridge implements AIBridge {
           parts: [
             {
               text:
-                "Greet the caller now with exactly this greeting, spoken naturally: " +
+                "Say aloud immediately to the caller in a warm, welcoming, natural human tone: " +
                 JSON.stringify(session.agent.voiceGreeting)
             }
           ]
@@ -426,19 +426,18 @@ export class GeminiLiveBridge implements AIBridge {
     const pcm = twilioMulawToPcm(buffer, INPUT_SAMPLE_RATE);
     const rms = computeRms(pcm);
 
-    // If greeting is still generating/speaking and caller is quiet (ambient noise < 220),
-    // gate the audio so we don't pollute Gemini's VAD context with background static.
-    if (!this.greetingCompleted && rms < 220) {
+    // If greeting is still generating/speaking, only forward if the caller is speaking firmly (RMS >= 280)
+    if (!this.greetingCompleted && rms < 280) {
       return;
     }
 
-    // If agent is currently speaking, gate out low-level line static/bleed (RMS < 180).
-    // If RMS >= 180, user is speaking/barging in — forward immediately!
-    if (this.state === "MODEL_RESPONDING" && rms < 180) {
+    // If agent is currently speaking, gate out line noise and ambient background (RMS < 280)
+    // so background clicks or line static do NOT cut off the agent mid-sentence.
+    if (this.state === "MODEL_RESPONDING" && rms < 280) {
       return;
     }
 
-    if (!this.isUserSpeaking && rms >= 180) {
+    if (!this.isUserSpeaking && rms >= 220) {
       this.isUserSpeaking = true;
       this.greetingCompleted = true;
       this.recordEvent("USER_SPEECH_STARTED");
