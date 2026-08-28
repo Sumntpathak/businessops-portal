@@ -476,8 +476,7 @@ export class GeminiLiveBridge implements AIBridge {
         const data = int16ToBase64Pcm(queuedPcm);
         const mimeType = `audio/pcm;rate=${INPUT_SAMPLE_RATE}`;
         this.session?.sendRealtimeInput({
-          media: { data, mimeType },
-          audio: { data, mimeType }
+          media: { data, mimeType }
         });
       }
       this.interruptionSpeechFrames = 0;
@@ -502,8 +501,7 @@ export class GeminiLiveBridge implements AIBridge {
     const data = int16ToBase64Pcm(pcm);
     const mimeType = `audio/pcm;rate=${INPUT_SAMPLE_RATE}`;
     this.session?.sendRealtimeInput({
-      media: { data, mimeType },
-      audio: { data, mimeType }
+      media: { data, mimeType }
     });
   }
 
