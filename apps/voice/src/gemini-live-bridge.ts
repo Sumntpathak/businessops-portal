@@ -211,6 +211,8 @@ export class GeminiLiveBridge implements AIBridge {
   private state: BridgeState = "READY";
   private lastEventTime = Date.now();
   private lastEventName = "NONE";
+  /** Consecutive silence frames to cut off background line noise and force instant VAD endpointing */
+  private silenceFrameCount = 0;
   /** Monotonic timestamp when bridge.start() was called — used for elapsed-time logging */
   private callStartMs = 0;
 
@@ -433,22 +435,34 @@ export class GeminiLiveBridge implements AIBridge {
     const pcm = twilioMulawToPcm(buffer, INPUT_SAMPLE_RATE);
     const rms = computeRms(pcm);
 
-    // Filter out flatline zero buffers (< 15 RMS)
-    if (rms < 15) {
-      return;
-    }
-
     // While agent is actively speaking (MODEL_RESPONDING), gate out line noise (< 120 RMS)
     // so ambient static does not trigger false barge-in interruptions.
     if (this.state === "MODEL_RESPONDING" && rms < 120) {
       return;
     }
 
-    if (!this.isUserSpeaking && rms >= 40) {
-      this.isUserSpeaking = true;
-      this.recordEvent(`USER_SPEECH_STARTED:rms=${Math.round(rms)}`);
-      this.transitionTo("USER_SPEAKING");
-      this.latencyTracker?.onUserSpeechStarted();
+    const SPEECH_THRESHOLD_RMS = 45;
+
+    if (rms >= SPEECH_THRESHOLD_RMS) {
+      this.silenceFrameCount = 0;
+      if (!this.isUserSpeaking) {
+        this.isUserSpeaking = true;
+        this.recordEvent(`USER_SPEECH_STARTED:rms=${Math.round(rms)}`);
+        this.transitionTo("USER_SPEAKING");
+        this.latencyTracker?.onUserSpeechStarted();
+      }
+    } else {
+      this.silenceFrameCount += 1;
+      // If the user was speaking and has now paused for > 6 frames (120ms of silence),
+      // stop sending ambient line static to Gemini so Gemini's VAD instantly detects
+      // the end of speech without a multi-second timeout.
+      if (this.isUserSpeaking && this.silenceFrameCount > 6) {
+        return;
+      }
+      // If user has not started speaking yet and audio is ambient noise (< 45 RMS), gate it out.
+      if (!this.isUserSpeaking && rms < SPEECH_THRESHOLD_RMS) {
+        return;
+      }
     }
 
     this.session?.sendRealtimeInput({
