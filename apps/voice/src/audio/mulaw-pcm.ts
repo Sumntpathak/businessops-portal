@@ -141,3 +141,14 @@ export function base64PcmToInt16(base64: string): Int16Array {
 export function int16ToBase64Pcm(samples: Int16Array): string {
   return Buffer.from(samples.buffer, samples.byteOffset, samples.byteLength).toString("base64");
 }
+
+/** Computes the Root Mean Square (RMS) energy level of PCM16 audio samples. */
+export function computeRms(samples: Int16Array): number {
+  if (samples.length === 0) return 0;
+  let sum = 0;
+  for (let i = 0; i < samples.length; i += 1) {
+    const s = samples[i] ?? 0;
+    sum += s * s;
+  }
+  return Math.sqrt(sum / samples.length);
+}

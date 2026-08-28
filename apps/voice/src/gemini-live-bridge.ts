@@ -1,4 +1,9 @@
-import { EndSensitivity, GoogleGenAI, Modality } from "@google/genai";
+import {
+  EndSensitivity,
+  GoogleGenAI,
+  Modality,
+  StartSensitivity
+} from "@google/genai";
 import type {
   FunctionCall,
   FunctionDeclaration,
@@ -10,6 +15,7 @@ import type { CallSession } from "./call-session.js";
 import { buildInstructions, languageHintCodes } from "./instructions.js";
 import {
   base64PcmToInt16,
+  computeRms,
   int16ToBase64Pcm,
   pcmToTwilioMulaw,
   twilioMulawToPcm
@@ -167,13 +173,10 @@ export const REALTIME_TOOLS: FunctionDeclaration[] = [
 ];
 
 function resolveEndSensitivity(sensitivity?: "strict" | "unspecified" | "relaxed"): EndSensitivity {
-  if (sensitivity === "strict") {
-    return (EndSensitivity as unknown as { END_SENSITIVITY_STRICT?: EndSensitivity }).END_SENSITIVITY_STRICT ?? EndSensitivity.END_SENSITIVITY_UNSPECIFIED;
-  }
   if (sensitivity === "relaxed") {
-    return (EndSensitivity as unknown as { END_SENSITIVITY_RELAXED?: EndSensitivity }).END_SENSITIVITY_RELAXED ?? EndSensitivity.END_SENSITIVITY_UNSPECIFIED;
+    return EndSensitivity.END_SENSITIVITY_LOW;
   }
-  return EndSensitivity.END_SENSITIVITY_UNSPECIFIED;
+  return EndSensitivity.END_SENSITIVITY_HIGH;
 }
 
 /**
@@ -201,6 +204,7 @@ export class GeminiLiveBridge implements AIBridge {
   private readonly activeToolCalls = new Set<string>();
   private ready = false;
   private stopped = false;
+  private greetingCompleted = false;
   private silenceTimer?: NodeJS.Timeout;
   private currentAgentTurnText = "";
   private currentCallerTurnText = "";
@@ -276,7 +280,8 @@ export class GeminiLiveBridge implements AIBridge {
         outputAudioTranscription: {},
         realtimeInputConfig: {
           automaticActivityDetection: {
-            endOfSpeechSensitivity: endSensitivity
+            endOfSpeechSensitivity: endSensitivity,
+            startOfSpeechSensitivity: StartSensitivity.START_SENSITIVITY_HIGH
           }
         }
       },
@@ -418,13 +423,29 @@ export class GeminiLiveBridge implements AIBridge {
   }
 
   private forwardAudio(buffer: Buffer): void {
-    if (!this.isUserSpeaking) {
+    const pcm = twilioMulawToPcm(buffer, INPUT_SAMPLE_RATE);
+    const rms = computeRms(pcm);
+
+    // If greeting is still generating/speaking and caller is quiet (ambient noise < 220),
+    // gate the audio so we don't pollute Gemini's VAD context with background static.
+    if (!this.greetingCompleted && rms < 220) {
+      return;
+    }
+
+    // If agent is currently speaking, gate out low-level line static/bleed (RMS < 180).
+    // If RMS >= 180, user is speaking/barging in — forward immediately!
+    if (this.state === "MODEL_RESPONDING" && rms < 180) {
+      return;
+    }
+
+    if (!this.isUserSpeaking && rms >= 180) {
       this.isUserSpeaking = true;
+      this.greetingCompleted = true;
       this.recordEvent("USER_SPEECH_STARTED");
       this.transitionTo("USER_SPEAKING");
       this.latencyTracker?.onUserSpeechStarted();
     }
-    const pcm = twilioMulawToPcm(buffer, INPUT_SAMPLE_RATE);
+
     this.session?.sendRealtimeInput({
       audio: { data: int16ToBase64Pcm(pcm), mimeType: `audio/pcm;rate=${INPUT_SAMPLE_RATE}` }
     });
@@ -441,6 +462,7 @@ export class GeminiLiveBridge implements AIBridge {
         { callId: this.callSession?.callId },
         "Gemini Live reported interrupted (barge-in) — flushing playback"
       );
+      this.greetingCompleted = true;
       this.activeToolCalls.clear();
       this.latencyTracker?.onBargeIn();
       this.bargeIn?.();
@@ -526,6 +548,7 @@ export class GeminiLiveBridge implements AIBridge {
 
     // 6. Handle Turn Complete
     if (content?.turnComplete) {
+      this.greetingCompleted = true;
       this.recordEvent("TURN_COMPLETE_RECEIVED");
       this.isUserSpeaking = false;
 
