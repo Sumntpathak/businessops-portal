@@ -216,6 +216,8 @@ export class GeminiLiveBridge implements AIBridge {
   private readonly interruptionBuffer: Buffer[] = [];
   /** Monotonic timestamp when bridge.start() was called — used for elapsed-time logging */
   private callStartMs = 0;
+  /** Estimated timestamp when outbound AI audio playback finishes on the caller's phone */
+  private playbackEndsAt = 0;
 
   constructor(private readonly options: GeminiLiveBridgeOptions) {
     if (options.apiKey) {
@@ -437,34 +439,49 @@ export class GeminiLiveBridge implements AIBridge {
     this.transitionTo("READY");
   }
 
+  private emitOutboundAudio(pcmSamples: Int16Array): void {
+    const mulaw = pcmToTwilioMulaw(pcmSamples, OUTPUT_SAMPLE_RATE);
+    // Track physical playback duration on the caller's phone (8 bytes = 1ms at 8kHz)
+    const durationMs = mulaw.length / 8;
+    this.playbackEndsAt = Math.max(Date.now(), this.playbackEndsAt) + durationMs;
+
+    // Slice into standard 20ms (160 byte) Twilio frames to prevent packet jitter / broken audio
+    const FRAME_SIZE = 160;
+    for (let i = 0; i < mulaw.length; i += FRAME_SIZE) {
+      const frame = mulaw.subarray(i, Math.min(i + FRAME_SIZE, mulaw.length));
+      this.audioOut?.(frame);
+    }
+  }
+
   private forwardAudio(buffer: Buffer): void {
     const pcm = twilioMulawToPcm(buffer, INPUT_SAMPLE_RATE);
     const rms = computeRms(pcm);
 
-    // ── 1. WHILE AI IS ACTIVELY SPEAKING (MODEL_RESPONDING) ──
-    if (this.state === "MODEL_RESPONDING") {
-      // Ambient noise / TV / line static (RMS < 150) is ignored during AI speech
-      if (rms < 150) {
+    // ── 1. WHILE AI IS PHYSICALLY SPEAKING ON CALLER'S PHONE ──
+    const isAiSpeaking = Date.now() < this.playbackEndsAt || this.state === "MODEL_RESPONDING";
+    if (isAiSpeaking) {
+      // Ignore speaker bleed, line echo, and ambient static (RMS < 140)
+      if (rms < 140) {
         this.interruptionSpeechFrames = 0;
         this.interruptionBuffer.length = 0;
         return;
       }
 
-      // Strong voice detected (RMS >= 150) — buffer it and check for genuine interruption
+      // Strong voice detected (RMS >= 140) — buffer it and check for genuine interruption
       this.interruptionSpeechFrames += 1;
       this.interruptionBuffer.push(buffer);
-      if (this.interruptionBuffer.length > 6) {
+      if (this.interruptionBuffer.length > 5) {
         this.interruptionBuffer.shift();
       }
 
-      // Require 4 consecutive frames (~80ms of sustained caller speech)
-      // to confirm a genuine human interruption rather than a single click/cough.
-      if (this.interruptionSpeechFrames < 4) {
-        return; // Not yet confirmed — keep AI speaking
+      // Require 3 consecutive frames (~60ms) of sustained caller speech to confirm barge-in
+      if (this.interruptionSpeechFrames < 3) {
+        return;
       }
 
       // ── GENUINE INTERRUPTION CONFIRMED ──
       this.recordEvent(`GENUINE_BARGE_IN:rms=${Math.round(rms)}`);
+      this.playbackEndsAt = 0;
       this.isUserSpeaking = true;
       this.transitionTo("USER_SPEAKING");
       this.latencyTracker?.onBargeIn();
@@ -517,6 +534,7 @@ export class GeminiLiveBridge implements AIBridge {
         { callId: this.callSession?.callId },
         "Gemini Live reported interrupted (barge-in) — flushing playback"
       );
+      this.playbackEndsAt = 0;
       this.activeToolCalls.clear();
       this.latencyTracker?.onBargeIn();
       this.bargeIn?.();
@@ -536,7 +554,7 @@ export class GeminiLiveBridge implements AIBridge {
         this.isUserSpeaking = false;
         this.transitionTo("MODEL_RESPONDING");
         this.latencyTracker?.onFirstAudioChunk();
-        this.audioOut?.(pcmToTwilioMulaw(base64PcmToInt16(part.inlineData.data), OUTPUT_SAMPLE_RATE));
+        this.emitOutboundAudio(base64PcmToInt16(part.inlineData.data));
       } else if (part.text) {
         this.recordEvent("TEXT_PART_RECEIVED");
         this.latencyTracker?.onFirstLlmToken();
@@ -550,7 +568,7 @@ export class GeminiLiveBridge implements AIBridge {
       this.isUserSpeaking = false;
       this.transitionTo("MODEL_RESPONDING");
       this.latencyTracker?.onFirstAudioChunk();
-      this.audioOut?.(pcmToTwilioMulaw(base64PcmToInt16(message.data), OUTPUT_SAMPLE_RATE));
+      this.emitOutboundAudio(base64PcmToInt16(message.data));
     }
 
     // 3. Handle Input (Caller) Transcription
