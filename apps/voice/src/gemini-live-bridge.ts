@@ -172,6 +172,20 @@ export const REALTIME_TOOLS: FunctionDeclaration[] = [
   }
 ];
 
+export function resolveLiveModel(model?: string): string {
+  const trimmed = model?.trim();
+  if (
+    !trimmed ||
+    trimmed === "gemini-2.5-flash-native-audio-latest" ||
+    trimmed === "gemini-2.0-flash-exp" ||
+    trimmed === "gemini-3.1-flash-live-preview" ||
+    trimmed === "gemini-2.5-flash-preview"
+  ) {
+    return "gemini-live-2.5-flash";
+  }
+  return trimmed;
+}
+
 function resolveEndSensitivity(sensitivity?: "strict" | "unspecified" | "relaxed"): EndSensitivity {
   if (sensitivity === "relaxed") {
     return EndSensitivity.END_SENSITIVITY_LOW;
@@ -279,8 +293,9 @@ export class GeminiLiveBridge implements AIBridge {
     const transcriptionConfig = hints.length ? { languageHints: { languageCodes: hints } } : {};
     const endSensitivity = resolveEndSensitivity(this.options.vadSensitivity);
 
+    const model = resolveLiveModel(this.options.model);
     const connectPromise = this.client.live.connect({
-      model: this.options.model,
+      model,
       config: {
         responseModalities: [Modality.AUDIO],
         systemInstruction: { parts: [{ text: buildInstructions(session) }] },
