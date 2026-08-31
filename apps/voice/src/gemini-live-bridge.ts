@@ -297,8 +297,8 @@ export class GeminiLiveBridge implements AIBridge {
           automaticActivityDetection: {
             endOfSpeechSensitivity: endSensitivity,
             startOfSpeechSensitivity: StartSensitivity.START_SENSITIVITY_HIGH,
-            silenceDurationMs: 400,
-            prefixPaddingMs: 100
+            silenceDurationMs: 250,
+            prefixPaddingMs: 50
           }
         }
       },
@@ -460,22 +460,22 @@ export class GeminiLiveBridge implements AIBridge {
     // ── 1. WHILE AI IS PHYSICALLY SPEAKING ON CALLER'S PHONE ──
     const isAiSpeaking = Date.now() < this.playbackEndsAt || this.state === "MODEL_RESPONDING";
     if (isAiSpeaking) {
-      // Ignore speaker bleed, line echo, and ambient static (RMS < 140)
-      if (rms < 140) {
+      // Ignore speaker bleed, line echo, and ambient static (RMS < 65)
+      if (rms < 65) {
         this.interruptionSpeechFrames = 0;
         this.interruptionBuffer.length = 0;
         return;
       }
 
-      // Strong voice detected (RMS >= 140) — buffer it and check for genuine interruption
+      // Voice detected (RMS >= 65) — buffer it and check for genuine interruption
       this.interruptionSpeechFrames += 1;
       this.interruptionBuffer.push(buffer);
       if (this.interruptionBuffer.length > 5) {
         this.interruptionBuffer.shift();
       }
 
-      // Require 3 consecutive frames (~60ms) of sustained caller speech to confirm barge-in
-      if (this.interruptionSpeechFrames < 3) {
+      // Require 2 consecutive frames (~40ms) of sustained caller speech to confirm barge-in
+      if (this.interruptionSpeechFrames < 2) {
         return;
       }
 
@@ -501,7 +501,7 @@ export class GeminiLiveBridge implements AIBridge {
     }
 
     // ── 2. WHILE AI IS LISTENING / WAITING FOR USER SPEECH ──
-    const SPEECH_THRESHOLD_RMS = 40;
+    const SPEECH_THRESHOLD_RMS = 35;
 
     if (rms >= SPEECH_THRESHOLD_RMS) {
       if (!this.isUserSpeaking) {
@@ -514,7 +514,7 @@ export class GeminiLiveBridge implements AIBridge {
 
     // Continuously stream all audio frames (speech and trailing ambient silence)
     // so Gemini Live's native VAD (automaticActivityDetection) has an uninterrupted stream
-    // and endpoints turns instantly (~300ms) without packet starvation.
+    // and endpoints turns instantly (~250-300ms) without packet starvation.
     const data = int16ToBase64Pcm(pcm);
     const mimeType = `audio/pcm;rate=${INPUT_SAMPLE_RATE}`;
     this.session?.sendRealtimeInput({
@@ -640,6 +640,7 @@ export class GeminiLiveBridge implements AIBridge {
       this.transitionTo("TURN_COMPLETE");
       this.turnComplete?.();
       this.transitionTo("READY");
+      this.playbackEndsAt = Math.min(this.playbackEndsAt, Date.now() + 1500);
 
       if (this.endCallRequested) {
         this.endCallRequested = false;
