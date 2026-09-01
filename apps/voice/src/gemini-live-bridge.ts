@@ -234,14 +234,20 @@ export class GeminiLiveBridge implements AIBridge {
   private playbackEndsAt = 0;
 
   constructor(private readonly options: GeminiLiveBridgeOptions) {
-    if (options.apiKey) {
-      this.client = new GoogleGenAI({ apiKey: options.apiKey });
-    } else {
+    if (options.credentials || options.project) {
       this.client = new GoogleGenAI({
         vertexai: true,
         project: options.project ?? "savr-457c4",
         location: options.location ?? "global",
         ...(options.credentials ? { googleAuthOptions: { credentials: options.credentials } } : {})
+      });
+    } else if (options.apiKey) {
+      this.client = new GoogleGenAI({ apiKey: options.apiKey });
+    } else {
+      this.client = new GoogleGenAI({
+        vertexai: true,
+        project: "savr-457c4",
+        location: options.location ?? "global"
       });
     }
   }
