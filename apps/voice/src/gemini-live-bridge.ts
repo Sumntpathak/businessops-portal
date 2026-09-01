@@ -485,22 +485,22 @@ export class GeminiLiveBridge implements AIBridge {
       (Date.now() < this.playbackEndsAt || this.state === "MODEL_RESPONDING") &&
       this.state !== "USER_SPEAKING";
     if (isAiSpeaking) {
-      // Ignore speaker bleed, line echo, and ambient static (RMS < 65)
-      if (rms < 65) {
+      // Ignore speaker bleed, line echo, and breathing during AI speech (RMS < 90)
+      if (rms < 90) {
         this.interruptionSpeechFrames = 0;
         this.interruptionBuffer.length = 0;
         return;
       }
 
-      // Voice detected (RMS >= 65) — buffer it and check for genuine interruption
+      // Sustained voice detected (RMS >= 90) — buffer it and check for genuine interruption
       this.interruptionSpeechFrames += 1;
       this.interruptionBuffer.push(buffer);
       if (this.interruptionBuffer.length > 5) {
         this.interruptionBuffer.shift();
       }
 
-      // Require 2 consecutive frames (~40ms) of sustained caller speech to confirm barge-in
-      if (this.interruptionSpeechFrames < 2) {
+      // Require 3 consecutive frames (~60ms) of sustained caller speech to confirm barge-in
+      if (this.interruptionSpeechFrames < 3) {
         return;
       }
 
@@ -527,7 +527,7 @@ export class GeminiLiveBridge implements AIBridge {
     }
 
     // ── 2. WHILE AI IS LISTENING / WAITING FOR USER SPEECH ──
-    const SPEECH_THRESHOLD_RMS = 60;
+    const SPEECH_THRESHOLD_RMS = 45;
 
     if (rms >= SPEECH_THRESHOLD_RMS) {
       if (!this.isUserSpeaking) {
