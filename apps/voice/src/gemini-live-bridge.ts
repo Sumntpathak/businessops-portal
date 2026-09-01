@@ -234,6 +234,8 @@ export class GeminiLiveBridge implements AIBridge {
   private playbackEndsAt = 0;
   /** Set true when caller explicitly interrupts; cleared on next turn so new audio plays normally */
   private interruptedTurn = false;
+  /** Consecutive voice frames while listening to filter single-spike notification chimes */
+  private listeningSpeechFrames = 0;
 
   constructor(private readonly options: GeminiLiveBridgeOptions) {
     if (options.credentials || options.project) {
@@ -527,15 +529,20 @@ export class GeminiLiveBridge implements AIBridge {
     }
 
     // ── 2. WHILE AI IS LISTENING / WAITING FOR USER SPEECH ──
-    const SPEECH_THRESHOLD_RMS = 45;
+    const SPEECH_THRESHOLD_RMS = 55;
 
     if (rms >= SPEECH_THRESHOLD_RMS) {
-      if (!this.isUserSpeaking) {
+      this.listeningSpeechFrames += 1;
+      // Require 2 consecutive frames (~40ms) of sustained human voice to confirm user speech
+      // so single-spike notification dings / beeps do not trigger false turns
+      if (this.listeningSpeechFrames >= 2 && !this.isUserSpeaking) {
         this.isUserSpeaking = true;
         this.recordEvent(`USER_SPEECH_STARTED:rms=${Math.round(rms)}`);
         this.transitionTo("USER_SPEAKING");
         this.latencyTracker?.onUserSpeechStarted();
       }
+    } else {
+      this.listeningSpeechFrames = 0;
     }
 
     // Continuously stream all audio frames (speech and trailing ambient silence)
@@ -562,6 +569,7 @@ export class GeminiLiveBridge implements AIBridge {
       );
       this.playbackEndsAt = 0;
       this.interruptedTurn = false;
+      this.listeningSpeechFrames = 0;
       this.activeToolCalls.clear();
       this.latencyTracker?.onBargeIn();
       this.bargeIn?.();
@@ -584,6 +592,7 @@ export class GeminiLiveBridge implements AIBridge {
         sentAudio = true;
         this.recordEvent("AUDIO_CHUNK_RECEIVED");
         this.isUserSpeaking = false;
+        this.listeningSpeechFrames = 0;
         this.transitionTo("MODEL_RESPONDING");
         this.latencyTracker?.onFirstAudioChunk();
         this.emitOutboundAudio(base64PcmToInt16(part.inlineData.data));
@@ -599,6 +608,7 @@ export class GeminiLiveBridge implements AIBridge {
       if (!this.interruptedTurn) {
         this.recordEvent("DIRECT_AUDIO_RECEIVED");
         this.isUserSpeaking = false;
+        this.listeningSpeechFrames = 0;
         this.transitionTo("MODEL_RESPONDING");
         this.latencyTracker?.onFirstAudioChunk();
         this.emitOutboundAudio(base64PcmToInt16(message.data));
@@ -657,6 +667,7 @@ export class GeminiLiveBridge implements AIBridge {
       this.recordEvent("TURN_COMPLETE_RECEIVED");
       this.isUserSpeaking = false;
       this.interruptedTurn = false;
+      this.listeningSpeechFrames = 0;
 
       // If tool calls are still executing or awaiting their post-tool spoken response,
       // do NOT conclude the turn prematurely.
@@ -748,9 +759,16 @@ export class GeminiLiveBridge implements AIBridge {
 
     let output: unknown;
     this.latencyTracker?.onToolStart();
+    const TOOL_TIMEOUT_MS = 3500;
     try {
-      // Execute the registered ToolExecutor
-      output = await this.toolCall?.(name, call.args ?? {});
+      // Execute the registered ToolExecutor with strict 3.5s timeout protection
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(`Tool ${name} timed out after 3.5s`)), TOOL_TIMEOUT_MS)
+      );
+      output = await Promise.race([
+        Promise.resolve(this.toolCall?.(name, call.args ?? {})),
+        timeoutPromise
+      ]);
       this.latencyTracker?.onToolEnd();
       this.transcript?.({
         role: "tool",
@@ -772,8 +790,12 @@ export class GeminiLiveBridge implements AIBridge {
 
     this.recordEvent(`TOOL_RESPONSE_SENT:${name}`);
     this.transitionTo("TOOL_RESULT_SENT");
+    const sanitizedResponse =
+      typeof output === "object" && output !== null
+        ? (output as Record<string, unknown>)
+        : { output: output ?? {} };
     this.session?.sendToolResponse({
-      functionResponses: [{ id: callId, name, response: { output: output ?? {} } }]
+      functionResponses: [{ id: callId, name, response: sanitizedResponse }]
     });
     this.transitionTo("MODEL_RESPONDING");
   }
