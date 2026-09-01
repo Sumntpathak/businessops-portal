@@ -232,6 +232,8 @@ export class GeminiLiveBridge implements AIBridge {
   private callStartMs = 0;
   /** Estimated timestamp when outbound AI audio playback finishes on the caller's phone */
   private playbackEndsAt = 0;
+  /** Set true when caller explicitly interrupts; cleared on next turn so new audio plays normally */
+  private interruptedTurn = false;
 
   constructor(private readonly options: GeminiLiveBridgeOptions) {
     if (options.credentials || options.project) {
@@ -505,6 +507,7 @@ export class GeminiLiveBridge implements AIBridge {
       // ── GENUINE INTERRUPTION CONFIRMED ──
       this.recordEvent(`GENUINE_BARGE_IN:rms=${Math.round(rms)}`);
       this.playbackEndsAt = 0;
+      this.interruptedTurn = true;
       this.isUserSpeaking = true;
       this.transitionTo("USER_SPEAKING");
       this.latencyTracker?.onBargeIn();
@@ -524,7 +527,7 @@ export class GeminiLiveBridge implements AIBridge {
     }
 
     // ── 2. WHILE AI IS LISTENING / WAITING FOR USER SPEECH ──
-    const SPEECH_THRESHOLD_RMS = 35;
+    const SPEECH_THRESHOLD_RMS = 60;
 
     if (rms >= SPEECH_THRESHOLD_RMS) {
       if (!this.isUserSpeaking) {
@@ -558,6 +561,7 @@ export class GeminiLiveBridge implements AIBridge {
         "Gemini Live reported interrupted (barge-in) — flushing playback"
       );
       this.playbackEndsAt = 0;
+      this.interruptedTurn = false;
       this.activeToolCalls.clear();
       this.latencyTracker?.onBargeIn();
       this.bargeIn?.();
@@ -573,8 +577,8 @@ export class GeminiLiveBridge implements AIBridge {
     let sentAudio = false;
     for (const part of content?.modelTurn?.parts ?? []) {
       if (part.inlineData?.data) {
-        // Discard lingering in-flight audio from an interrupted turn while caller is speaking
-        if (this.state === "USER_SPEAKING" || this.isUserSpeaking) {
+        // Discard lingering in-flight audio only if caller explicitly interrupted this turn
+        if (this.interruptedTurn) {
           continue;
         }
         sentAudio = true;
@@ -592,7 +596,7 @@ export class GeminiLiveBridge implements AIBridge {
 
     // Direct data message audio fallback
     if (!sentAudio && message.data) {
-      if (this.state !== "USER_SPEAKING" && !this.isUserSpeaking) {
+      if (!this.interruptedTurn) {
         this.recordEvent("DIRECT_AUDIO_RECEIVED");
         this.isUserSpeaking = false;
         this.transitionTo("MODEL_RESPONDING");
@@ -652,6 +656,7 @@ export class GeminiLiveBridge implements AIBridge {
     if (content?.turnComplete) {
       this.recordEvent("TURN_COMPLETE_RECEIVED");
       this.isUserSpeaking = false;
+      this.interruptedTurn = false;
 
       // If tool calls are still executing or awaiting their post-tool spoken response,
       // do NOT conclude the turn prematurely.
