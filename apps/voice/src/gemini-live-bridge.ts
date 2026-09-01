@@ -322,8 +322,8 @@ export class GeminiLiveBridge implements AIBridge {
           automaticActivityDetection: {
             endOfSpeechSensitivity: endSensitivity,
             startOfSpeechSensitivity: StartSensitivity.START_SENSITIVITY_HIGH,
-            silenceDurationMs: 250,
-            prefixPaddingMs: 50
+            silenceDurationMs: 450,
+            prefixPaddingMs: 80
           }
         }
       },
@@ -487,22 +487,22 @@ export class GeminiLiveBridge implements AIBridge {
       (Date.now() < this.playbackEndsAt || this.state === "MODEL_RESPONDING") &&
       this.state !== "USER_SPEAKING";
     if (isAiSpeaking) {
-      // Ignore speaker bleed, line echo, and breathing during AI speech (RMS < 90)
-      if (rms < 90) {
+      // Ignore speaker bleed, line echo, and breathing sounds (RMS < 120)
+      if (rms < 120) {
         this.interruptionSpeechFrames = 0;
         this.interruptionBuffer.length = 0;
         return;
       }
 
-      // Sustained voice detected (RMS >= 90) — buffer it and check for genuine interruption
+      // Sustained voice detected (RMS >= 120) — buffer it and check for genuine interruption
       this.interruptionSpeechFrames += 1;
       this.interruptionBuffer.push(buffer);
       if (this.interruptionBuffer.length > 5) {
         this.interruptionBuffer.shift();
       }
 
-      // Require 3 consecutive frames (~60ms) of sustained caller speech to confirm barge-in
-      if (this.interruptionSpeechFrames < 3) {
+      // Require 4 consecutive frames (~80ms) of sustained caller speech to confirm barge-in
+      if (this.interruptionSpeechFrames < 4) {
         return;
       }
 
@@ -545,10 +545,12 @@ export class GeminiLiveBridge implements AIBridge {
       this.listeningSpeechFrames = 0;
     }
 
-    // Continuously stream all audio frames (speech and trailing ambient silence)
-    // so Gemini Live's native VAD (automaticActivityDetection) has an uninterrupted stream
-    // and endpoints turns instantly (~250-300ms) without packet starvation.
-    const data = int16ToBase64Pcm(pcm);
+    // Continuously stream audio frames to Gemini Live.
+    // If audio is below the ambient line noise floor (RMS < 35), send clean zero PCM
+    // so Gemini's native VAD immediately detects 250ms of true silence when caller stops speaking,
+    // eliminating the 10-12s endpointing hang caused by continuous line hiss.
+    const cleanPcm = rms < 35 ? new Int16Array(pcm.length) : pcm;
+    const data = int16ToBase64Pcm(cleanPcm);
     const mimeType = `audio/pcm;rate=${INPUT_SAMPLE_RATE}`;
     this.session?.sendRealtimeInput({
       media: { data, mimeType }
