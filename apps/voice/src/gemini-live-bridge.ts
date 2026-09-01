@@ -473,7 +473,9 @@ export class GeminiLiveBridge implements AIBridge {
     const rms = computeRms(pcm);
 
     // ── 1. WHILE AI IS PHYSICALLY SPEAKING ON CALLER'S PHONE ──
-    const isAiSpeaking = Date.now() < this.playbackEndsAt || this.state === "MODEL_RESPONDING";
+    const isAiSpeaking =
+      (Date.now() < this.playbackEndsAt || this.state === "MODEL_RESPONDING") &&
+      this.state !== "USER_SPEAKING";
     if (isAiSpeaking) {
       // Ignore speaker bleed, line echo, and ambient static (RMS < 65)
       if (rms < 65) {
@@ -555,8 +557,9 @@ export class GeminiLiveBridge implements AIBridge {
       this.bargeIn?.();
       this.clearSilenceTimer();
       this.currentAgentTurnText = "";
-      this.isUserSpeaking = false;
-      this.transitionTo("READY");
+      if (!this.isUserSpeaking) {
+        this.transitionTo("READY");
+      }
       return;
     }
 
@@ -564,6 +567,10 @@ export class GeminiLiveBridge implements AIBridge {
     let sentAudio = false;
     for (const part of content?.modelTurn?.parts ?? []) {
       if (part.inlineData?.data) {
+        // Discard lingering in-flight audio from an interrupted turn while caller is speaking
+        if (this.state === "USER_SPEAKING" || this.isUserSpeaking) {
+          continue;
+        }
         sentAudio = true;
         this.recordEvent("AUDIO_CHUNK_RECEIVED");
         this.isUserSpeaking = false;
@@ -579,11 +586,13 @@ export class GeminiLiveBridge implements AIBridge {
 
     // Direct data message audio fallback
     if (!sentAudio && message.data) {
-      this.recordEvent("DIRECT_AUDIO_RECEIVED");
-      this.isUserSpeaking = false;
-      this.transitionTo("MODEL_RESPONDING");
-      this.latencyTracker?.onFirstAudioChunk();
-      this.emitOutboundAudio(base64PcmToInt16(message.data));
+      if (this.state !== "USER_SPEAKING" && !this.isUserSpeaking) {
+        this.recordEvent("DIRECT_AUDIO_RECEIVED");
+        this.isUserSpeaking = false;
+        this.transitionTo("MODEL_RESPONDING");
+        this.latencyTracker?.onFirstAudioChunk();
+        this.emitOutboundAudio(base64PcmToInt16(message.data));
+      }
     }
 
     // 3. Handle Input (Caller) Transcription
