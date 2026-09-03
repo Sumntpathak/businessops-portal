@@ -534,7 +534,7 @@ export class GeminiLiveBridge implements AIBridge {
     }
 
     // ── 2. WHILE AI IS LISTENING / WAITING FOR USER SPEECH ──
-    const SPEECH_THRESHOLD_RMS = 55;
+    const SPEECH_THRESHOLD_RMS = 80;
 
     if (rms >= SPEECH_THRESHOLD_RMS) {
       this.listeningSpeechFrames += 1;
