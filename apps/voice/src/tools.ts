@@ -130,46 +130,46 @@ export interface ToolExecutorDependencies {
 
 const availabilityInput = z
   .object({
-    serviceId: z.string().uuid().optional(),
-    serviceName: z.string().trim().min(1).max(160).optional(),
-    service: z.string().trim().min(1).max(160).optional(),
-    staffId: z.string().uuid().optional(),
-    staffName: z.string().trim().min(1).max(160).optional(),
-    staff: z.string().trim().min(1).max(160).optional(),
-    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
+    serviceId: z.string().uuid().nullable().optional(),
+    serviceName: z.string().trim().min(1).max(160).nullable().optional(),
+    service: z.string().trim().min(1).max(160).nullable().optional(),
+    staffId: z.string().uuid().nullable().optional(),
+    staffName: z.string().trim().min(1).max(160).nullable().optional(),
+    staff: z.string().trim().min(1).max(160).nullable().optional(),
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional()
   })
   .transform((val) => ({
-    serviceId: val.serviceId,
+    serviceId: val.serviceId ?? undefined,
     serviceName: val.serviceName ?? val.service ?? "Consultation",
-    staffId: val.staffId,
-    staffName: val.staffName ?? val.staff,
+    staffId: val.staffId ?? undefined,
+    staffName: val.staffName ?? val.staff ?? undefined,
     date: val.date ?? new Date().toISOString().split("T")[0]!
   }));
 
 const createBookingInput = z
   .object({
-    serviceId: z.string().uuid().optional(),
-    serviceName: z.string().trim().min(1).max(160).optional(),
-    service: z.string().trim().min(1).max(160).optional(),
-    staffId: z.string().uuid().optional(),
-    staffName: z.string().trim().min(1).max(160).optional(),
+    serviceId: z.string().uuid().nullable().optional(),
+    serviceName: z.string().trim().min(1).max(160).nullable().optional(),
+    service: z.string().trim().min(1).max(160).nullable().optional(),
+    staffId: z.string().uuid().nullable().optional(),
+    staffName: z.string().trim().min(1).max(160).nullable().optional(),
     startsAt: z.string(),
-    callerName: z.string().trim().min(1).max(120).optional(),
-    name: z.string().trim().min(1).max(120).optional()
+    callerName: z.string().trim().min(1).max(120).nullable().optional(),
+    name: z.string().trim().min(1).max(120).nullable().optional()
   })
   .transform((val) => ({
-    serviceId: val.serviceId,
+    serviceId: val.serviceId ?? undefined,
     serviceName: val.serviceName ?? val.service ?? "Consultation",
-    staffId: val.staffId,
-    staffName: val.staffName,
+    staffId: val.staffId ?? undefined,
+    staffName: val.staffName ?? undefined,
     startsAt: val.startsAt,
-    callerName: val.callerName ?? val.name
+    callerName: val.callerName ?? val.name ?? undefined
   }));
 
 const cancelBookingInput = z
   .object({
-    bookingId: z.string().optional(),
-    id: z.string().optional()
+    bookingId: z.string().nullable().optional(),
+    id: z.string().nullable().optional()
   })
   .transform((val) => ({
     bookingId: val.bookingId ?? val.id ?? "booking-123"
@@ -177,13 +177,13 @@ const cancelBookingInput = z
 
 const saveMemoryInput = z
   .object({
-    kind: z.enum(["fact", "preference", "summary"]).optional(),
-    content: z.string().trim().min(1).max(2_000).optional(),
-    text: z.string().trim().min(1).max(2_000).optional(),
-    memory: z.string().trim().min(1).max(2_000).optional(),
-    note: z.string().trim().min(1).max(2_000).optional(),
-    preference: z.string().trim().min(1).max(2_000).optional(),
-    fact: z.string().trim().min(1).max(2_000).optional()
+    kind: z.enum(["fact", "preference", "summary"]).nullable().optional(),
+    content: z.string().trim().min(1).max(2_000).nullable().optional(),
+    text: z.string().trim().min(1).max(2_000).nullable().optional(),
+    memory: z.string().trim().min(1).max(2_000).nullable().optional(),
+    note: z.string().trim().min(1).max(2_000).nullable().optional(),
+    preference: z.string().trim().min(1).max(2_000).nullable().optional(),
+    fact: z.string().trim().min(1).max(2_000).nullable().optional()
   })
   .transform((val) => ({
     kind: (val.kind ?? (val.preference ? "preference" : "fact")) as "fact" | "preference" | "summary",

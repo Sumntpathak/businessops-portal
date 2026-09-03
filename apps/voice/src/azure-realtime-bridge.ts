@@ -350,28 +350,13 @@ export function buildSessionConfig(
   voice?: string
 ): Record<string, unknown> {
   return {
-    modalities: ["audio", "text"],
+    type: "realtime",
     instructions: buildInstructions(session),
     tools: REALTIME_TOOLS,
     tool_choice: "auto",
-    voice: voice ?? "shimmer",
-    input_audio_format: "g711_ulaw",
-    output_audio_format: "g711_ulaw",
-    input_audio_transcription: {
-      model: "whisper-1"
-    },
-    turn_detection: {
-      type: "server_vad",
-      threshold: 0.5,
-      prefix_padding_ms: 300,
-      silence_duration_ms: 500
-    },
-    // Also include nested audio object for Azure SIP REST accept API
-    type: "realtime",
     audio: {
       input: {
         format: { type: "audio/pcmu" },
-        transcription: { model: "whisper-1" },
         turn_detection: {
           type: "server_vad",
           threshold: 0.5,
