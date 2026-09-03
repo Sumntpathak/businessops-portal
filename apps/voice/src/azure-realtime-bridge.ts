@@ -350,23 +350,34 @@ export function buildSessionConfig(
   voice?: string
 ): Record<string, unknown> {
   return {
-    type: "realtime",
+    modalities: ["audio", "text"],
     instructions: buildInstructions(session),
     tools: REALTIME_TOOLS,
     tool_choice: "auto",
+    voice: voice ?? "shimmer",
+    input_audio_format: "g711_ulaw",
+    output_audio_format: "g711_ulaw",
+    input_audio_transcription: {
+      model: "whisper-1"
+    },
+    turn_detection: {
+      type: "server_vad",
+      threshold: 0.5,
+      prefix_padding_ms: 300,
+      silence_duration_ms: 500
+    },
+    // Also include nested audio object for Azure SIP REST accept API
+    type: "realtime",
     audio: {
       input: {
         format: { type: "audio/pcmu" },
-        // Better multilingual (Hindi/Punjabi/Hinglish) accuracy than whisper-1;
-        // handleServerEvent falls back to whisper-1 if the deployment lacks it.
-        transcription: transcriptionConfig(
-          "gpt-4o-mini-transcribe",
-          session.agent.languages
-        ),
-        // Semantic VAD ends the turn when the caller finishes a THOUGHT rather than
-        // after a fixed silence, which stops the agent from talking over slow or
-        // pausing speakers; falls back to server_vad if unsupported.
-        turn_detection: { type: "semantic_vad", eagerness: "auto" }
+        transcription: { model: "whisper-1" },
+        turn_detection: {
+          type: "server_vad",
+          threshold: 0.5,
+          prefix_padding_ms: 300,
+          silence_duration_ms: 500
+        }
       },
       output: {
         format: { type: "audio/pcmu" },
@@ -470,12 +481,11 @@ export class AzureRealtimeBridge implements AIBridge {
       });
     });
 
-    if (!this.options.attachCallId) {
-      this.send({
-        type: "session.update",
-        session: buildSessionConfig(session, this.options.voice)
-      });
-    }
+    // Ensure session config (instructions, server_vad, tools) is actively enforced on WebSocket
+    this.send({
+      type: "session.update",
+      session: buildSessionConfig(session, this.options.voice)
+    });
 
     // Speak the configured greeting as soon as the call connects.
     this.send({
@@ -591,6 +601,19 @@ export class AzureRealtimeBridge implements AIBridge {
         this.activeResponse = false;
       }
       this.bargeIn?.();
+      return;
+    }
+
+    // Caller finished speaking: ensure Azure starts responding
+    if (type === "input_audio_buffer.speech_stopped") {
+      this.options.logger?.info({ callId: this.session?.callId }, "Caller speech stopped");
+      setTimeout(() => {
+        if (!this.activeResponse && this.ready && !this.stopped) {
+          this.options.logger?.info({ callId: this.session?.callId }, "Auto-triggering response after speech_stopped");
+          this.send({ type: "response.create" });
+          this.activeResponse = true;
+        }
+      }, 350);
       return;
     }
 
