@@ -551,10 +551,10 @@ export class GeminiLiveBridge implements AIBridge {
     }
 
     // Continuously stream audio frames to Gemini Live.
-    // If audio is below the ambient line noise floor (RMS < 35), send clean zero PCM
-    // so Gemini's native VAD immediately detects 250ms of true silence when caller stops speaking,
-    // eliminating the 10-12s endpointing hang caused by continuous line hiss.
-    const cleanPcm = rms < 35 ? new Int16Array(pcm.length) : pcm;
+    // If audio is below the speech threshold (RMS < SPEECH_THRESHOLD_RMS), send clean zero PCM
+    // so Gemini's native VAD immediately detects true silence when caller stops speaking,
+    // eliminating the 8-12s endpointing hang caused by continuous line hiss.
+    const cleanPcm = rms < SPEECH_THRESHOLD_RMS ? new Int16Array(pcm.length) : pcm;
     const data = int16ToBase64Pcm(cleanPcm);
     const mimeType = `audio/pcm;rate=${INPUT_SAMPLE_RATE}`;
     this.session?.sendRealtimeInput({
