@@ -60,6 +60,8 @@ export interface GeminiLiveBridgeOptions {
   voice?: string;
   apiKey?: string;
   vadSensitivity?: "strict" | "unspecified" | "relaxed";
+  bargeInEnabled?: boolean;
+  bargeInRms?: number;
   credentials?: Record<string, unknown>;
   logger?: {
     info(values: Record<string, unknown>, message: string): void;
@@ -487,21 +489,24 @@ export class GeminiLiveBridge implements AIBridge {
       (Date.now() < this.playbackEndsAt || this.state === "MODEL_RESPONDING") &&
       this.state !== "USER_SPEAKING";
     if (isAiSpeaking) {
-      // Ignore speaker bleed, line echo, and breathing sounds (RMS < 120)
-      if (rms < 120) {
+      const bargeInEnabled = this.options.bargeInEnabled !== false;
+      const bargeInThreshold = this.options.bargeInRms ?? 200;
+
+      // If barge-in is disabled or RMS is below threshold, ignore all mic input while AI is speaking
+      if (!bargeInEnabled || rms < bargeInThreshold) {
         this.interruptionSpeechFrames = 0;
         this.interruptionBuffer.length = 0;
         return;
       }
 
-      // Sustained voice detected (RMS >= 120) — buffer it and check for genuine interruption
+      // Sustained deliberate voice detected (RMS >= bargeInThreshold) — buffer it and check for genuine interruption
       this.interruptionSpeechFrames += 1;
       this.interruptionBuffer.push(buffer);
       if (this.interruptionBuffer.length > 5) {
         this.interruptionBuffer.shift();
       }
 
-      // Require 4 consecutive frames (~80ms) of sustained caller speech to confirm barge-in
+      // Require 4 consecutive frames (~80ms) of sustained caller speech to confirm deliberate barge-in
       if (this.interruptionSpeechFrames < 4) {
         return;
       }

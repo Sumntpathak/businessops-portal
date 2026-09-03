@@ -984,6 +984,8 @@ mediaStreams.on("connection", (socket, request) => {
           voice: env.GEMINI_LIVE_VOICE,
           apiKey: env.GEMINI_API_KEY,
           vadSensitivity: env.GEMINI_VAD_END_SENSITIVITY,
+          bargeInEnabled: env.GEMINI_BARGE_IN_ENABLED,
+          bargeInRms: env.GEMINI_BARGE_IN_RMS,
           credentials: parseInlineGoogleCredentials(),
           logger: app.log
         })
@@ -1246,6 +1248,8 @@ browserTestStreams.on("connection", (socket, request) => {
             voice: geminiVoice,
             apiKey: env.GEMINI_API_KEY,
             vadSensitivity: env.GEMINI_VAD_END_SENSITIVITY,
+            bargeInEnabled: env.GEMINI_BARGE_IN_ENABLED,
+            bargeInRms: env.GEMINI_BARGE_IN_RMS,
             credentials: parseInlineGoogleCredentials(),
             logger: app.log
           })

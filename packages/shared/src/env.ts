@@ -64,6 +64,12 @@ export const voiceEnvSchema = z.object({
   // "strict" cuts silence after user speech for snappy (~300-400ms) responses.
   // "unspecified" uses Google default. "relaxed" allows longer customer pauses.
   GEMINI_VAD_END_SENSITIVITY: z.enum(["strict", "unspecified", "relaxed"]).default("strict"),
+  // Barge-in configuration: enables/disables mid-turn interruptions and sets RMS threshold
+  GEMINI_BARGE_IN_ENABLED: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((v) => v === "true"),
+  GEMINI_BARGE_IN_RMS: z.coerce.number().default(200),
   // Repurposed to hold a Cloudflare Workers AI API token (used for both the
   // call-summary worker and the onboarding distiller, via GLM-4.7-Flash).
   ANTHROPIC_API_KEY: z.string().optional().transform((v) => (v && v.trim().length > 0 ? v : undefined)),
