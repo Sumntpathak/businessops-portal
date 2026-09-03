@@ -407,6 +407,9 @@ export class AzureRealtimeBridge implements AIBridge {
     this.session = session;
     const url = new URL(this.options.url);
     url.protocol = url.protocol === "http:" ? "ws:" : "wss:";
+    if (!url.pathname || url.pathname === "/") {
+      url.pathname = "/openai/v1/realtime";
+    }
     if (this.options.attachCallId) {
       // SIP mode: attach to a call already accepted via the REST accept endpoint.
       // Session config was supplied at accept time; audio flows carrier <-> Azure.

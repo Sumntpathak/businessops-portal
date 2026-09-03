@@ -617,8 +617,18 @@ app.post("/azure/incoming", async (request, reply) => {
   if (firstDelivery !== "OK") return reply.code(200).send({ ok: true });
 
   const providerCallId = event.data.call_id;
+  request.log.info(
+    { providerCallId, sipHeaders: event.data.sip_headers },
+    "Received Azure SIP incoming call event"
+  );
   const from = phoneFromSipHeader(sipHeader(event, "From"));
-  const to = phoneFromSipHeader(sipHeader(event, "To"));
+  const to =
+    phoneFromSipHeader(sipHeader(event, "To")) ??
+    phoneFromSipHeader(sipHeader(event, "X-Twilio-Original-Called-Number")) ??
+    phoneFromSipHeader(sipHeader(event, "P-Called-Party-ID")) ??
+    phoneFromSipHeader(sipHeader(event, "Diversion")) ??
+    phoneFromSipHeader(sipHeader(event, "X-Called")) ??
+    env.TWILIO_NUMBER;
 
   // Acknowledge within the webhook timeout; accept/attach continues in background.
   setImmediate(() => {
