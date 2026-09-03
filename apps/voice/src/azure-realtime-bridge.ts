@@ -466,11 +466,12 @@ export class AzureRealtimeBridge implements AIBridge {
       });
     });
 
-    // Ensure session config (instructions, server_vad, tools) is actively enforced on WebSocket
-    this.send({
-      type: "session.update",
-      session: buildSessionConfig(session, this.options.voice)
-    });
+    if (!this.options.attachCallId) {
+      this.send({
+        type: "session.update",
+        session: buildSessionConfig(session, this.options.voice)
+      });
+    }
 
     // Speak the configured greeting as soon as the call connects.
     this.send({
