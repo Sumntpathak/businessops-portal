@@ -580,9 +580,11 @@ export class AzureRealtimeBridge implements AIBridge {
       return;
     }
 
-    // Caller interrupted the agent: cancel generation and flush the phone's playback buffer.
+    // Caller interrupted the agent:
+    // In WebSocket mode, cancel generation and flush Twilio audio buffer.
+    // In SIP mode, Azure Realtime's server VAD handles cancellation natively on the RTP stream.
     if (type === "input_audio_buffer.speech_started") {
-      if (this.activeResponse) {
+      if (!this.options.attachCallId && this.activeResponse) {
         this.send({ type: "response.cancel" });
         this.activeResponse = false;
       }
@@ -590,16 +592,13 @@ export class AzureRealtimeBridge implements AIBridge {
       return;
     }
 
-    // Caller finished speaking: ensure Azure starts responding
+    // Caller finished speaking:
     if (type === "input_audio_buffer.speech_stopped") {
       this.options.logger?.info({ callId: this.session?.callId }, "Caller speech stopped");
-      setTimeout(() => {
-        if (!this.activeResponse && this.ready && !this.stopped) {
-          this.options.logger?.info({ callId: this.session?.callId }, "Auto-triggering response after speech_stopped");
-          this.send({ type: "response.create" });
-          this.activeResponse = true;
-        }
-      }, 350);
+      if (!this.options.attachCallId && !this.activeResponse && this.ready && !this.stopped) {
+        this.send({ type: "response.create" });
+        this.activeResponse = true;
+      }
       return;
     }
 
