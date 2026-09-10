@@ -50,9 +50,28 @@ export function validateProfileFields(values: Record<string, unknown>, definitio
   const accepted: Record<string, ProfileValue> = {};
   const rejected: RejectedProfileField[] = [];
   for (const [key, rawValue] of Object.entries(values).slice(0, 25)) {
-    if (key === "name") {
+    if (key === "name" || key === "displayName") {
       if (isText(rawValue) && rawValue.trim().length <= 120) accepted.name = rawValue.trim();
       else rejected.push({ key, code: "wrong_type" });
+      continue;
+    }
+    if (
+      key === "phone" ||
+      key === "phoneE164" ||
+      key === "phoneNumber" ||
+      key === "contactNumber" ||
+      key === "contact_number" ||
+      key === "callerPhone"
+    ) {
+      if (
+        (typeof rawValue === "string" || typeof rawValue === "number") &&
+        String(rawValue).trim().length > 0 &&
+        String(rawValue).trim().length <= 32
+      ) {
+        accepted.phone = String(rawValue).trim();
+      } else {
+        rejected.push({ key, code: "wrong_type" });
+      }
       continue;
     }
     const field = byKey.get(key);

@@ -1,4 +1,4 @@
-﻿import { addDays } from "date-fns";
+import { addDays } from "date-fns";
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { and, asc, eq, gte, isNull, lt } from "drizzle-orm";
 import type { NextRequest } from "next/server";
@@ -147,6 +147,9 @@ export async function POST(request: NextRequest) {
   if (!tenant) return apiError("TENANT_NOT_FOUND", "Business not found.", 404);
 
   const startsAt = new Date(parsed.data.startsAt);
+  if (Number.isNaN(startsAt.getTime()) || startsAt <= new Date()) {
+    return apiError("INVALID_INPUT", "Cannot create a booking in the past.", 400);
+  }
   const date = formatInTimeZone(
     startsAt,
     tenant.timezone,

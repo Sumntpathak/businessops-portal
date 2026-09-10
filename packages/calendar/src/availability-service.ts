@@ -79,6 +79,9 @@ export class AvailabilityService {
       hours.closes,
       tenant.timezone
     );
+    const now = new Date();
+    if (window.closesAt <= now) return [];
+
     const [calendarBusy, bookings] = await Promise.all([
       // No connected Google Calendar is a supported mode: availability then
       // relies on business hours + internal bookings only.
@@ -121,7 +124,8 @@ export class AvailabilityService {
       closed: false,
       ...window,
       durationMinutes: service.durationMinutes,
-      busy: [...calendarBusy, ...bookings]
+      busy: [...calendarBusy, ...bookings],
+      minStartsAt: now
     });
   }
 }

@@ -17,6 +17,7 @@ export interface SlotComputation {
   closesAt: Date;
   durationMinutes: number;
   busy: readonly BusyInterval[];
+  minStartsAt?: Date;
 }
 
 export function buildBusinessWindow(
@@ -40,7 +41,8 @@ export function computeAvailableSlots(input: SlotComputation): AvailabilitySlot[
     input.closed ||
     !Number.isInteger(input.durationMinutes) ||
     input.durationMinutes <= 0 ||
-    input.closesAt <= input.opensAt
+    input.closesAt <= input.opensAt ||
+    (input.minStartsAt && input.closesAt <= input.minStartsAt)
   ) {
     return [];
   }
@@ -52,6 +54,10 @@ export function computeAvailableSlots(input: SlotComputation): AvailabilitySlot[
     addMinutes(startsAt, input.durationMinutes) <= input.closesAt;
     startsAt = addMinutes(startsAt, input.durationMinutes)
   ) {
+    if (input.minStartsAt && startsAt <= input.minStartsAt) {
+      continue;
+    }
+
     const slot = {
       startsAt,
       endsAt: addMinutes(startsAt, input.durationMinutes)

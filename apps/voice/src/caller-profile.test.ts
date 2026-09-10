@@ -61,6 +61,21 @@ describe("caller profile validation", () => {
     assert.deepEqual(result.rejected, []);
   });
 
+  it("accepts phone and contact number aliases without rejecting as unknown_key", () => {
+    const result = validateProfileFields(
+      {
+        phone: "+61420997171",
+        phoneNumber: "+61420997171",
+        displayName: "Ritika"
+      },
+      fields
+    );
+
+    assert.equal(result.accepted.name, "Ritika");
+    assert.equal(result.accepted.phone, "+61420997171");
+    assert.deepEqual(result.rejected, []);
+  });
+
   it("keeps valid values while returning terse rejection codes", () => {
     const result = validateProfileFields(
       {

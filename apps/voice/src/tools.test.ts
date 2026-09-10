@@ -204,7 +204,19 @@ describe("ToolExecutor", () => {
       calls.find((call) => call.name === "deleteEvent")?.args,
       [session.tenantId, "gcal-1"]
     );
-  });});
+  });
+
+  it("rejects booking requests for past timestamps", async () => {
+    const { executor, service } = harness();
+    await assert.rejects(
+      () => executor.execute("create_booking", {
+        serviceId: service.id,
+        startsAt: "2020-01-01T03:30:00.000Z"
+      }),
+      /Cannot book appointment in the past/
+    );
+  });
+});
 
 
 

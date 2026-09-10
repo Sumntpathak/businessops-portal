@@ -801,6 +801,44 @@ async function handleAzureSipCall(
       }
     })();
   });
+  bridge.onTransferRequested((selector) => {
+    void (async () => {
+      try {
+        const staffMember = await toolRepository.findStaffPhoneForTransfer(
+          session.tenantId,
+          selector
+        );
+        if (!staffMember?.phoneE164) {
+          app.log.info(
+            { callId: session.callId, tenantId: session.tenantId, selector },
+            "Azure SIP transfer requested but no matching staff phone number on file"
+          );
+          bridge.notifyTransferFailed("no matching staff member with a phone number on file");
+          return;
+        }
+
+        app.log.info(
+          { callId: session.callId, tenantId: session.tenantId, targetPhone: staffMember.phoneE164 },
+          "Executing Azure SIP refer for call transfer"
+        );
+        await azureSip?.refer(providerCallId, "tel:" + staffMember.phoneE164);
+
+        await db
+          .update(schema.calls)
+          .set({
+            status: "transferred",
+            transferredToStaffId: staffMember.id,
+            updatedAt: new Date()
+          })
+          .where(scoped.where(schema.calls, eq(schema.calls.id, session.callId)));
+
+        await bridge.stop();
+      } catch (error) {
+        app.log.error({ err: error, callId: session.callId }, "Azure SIP call transfer failed");
+        bridge.notifyTransferFailed("a technical issue on our end");
+      }
+    })();
+  });
 
   await bridge.start(session);
   app.log.info(
@@ -1368,6 +1406,15 @@ browserTestStreams.on("connection", (socket, request) => {
           if (socket.readyState === WebSocket.OPEN) {
             socket.send(JSON.stringify({ event: "ended" }));
             socket.close(1000, "Call ended by agent");
+          }
+        })();
+      });
+      bridge.onTransferRequested((selector) => {
+        void (async () => {
+          await finalize();
+          if (socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ event: "transfer", staffName: selector.staffName ?? "staff" }));
+            socket.close(1000, "Call transferred to staff");
           }
         })();
       });

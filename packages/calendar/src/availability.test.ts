@@ -62,4 +62,34 @@ describe("computeAvailableSlots", () => {
     assert.equal(window.opensAt.toISOString(), "2030-01-07T03:30:00.000Z");
     assert.equal(window.closesAt.toISOString(), "2030-01-07T04:30:00.000Z");
   });
+
+  it("filters out past slots when minStartsAt is provided", () => {
+    const slots = computeAvailableSlots({
+      closed: false,
+      opensAt: at(9),
+      closesAt: at(12),
+      durationMinutes: 30,
+      busy: [],
+      minStartsAt: at(10, 15)
+    });
+
+    assert.deepEqual(slots.map((slot) => slot.startsAt.toISOString()), [
+      at(10, 30).toISOString(),
+      at(11).toISOString(),
+      at(11, 30).toISOString()
+    ]);
+  });
+
+  it("returns no slots if the entire window is before minStartsAt", () => {
+    const slots = computeAvailableSlots({
+      closed: false,
+      opensAt: at(9),
+      closesAt: at(12),
+      durationMinutes: 30,
+      busy: [],
+      minStartsAt: at(13)
+    });
+
+    assert.deepEqual(slots, []);
+  });
 });
