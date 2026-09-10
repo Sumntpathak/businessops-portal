@@ -469,12 +469,10 @@ export class AzureRealtimeBridge implements AIBridge {
       });
     });
 
-    if (!this.options.attachCallId) {
-      this.send({
-        type: "session.update",
-        session: buildSessionConfig(session, this.options.voice)
-      });
-    }
+    this.send({
+      type: "session.update",
+      session: buildSessionConfig(session, this.options.voice)
+    });
 
     // Speak the configured greeting as soon as the call connects.
     this.send({

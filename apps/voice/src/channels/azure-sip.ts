@@ -133,7 +133,28 @@ export class AzureSipClient {
 
   /** Accepts the inbound call with the full realtime session configuration. */
   async accept(callId: string, sessionConfig: Record<string, unknown>): Promise<void> {
-    await this.post(callId, "accept", sessionConfig);
+    const payload: Record<string, unknown> = {
+      type: "realtime",
+      ...sessionConfig
+    };
+    try {
+      await this.post(callId, "accept", payload);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes("500") && payload.model && payload.instructions) {
+        // Fallback for Azure SIP gateway quirks: accept with core parameters,
+        // and let the attached WebSocket send the full session.update.
+        const minimal: Record<string, unknown> = {
+          type: "realtime",
+          model: payload.model,
+          instructions: payload.instructions,
+          voice: payload.voice ?? "shimmer"
+        };
+        await this.post(callId, "accept", minimal);
+        return;
+      }
+      throw err;
+    }
   }
 
   /** Declines the call; statusCode is the SIP response sent to the carrier. */
