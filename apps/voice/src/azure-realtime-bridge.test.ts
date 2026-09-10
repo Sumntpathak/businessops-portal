@@ -94,19 +94,24 @@ describe("buildSessionConfig", () => {
 });
 
 describe("buildSipAcceptConfig", () => {
-  it("formats SIP accept payload without stream-only audio format parameters", () => {
+  it("formats SIP accept payload with Azure SIP audio.input and audio.output blocks", () => {
     const config = buildSipAcceptConfig(session, "gpt-realtime-mini", "shimmer");
     assert.equal(config.type, "realtime");
     assert.equal(config.model, "gpt-realtime-mini");
-    assert.equal(config.voice, "shimmer");
-    assert.equal(config.input_audio_format, undefined);
-    assert.equal(config.output_audio_format, undefined);
-    assert.equal(config.input_audio_transcription, undefined);
-    assert.deepEqual(config.turn_detection, {
-      type: "server_vad",
-      threshold: 0.5,
-      prefix_padding_ms: 200,
-      silence_duration_ms: 300
+    assert.deepEqual(config.audio, {
+      input: {
+        format: { type: "audio/pcmu" },
+        turn_detection: {
+          type: "server_vad",
+          threshold: 0.5,
+          prefix_padding_ms: 200,
+          silence_duration_ms: 300
+        }
+      },
+      output: {
+        format: { type: "audio/pcmu" },
+        voice: "shimmer"
+      }
     });
     assert.equal(config.tool_choice, "auto");
     assert.ok(Array.isArray(config.tools) && config.tools.length > 0);

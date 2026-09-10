@@ -133,34 +133,7 @@ export class AzureSipClient {
 
   /** Accepts the inbound call with the full realtime session configuration. */
   async accept(callId: string, sessionConfig: Record<string, unknown>): Promise<void> {
-    const payload: Record<string, unknown> = {
-      type: "realtime",
-      ...sessionConfig
-    };
-    // Strip audio-stream-only fields that SIP accept rejects with HTTP 400
-    delete payload.input_audio_format;
-    delete payload.output_audio_format;
-    delete payload.input_audio_transcription;
-    delete payload.modalities;
-
-    try {
-      await this.post(callId, "accept", payload);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if ((message.includes("500") || message.includes("400")) && payload.model && payload.instructions) {
-        // Fallback for Azure SIP gateway quirks: accept with core parameters,
-        // and let the attached WebSocket send the full session.update.
-        const minimal: Record<string, unknown> = {
-          type: "realtime",
-          model: payload.model,
-          instructions: payload.instructions,
-          voice: payload.voice ?? "shimmer"
-        };
-        await this.post(callId, "accept", minimal);
-        return;
-      }
-      throw err;
-    }
+    await this.post(callId, "accept", sessionConfig);
   }
 
   /** Declines the call; statusCode is the SIP response sent to the carrier. */

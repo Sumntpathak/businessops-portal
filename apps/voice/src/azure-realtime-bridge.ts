@@ -376,9 +376,7 @@ export function buildSessionConfig(
 
 /**
  * Configuration payload for the SIP REST accept endpoint (POST /realtime/calls/<call_id>/accept).
- * In SIP mode, audio formats (G.711) are negotiated by SIP SDP, so input_audio_format,
- * output_audio_format, and input_audio_transcription are omitted here (which Azure's REST
- * SIP endpoint rejects with HTTP 400) and sent via WebSocket session.update once attached.
+ * Adheres strictly to Azure OpenAI Realtime SIP schema with audio.input and audio.output blocks.
  */
 export function buildSipAcceptConfig(
   session: CallSession,
@@ -389,16 +387,23 @@ export function buildSipAcceptConfig(
     type: "realtime",
     model,
     instructions: buildInstructions(session),
-    voice: voice ?? "shimmer",
     tools: REALTIME_TOOLS,
     tool_choice: "auto",
-    turn_detection: {
-      type: "server_vad",
-      threshold: 0.5,
-      prefix_padding_ms: 200,
-      silence_duration_ms: 300
-    },
-    temperature: 0.6
+    audio: {
+      input: {
+        format: { type: "audio/pcmu" },
+        turn_detection: {
+          type: "server_vad",
+          threshold: 0.5,
+          prefix_padding_ms: 200,
+          silence_duration_ms: 300
+        }
+      },
+      output: {
+        format: { type: "audio/pcmu" },
+        voice: voice ?? "shimmer"
+      }
+    }
   };
 }
 
@@ -496,10 +501,12 @@ export class AzureRealtimeBridge implements AIBridge {
       });
     });
 
-    this.send({
-      type: "session.update",
-      session: buildSessionConfig(session, this.options.voice)
-    });
+    if (!this.options.attachCallId) {
+      this.send({
+        type: "session.update",
+        session: buildSessionConfig(session, this.options.voice)
+      });
+    }
 
     // Speak the configured greeting as soon as the call connects.
     this.send({
