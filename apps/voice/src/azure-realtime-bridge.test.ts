@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { buildInstructions } from "./azure-realtime-bridge.js";
+import { buildInstructions, buildSessionConfig } from "./azure-realtime-bridge.js";
 import type { CallSession } from "./call-session.js";
 
 const session: CallSession = {
@@ -71,5 +71,24 @@ describe("realtime caller profile instructions", () => {
     assert.match(instructions, /says goodbye or clearly wants to end the call at ANY point/);
     assert.match(instructions, /even if you don't have their name/);
     assert.match(instructions, /goodbye ALWAYS outranks the identity and intake rules/);
+  });
+});
+
+describe("buildSessionConfig", () => {
+  it("formats session parameters at root level for Azure Realtime SIP and WebSocket sessions", () => {
+    const config = buildSessionConfig(session, "alloy");
+    assert.deepEqual(config.modalities, ["audio", "text"]);
+    assert.equal(config.voice, "alloy");
+    assert.equal(config.input_audio_format, "g711_ulaw");
+    assert.equal(config.output_audio_format, "g711_ulaw");
+    assert.deepEqual(config.turn_detection, {
+      type: "server_vad",
+      threshold: 0.5,
+      prefix_padding_ms: 200,
+      silence_duration_ms: 300
+    });
+    assert.equal(config.temperature, 0.6);
+    assert.equal(config.tool_choice, "auto");
+    assert.ok(Array.isArray(config.tools) && config.tools.length > 0);
   });
 });

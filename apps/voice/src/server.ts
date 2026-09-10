@@ -171,6 +171,143 @@ async function getTenantTwilioAdapter(tenantId: string): Promise<TwilioAdapter> 
   });
 }
 
+interface CachedDestination {
+  tenantId: string;
+  tenantStatus: string;
+  authTokenCiphertext: string | null;
+}
+
+interface CachedTenantMeta {
+  timezone: string;
+  agent: {
+    agentMd: string;
+    voiceGreeting: string;
+    languageMode: "hinglish" | "english" | "hindi";
+    languages: string[];
+  };
+  intakeFields: {
+    id: string;
+    key: string;
+    label: string;
+    type: "text" | "select" | "boolean" | "number";
+    options: string[];
+    priority: "key" | "optional";
+    sort: number;
+    active: boolean;
+  }[];
+}
+
+const CACHE_TTL_MS = 60_000;
+const destinationCache = new Map<string, { data: CachedDestination; expiresAt: number }>();
+const tenantMetaCache = new Map<string, { data: CachedTenantMeta; expiresAt: number }>();
+
+async function getCachedDestination(to: string): Promise<CachedDestination | null> {
+  const cached = destinationCache.get(to);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.data;
+  }
+
+  const [destination] = await db
+    .select({
+      tenantId: schema.phoneNumbers.tenantId,
+      tenantStatus: schema.tenants.status,
+      authTokenCiphertext: schema.tenantTwilioCredentials.authTokenCiphertext
+    })
+    .from(schema.phoneNumbers)
+    .innerJoin(
+      schema.tenants,
+      and(
+        eq(schema.tenants.id, schema.phoneNumbers.tenantId),
+        isNull(schema.tenants.deletedAt)
+      )
+    )
+    .leftJoin(
+      schema.tenantTwilioCredentials,
+      eq(schema.tenantTwilioCredentials.tenantId, schema.phoneNumbers.tenantId)
+    )
+    .where(
+      and(
+        eq(schema.phoneNumbers.e164, to),
+        eq(schema.phoneNumbers.status, "active")
+      )
+    )
+    .limit(1);
+
+  if (!destination) return null;
+
+  destinationCache.set(to, { data: destination, expiresAt: Date.now() + CACHE_TTL_MS });
+  return destination;
+}
+
+async function getCachedTenantMeta(tenantId: string): Promise<CachedTenantMeta> {
+  const cached = tenantMetaCache.get(tenantId);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.data;
+  }
+
+  const scoped = withTenant(db, tenantId);
+  const [tenantRows, profileRows, intakeFields] = await Promise.all([
+    db
+      .select({ timezone: schema.tenants.timezone })
+      .from(schema.tenants)
+      .where(eq(schema.tenants.id, tenantId))
+      .limit(1),
+    db
+      .select({
+        agentMd: schema.agentProfiles.agentMd,
+        voiceGreeting: schema.agentProfiles.voiceGreeting,
+        languageMode: schema.agentProfiles.languageMode,
+        languages: schema.agentProfiles.languages
+      })
+      .from(schema.agentProfiles)
+      .where(scoped.where(schema.agentProfiles))
+      .limit(1),
+    db
+      .select({
+        id: schema.intakeFields.id,
+        key: schema.intakeFields.key,
+        label: schema.intakeFields.label,
+        type: schema.intakeFields.type,
+        options: schema.intakeFields.options,
+        priority: schema.intakeFields.priority,
+        sort: schema.intakeFields.sort,
+        active: schema.intakeFields.active
+      })
+      .from(schema.intakeFields)
+      .where(scoped.where(schema.intakeFields, eq(schema.intakeFields.active, true)))
+      .orderBy(schema.intakeFields.sort)
+  ]);
+
+  const tenant = tenantRows[0];
+  const agent = profileRows[0];
+  if (!tenant || !agent) {
+    throw new Error(`Tenant context incomplete for ${tenantId}`);
+  }
+
+  const data: CachedTenantMeta = {
+    timezone: tenant.timezone,
+    agent: {
+      agentMd: agent.agentMd,
+      voiceGreeting: agent.voiceGreeting,
+      languageMode: agent.languageMode as "hinglish" | "english" | "hindi",
+      languages: agent.languages
+    },
+    intakeFields: intakeFields.map((field) => ({
+      id: field.id,
+      key: field.key,
+      label: field.label,
+      type: field.type as "text" | "select" | "boolean" | "number",
+      options: field.options,
+      priority: field.priority as "key" | "optional",
+      sort: field.sort,
+      active: field.active
+    }))
+  };
+
+  tenantMetaCache.set(tenantId, { data, expiresAt: Date.now() + CACHE_TTL_MS });
+  return data;
+}
+
 function requestHeaders(
   headers: Record<string, string | string[] | undefined>
 ): Record<string, string | string[] | undefined> {
@@ -197,32 +334,7 @@ app.post("/twilio/incoming", async (request, reply) => {
     // The globally unique called number is the trusted routing key that establishes tenant scope.
     // It must be resolved BEFORE signature verification: each tenant may bring their own Twilio
     // account, so the Auth Token used to verify the signature depends on which tenant this is.
-    const [destination] = await db
-      .select({
-        tenantId: schema.phoneNumbers.tenantId,
-        tenantStatus: schema.tenants.status,
-        authTokenCiphertext: schema.tenantTwilioCredentials.authTokenCiphertext
-      })
-      .from(schema.phoneNumbers)
-      .innerJoin(
-        schema.tenants,
-        and(
-          eq(schema.tenants.id, schema.phoneNumbers.tenantId),
-          isNull(schema.tenants.deletedAt)
-        )
-      )
-      .leftJoin(
-        schema.tenantTwilioCredentials,
-        eq(schema.tenantTwilioCredentials.tenantId, schema.phoneNumbers.tenantId)
-      )
-      .where(
-        and(
-          eq(schema.phoneNumbers.e164, parsed.data.To),
-          eq(schema.phoneNumbers.status, "active"),
-          eq(schema.phoneNumbers.channel, "twilio")
-        )
-      )
-      .limit(1);
+    const destination = await getCachedDestination(parsed.data.To);
 
     if (!destination) {
       return reply.code(404).send({
@@ -652,26 +764,7 @@ async function handleAzureSipCall(
     return;
   }
 
-  const [destination] = await db
-    .select({
-      tenantId: schema.phoneNumbers.tenantId,
-      tenantStatus: schema.tenants.status
-    })
-    .from(schema.phoneNumbers)
-    .innerJoin(
-      schema.tenants,
-      and(
-        eq(schema.tenants.id, schema.phoneNumbers.tenantId),
-        isNull(schema.tenants.deletedAt)
-      )
-    )
-    .where(
-      and(
-        eq(schema.phoneNumbers.e164, to),
-        eq(schema.phoneNumbers.status, "active")
-      )
-    )
-    .limit(1);
+  const destination = await getCachedDestination(to);
 
   if (!destination) {
     await azureSip.reject(providerCallId, 604);
@@ -684,43 +777,97 @@ async function handleAzureSipCall(
 
   const scoped = withTenant(db, destination.tenantId);
   const callerGeo = deriveCallerGeo(from);
-  const [caller] = await db
-    .insert(schema.callers)
-    .values(
-      scoped.values({
-        phoneE164: from,
-        displayName: null,
-        country: callerGeo.country,
-        timezone: callerGeo.timezone
+
+  // In parallel: fetch cached tenant meta and upsert caller
+  const [tenantMeta, callerResult] = await Promise.all([
+    getCachedTenantMeta(destination.tenantId),
+    db
+      .insert(schema.callers)
+      .values(
+        scoped.values({
+          phoneE164: from,
+          displayName: null,
+          country: callerGeo.country,
+          timezone: callerGeo.timezone
+        })
+      )
+      .onConflictDoUpdate({
+        target: [schema.callers.tenantId, schema.callers.phoneE164],
+        set: {
+          ...(callerGeo.country ? { country: callerGeo.country } : {}),
+          ...(callerGeo.timezone ? { timezone: callerGeo.timezone } : {}),
+          updatedAt: new Date()
+        }
       })
-    )
-    .onConflictDoUpdate({
-      target: [schema.callers.tenantId, schema.callers.phoneE164],
-      set: {
-        ...(callerGeo.country ? { country: callerGeo.country } : {}),
-        ...(callerGeo.timezone ? { timezone: callerGeo.timezone } : {}),
-        updatedAt: new Date()
-      }
-    })
-    .returning({ id: schema.callers.id });
+      .returning({
+        id: schema.callers.id,
+        phoneE164: schema.callers.phoneE164,
+        displayName: schema.callers.displayName,
+        country: schema.callers.country,
+        timezone: schema.callers.timezone,
+        profile: schema.callers.profile,
+        stage: schema.callers.stage
+      })
+  ]);
+
+  const caller = callerResult[0];
   if (!caller) throw new Error("Caller upsert returned no row");
 
-  const [call] = await db
-    .insert(schema.calls)
-    .values(
-      scoped.values({
-        callerId: caller.id,
-        channel: "twilio",
-        direction: "inbound",
-        providerCallSid: providerCallId,
-        status: "in_progress"
+  // In parallel: insert call record and fetch caller memories
+  const [callResult, memories] = await Promise.all([
+    db
+      .insert(schema.calls)
+      .values(
+        scoped.values({
+          callerId: caller.id,
+          channel: "twilio",
+          direction: "inbound",
+          providerCallSid: providerCallId,
+          status: "in_progress"
+        })
+      )
+      .onConflictDoNothing({ target: schema.calls.providerCallSid })
+      .returning({ id: schema.calls.id, startedAt: schema.calls.startedAt }),
+    db
+      .select({
+        id: schema.callerMemories.id,
+        kind: schema.callerMemories.kind,
+        content: schema.callerMemories.content
       })
-    )
-    .onConflictDoNothing({ target: schema.calls.providerCallSid })
-    .returning({ id: schema.calls.id });
-  if (!call) return; // Duplicate delivery already being handled.
+      .from(schema.callerMemories)
+      .where(
+        scoped.where(
+          schema.callerMemories,
+          eq(schema.callerMemories.callerId, caller.id)
+        )
+      )
+      .orderBy(desc(schema.callerMemories.createdAt))
+      .limit(5)
+  ]);
 
-  const session = await loadCallSession(call.id);
+  let call = callResult[0];
+  if (!call) {
+    // Duplicate webhook delivery already created the call
+    const [existing] = await db
+      .select({ id: schema.calls.id, startedAt: schema.calls.startedAt })
+      .from(schema.calls)
+      .where(scoped.where(schema.calls, eq(schema.calls.providerCallSid, providerCallId)))
+      .limit(1);
+    if (!existing) return;
+    call = existing;
+  }
+
+  const session: CallSession = {
+    callId: call.id,
+    providerCallSid: providerCallId,
+    tenantId: destination.tenantId,
+    timezone: tenantMeta.timezone,
+    caller,
+    intakeFields: tenantMeta.intakeFields,
+    agent: tenantMeta.agent,
+    memories,
+    startedAt: (call.startedAt ?? new Date()).toISOString()
+  };
 
   await azureSip.accept(providerCallId, {
     model: env.AZURE_REALTIME_MODEL,
@@ -882,16 +1029,6 @@ app.server.on("upgrade", (request, socket, head) => {
 
 async function loadCallSession(callId: string): Promise<CallSession> {
   try {
-    const [route] = await db
-      .select({ tenantId: schema.calls.tenantId })
-      .from(schema.calls)
-      .where(eq(schema.calls.id, callId))
-      .limit(1);
-    const tenantId = route?.tenantId;
-    if (!tenantId || !z.string().uuid().safeParse(tenantId).success) {
-      throw new Error("Call routing state not found");
-    }
-    const scoped = withTenant(db, tenantId);
     const [call] = await db
       .select({
         id: schema.calls.id,
@@ -901,26 +1038,16 @@ async function loadCallSession(callId: string): Promise<CallSession> {
         startedAt: schema.calls.startedAt
       })
       .from(schema.calls)
-      .where(scoped.where(schema.calls, eq(schema.calls.id, callId)))
+      .where(eq(schema.calls.id, callId))
       .limit(1);
-    if (!call) throw new Error("Call not found");
 
-    const [tenantRows, profileRows, callerRows, memories, intakeFields] = await Promise.all([
-      db
-        .select({ timezone: schema.tenants.timezone })
-        .from(schema.tenants)
-        .where(eq(schema.tenants.id, call.tenantId))
-        .limit(1),
-      db
-        .select({
-          agentMd: schema.agentProfiles.agentMd,
-          voiceGreeting: schema.agentProfiles.voiceGreeting,
-          languageMode: schema.agentProfiles.languageMode,
-          languages: schema.agentProfiles.languages
-        })
-        .from(schema.agentProfiles)
-        .where(scoped.where(schema.agentProfiles))
-        .limit(1),
+    if (!call || !call.tenantId || !z.string().uuid().safeParse(call.tenantId).success) {
+      throw new Error("Call routing state not found");
+    }
+    const scoped = withTenant(db, call.tenantId);
+
+    const [tenantMeta, callerRows, memories] = await Promise.all([
+      getCachedTenantMeta(call.tenantId),
       db
         .select({
           id: schema.callers.id,
@@ -948,36 +1075,20 @@ async function loadCallSession(callId: string): Promise<CallSession> {
           )
         )
         .orderBy(desc(schema.callerMemories.createdAt))
-        .limit(5),
-      db
-        .select({
-          id: schema.intakeFields.id,
-          key: schema.intakeFields.key,
-          label: schema.intakeFields.label,
-          type: schema.intakeFields.type,
-          options: schema.intakeFields.options,
-          priority: schema.intakeFields.priority,
-          sort: schema.intakeFields.sort,
-          active: schema.intakeFields.active
-        })
-        .from(schema.intakeFields)
-        .where(scoped.where(schema.intakeFields, eq(schema.intakeFields.active, true)))
-        .orderBy(schema.intakeFields.sort)
+        .limit(5)
     ]);
 
-    const tenant = tenantRows[0];
-    const agent = profileRows[0];
     const caller = callerRows[0];
-    if (!tenant || !agent || !caller) throw new Error("Call context is incomplete");
+    if (!caller) throw new Error("Call context is incomplete");
 
     const session: CallSession = {
       callId: call.id,
       providerCallSid: call.providerCallSid,
       tenantId: call.tenantId,
-      timezone: tenant.timezone,
+      timezone: tenantMeta.timezone,
       caller,
-      intakeFields,
-      agent,
+      intakeFields: tenantMeta.intakeFields,
+      agent: tenantMeta.agent,
       memories,
       startedAt: call.startedAt.toISOString()
     };
