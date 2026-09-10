@@ -12,7 +12,7 @@ import {
 import { createDatabase, decryptTwilioAuthToken, schema, withTenant } from "@recepto/db";
 import { validateEnv } from "@recepto/shared/env";
 import type { AIBridge, TranscriptEvent } from "./ai-bridge.js";
-import { AzureRealtimeBridge, buildSessionConfig } from "./azure-realtime-bridge.js";
+import { AzureRealtimeBridge, buildSessionConfig, buildSipAcceptConfig } from "./azure-realtime-bridge.js";
 import { GeminiLiveBridge } from "./gemini-live-bridge.js";
 import type { CallSession } from "./call-session.js";
 import { deriveCallerGeo } from "./caller-profile.js";
@@ -869,10 +869,10 @@ async function handleAzureSipCall(
     startedAt: (call.startedAt ?? new Date()).toISOString()
   };
 
-  await azureSip.accept(providerCallId, {
-    model: env.AZURE_REALTIME_MODEL,
-    ...buildSessionConfig(session)
-  });
+  await azureSip.accept(
+    providerCallId,
+    buildSipAcceptConfig(session, env.AZURE_REALTIME_MODEL)
+  );
 
   const bridge = new AzureRealtimeBridge({
     url: env.AZURE_REALTIME_URL ?? "",

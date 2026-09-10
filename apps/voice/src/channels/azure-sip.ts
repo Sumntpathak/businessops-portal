@@ -137,11 +137,17 @@ export class AzureSipClient {
       type: "realtime",
       ...sessionConfig
     };
+    // Strip audio-stream-only fields that SIP accept rejects with HTTP 400
+    delete payload.input_audio_format;
+    delete payload.output_audio_format;
+    delete payload.input_audio_transcription;
+    delete payload.modalities;
+
     try {
       await this.post(callId, "accept", payload);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (message.includes("500") && payload.model && payload.instructions) {
+      if ((message.includes("500") || message.includes("400")) && payload.model && payload.instructions) {
         // Fallback for Azure SIP gateway quirks: accept with core parameters,
         // and let the attached WebSocket send the full session.update.
         const minimal: Record<string, unknown> = {

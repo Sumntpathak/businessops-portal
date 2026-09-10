@@ -346,8 +346,7 @@ export function buildInstructions(session: CallSession): string {
 
 /**
  * The full realtime session configuration. Sent as session.update on the
- * WebSocket path, and as the accept-call body (plus model) on the SIP path,
- * so both entry points configure the agent identically.
+ * WebSocket path so the session has full audio format and transcription settings.
  */
 export function buildSessionConfig(
   session: CallSession,
@@ -371,6 +370,34 @@ export function buildSessionConfig(
       "whisper-1",
       session.agent.languages ?? []
     ),
+    temperature: 0.6
+  };
+}
+
+/**
+ * Configuration payload for the SIP REST accept endpoint (POST /realtime/calls/<call_id>/accept).
+ * In SIP mode, audio formats (G.711) are negotiated by SIP SDP, so input_audio_format,
+ * output_audio_format, and input_audio_transcription are omitted here (which Azure's REST
+ * SIP endpoint rejects with HTTP 400) and sent via WebSocket session.update once attached.
+ */
+export function buildSipAcceptConfig(
+  session: CallSession,
+  model: string,
+  voice?: string
+): Record<string, unknown> {
+  return {
+    type: "realtime",
+    model,
+    instructions: buildInstructions(session),
+    voice: voice ?? "shimmer",
+    tools: REALTIME_TOOLS,
+    tool_choice: "auto",
+    turn_detection: {
+      type: "server_vad",
+      threshold: 0.5,
+      prefix_padding_ms: 200,
+      silence_duration_ms: 300
+    },
     temperature: 0.6
   };
 }

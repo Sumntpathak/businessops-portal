@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { buildInstructions, buildSessionConfig } from "./azure-realtime-bridge.js";
+import { buildInstructions, buildSessionConfig, buildSipAcceptConfig } from "./azure-realtime-bridge.js";
 import type { CallSession } from "./call-session.js";
 
 const session: CallSession = {
@@ -88,6 +88,26 @@ describe("buildSessionConfig", () => {
       silence_duration_ms: 300
     });
     assert.equal(config.temperature, 0.6);
+    assert.equal(config.tool_choice, "auto");
+    assert.ok(Array.isArray(config.tools) && config.tools.length > 0);
+  });
+});
+
+describe("buildSipAcceptConfig", () => {
+  it("formats SIP accept payload without stream-only audio format parameters", () => {
+    const config = buildSipAcceptConfig(session, "gpt-realtime-mini", "shimmer");
+    assert.equal(config.type, "realtime");
+    assert.equal(config.model, "gpt-realtime-mini");
+    assert.equal(config.voice, "shimmer");
+    assert.equal(config.input_audio_format, undefined);
+    assert.equal(config.output_audio_format, undefined);
+    assert.equal(config.input_audio_transcription, undefined);
+    assert.deepEqual(config.turn_detection, {
+      type: "server_vad",
+      threshold: 0.5,
+      prefix_padding_ms: 200,
+      silence_duration_ms: 300
+    });
     assert.equal(config.tool_choice, "auto");
     assert.ok(Array.isArray(config.tools) && config.tools.length > 0);
   });
