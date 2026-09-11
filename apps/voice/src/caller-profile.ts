@@ -128,7 +128,12 @@ export function localDateInTimezone(date: Date, timezone: string): string {
 }
 
 export function formatCallerLocalTime(date: Date, timezone: string): string {
-  return new Intl.DateTimeFormat("en-GB", { timeZone: timezone, dateStyle: "medium", timeStyle: "short" }).format(date);
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    dateStyle: "medium",
+    timeStyle: "short",
+    hour12: true
+  }).format(date);
 }
 
 export function adjacentIsoDates(date: string): string[] {

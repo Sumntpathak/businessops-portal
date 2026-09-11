@@ -46,17 +46,19 @@ function languageInstructions(languages: string[]): string {
 }
 
 export function buildInstructions(session: CallSession): string {
-  const now = new Intl.DateTimeFormat("en-GB", {
+  const now = new Intl.DateTimeFormat("en-US", {
     timeZone: session.timezone,
     dateStyle: "full",
-    timeStyle: "short"
+    timeStyle: "short",
+    hour12: true
   }).format(new Date());
 
   const callerTimezone = session.caller.timezone ?? session.timezone;
-  const callerNow = new Intl.DateTimeFormat("en-GB", {
+  const callerNow = new Intl.DateTimeFormat("en-US", {
     timeZone: callerTimezone,
     dateStyle: "full",
-    timeStyle: "short"
+    timeStyle: "short",
+    hour12: true
   }).format(new Date());
 
   const profileLines = [

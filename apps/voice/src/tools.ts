@@ -331,24 +331,15 @@ export class ToolExecutor {
       throw new Error("Cannot book appointment in the past");
     }
 
-    const callerTz = this.session.caller.timezone ?? this.session.timezone;
-    const parts = new Intl.DateTimeFormat("en-CA", {
-      timeZone: callerTz,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit"
-    }).formatToParts(startsAt);
-    const value = (type: "year" | "month" | "day") =>
-      parts.find((part) => part.type === type)?.value ?? "";
-    const localDate = value("year") + "-" + value("month") + "-" + value("day");
+    const businessDate = localDateInTimezone(startsAt, this.session.timezone);
     const slots = await this.dependencies.availability.getSlots(
       this.session.tenantId,
       serviceId,
-      localDate,
+      businessDate,
       staffId ?? undefined
     );
     const selected = slots.find(
-      (slot) => slot.startsAt.getTime() === startsAt.getTime()
+      (slot) => Math.abs(slot.startsAt.getTime() - startsAt.getTime()) < 60_000
     );
     if (!selected) throw new Error("Requested booking slot is unavailable");
     const endsAt = selected.endsAt;
