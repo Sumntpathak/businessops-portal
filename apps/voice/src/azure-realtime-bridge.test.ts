@@ -75,19 +75,24 @@ describe("realtime caller profile instructions", () => {
 });
 
 describe("buildSessionConfig", () => {
-  it("formats session parameters at root level for Azure Realtime SIP and WebSocket sessions", () => {
+  it("formats session parameters with type realtime and audio input/output blocks", () => {
     const config = buildSessionConfig(session, "alloy");
-    assert.deepEqual(config.modalities, ["audio", "text"]);
-    assert.equal(config.voice, "alloy");
-    assert.equal(config.input_audio_format, "g711_ulaw");
-    assert.equal(config.output_audio_format, "g711_ulaw");
-    assert.deepEqual(config.turn_detection, {
-      type: "server_vad",
-      threshold: 0.5,
-      prefix_padding_ms: 200,
-      silence_duration_ms: 300
+    assert.equal(config.type, "realtime");
+    assert.deepEqual(config.audio, {
+      input: {
+        format: { type: "audio/pcmu" },
+        turn_detection: {
+          type: "server_vad",
+          threshold: 0.5,
+          prefix_padding_ms: 200,
+          silence_duration_ms: 300
+        }
+      },
+      output: {
+        format: { type: "audio/pcmu" },
+        voice: "alloy"
+      }
     });
-    assert.equal(config.temperature, 0.6);
     assert.equal(config.tool_choice, "auto");
     assert.ok(Array.isArray(config.tools) && config.tools.length > 0);
   });

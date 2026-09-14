@@ -355,24 +355,25 @@ export function buildSessionConfig(
   voice?: string
 ): Record<string, unknown> {
   return {
-    modalities: ["audio", "text"],
+    type: "realtime",
     instructions: buildInstructions(session),
     tools: REALTIME_TOOLS,
     tool_choice: "auto",
-    voice: voice ?? "shimmer",
-    input_audio_format: "g711_ulaw",
-    output_audio_format: "g711_ulaw",
-    turn_detection: {
-      type: "server_vad",
-      threshold: 0.5,
-      prefix_padding_ms: 200,
-      silence_duration_ms: 300
-    },
-    input_audio_transcription: transcriptionConfig(
-      "whisper-1",
-      session.agent.languages ?? []
-    ),
-    temperature: 0.6
+    audio: {
+      input: {
+        format: { type: "audio/pcmu" },
+        turn_detection: {
+          type: "server_vad",
+          threshold: 0.5,
+          prefix_padding_ms: 200,
+          silence_duration_ms: 300
+        }
+      },
+      output: {
+        format: { type: "audio/pcmu" },
+        voice: voice ?? "shimmer"
+      }
+    }
   };
 }
 
