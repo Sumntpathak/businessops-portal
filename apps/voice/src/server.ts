@@ -68,12 +68,15 @@ redis.on("error", () => {
   // Logged at the call site that used it; swallowing here prevents an unhandled
   // 'error' event from taking the voice server down.
 });
-void redis.connect().catch(() => undefined);
+const calendarRedirectUri = env.GOOGLE_REDIRECT_URI?.includes("/api/integrations/google/callback")
+  ? env.GOOGLE_REDIRECT_URI
+  : `${env.PUBLIC_WEB_URL.replace(/\/+$/, "")}/api/integrations/google/callback`;
+
 const calendarService = new CalendarService({
   db,
   clientId: env.GOOGLE_CLIENT_ID,
   clientSecret: env.GOOGLE_CLIENT_SECRET,
-  redirectUri: env.GOOGLE_REDIRECT_URI,
+  redirectUri: calendarRedirectUri,
   sessionSecret: env.SESSION_SECRET
 });
 const availabilityService = new AvailabilityService(db, calendarService);

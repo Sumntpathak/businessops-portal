@@ -179,14 +179,18 @@ export async function POST(request: NextRequest) {
       })
       .returning({ id: schema.callers.id });
 
-    if (!caller) throw new Error("Caller upsert returned no row");
-
-    const eventId = await calendarService.createEvent(tenantId, {
-      title: `${service.name} — ${parsed.data.callerName}`,
-      startsAt: selected.startsAt,
-      endsAt: selected.endsAt,
-      description: parsed.data.notes || `Booked through Recepto for ${parsed.data.callerPhone}`
-    });
+    let eventId: string | null = null;
+    try {
+      eventId = await calendarService.createEvent(tenantId, {
+        title: `${service.name} — ${parsed.data.callerName}`,
+        startsAt: selected.startsAt,
+        endsAt: selected.endsAt,
+        description: parsed.data.notes || `Booked through Recepto for ${parsed.data.callerPhone}`
+      });
+    } catch (error) {
+      if (!(error instanceof CalendarConnectionRevokedError)) throw error;
+      eventId = null;
+    }
 
     try {
       const [booking] = await db
@@ -205,7 +209,9 @@ export async function POST(request: NextRequest) {
         .returning();
       return NextResponse.json({ data: { booking } }, { status: 201 });
     } catch (error) {
-      await calendarService.deleteEvent(tenantId, eventId).catch(() => undefined);
+      if (eventId) {
+        await calendarService.deleteEvent(tenantId, eventId).catch(() => undefined);
+      }
       throw error;
     }
   } catch (error) {

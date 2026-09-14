@@ -40,9 +40,10 @@ bindings (Caddy fronts them instead), and adds the `caddy` service.
      endpoint URL and API key
    - An Anthropic API key
    - A Brave Search API key
-   - A Google Cloud OAuth client (Client ID + Secret) with
-     `https://<web-domain>/api/auth/callback/google` added as an authorized
-     redirect URI
+   - A Google Cloud OAuth client (Client ID + Secret) with both:
+     * `https://<web-domain>/api/integrations/google/callback` (Google Calendar sync)
+     * `https://<web-domain>/api/auth/callback/google` (Google Sign-In)
+     added as authorized redirect URIs
    - Git access to this repository (SSH key or HTTPS token)
 
 ## Steps
