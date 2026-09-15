@@ -1,15 +1,53 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 
 type ErrorResponse = { error?: { message?: string } };
 
+/**
+ * Every IANA zone the runtime knows about, each labeled with its current UTC
+ * offset so a business owner can find their own city instead of guessing from
+ * a short curated list (the old 5-zone list had no Australian option at all,
+ * which is how a tenant with no matching choice ended up on the wrong zone).
+ */
+function useTimezoneOptions(): { value: string; label: string }[] {
+  return useMemo(() => {
+    const zones =
+      typeof Intl.supportedValuesOf === "function"
+        ? Intl.supportedValuesOf("timeZone")
+        : [
+            "Asia/Kolkata", "Asia/Dubai", "Asia/Singapore", "Australia/Sydney",
+            "Europe/London", "America/New_York", "America/Los_Angeles"
+          ];
+
+    const withOffsets = zones.map((zone) => {
+      const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: zone,
+        timeZoneName: "shortOffset"
+      }).formatToParts(new Date());
+      const offset = parts.find((part) => part.type === "timeZoneName")?.value ?? "";
+      const city = zone.split("/").pop()?.replaceAll("_", " ") ?? zone;
+      return { value: zone, label: `(${offset}) ${city} — ${zone}` };
+    });
+
+    return withOffsets.sort((a, b) => a.value.localeCompare(b.value));
+  }, []);
+}
+
 export function CreateBusinessForm() {
   const router = useRouter();
   const [error, setError] = useState<string>();
   const [pending, setPending] = useState(false);
+  const timezoneOptions = useTimezoneOptions();
+  const detectedTimezone = useMemo(() => {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone;
+    } catch {
+      return "Asia/Kolkata";
+    }
+  }, []);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -56,13 +94,14 @@ export function CreateBusinessForm() {
       </label>
       <label className="text-sm font-medium">
         Timezone
-        <select name="timezone" defaultValue="Asia/Kolkata" className="mt-2 h-11 w-full rounded-md border bg-background px-3 outline-none focus:ring-2 focus:ring-foreground">
-          <option value="Asia/Kolkata">Asia/Kolkata</option>
-          <option value="Asia/Dubai">Asia/Dubai</option>
-          <option value="Europe/London">Europe/London</option>
-          <option value="America/New_York">America/New_York</option>
-          <option value="America/Los_Angeles">America/Los_Angeles</option>
+        <select name="timezone" defaultValue={detectedTimezone} className="mt-2 h-11 w-full rounded-md border bg-background px-3 outline-none focus:ring-2 focus:ring-foreground">
+          {timezoneOptions.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
         </select>
+        <span className="mt-1 block text-xs text-muted-foreground">
+          This is your business&apos;s own timezone — it decides when your receptionist offers appointment slots. Callers will always hear times in their own timezone too.
+        </span>
       </label>
       <label className="text-sm font-medium">
         What should your receptionist know first?
