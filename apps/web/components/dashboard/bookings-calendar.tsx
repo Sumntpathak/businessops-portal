@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { CalendarIcon, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
+import { AvailabilityOverrides } from "@/components/dashboard/availability-overrides";
 import { PageBody, PageHeader, PageShell } from "@/components/dashboard/page-shell";
 import { cn } from "@/lib/utils";
 import {
@@ -189,6 +190,8 @@ export function BookingsCalendar() {
           })}
         </div>
       </section>
+
+      <AvailabilityOverrides timezone={timezone} />
 
       <section className="rounded-lg border p-5">
         <h2 className="font-semibold">This week</h2>

@@ -4,7 +4,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { AvailabilityOverrides } from "@/components/dashboard/availability-overrides";
 import { PageBody, PageHeader, PageShell } from "@/components/dashboard/page-shell";
 
 type JobStatus = "queued" | "crawling" | "distilling" | "ready_for_review" | "failed";
@@ -269,8 +268,6 @@ export function AgentReview() {
           ))}
         </div>
       </section>
-
-      <AvailabilityOverrides timezone={status?.timezone ?? "Asia/Kolkata"} />
 
       <section className="rounded-xl border p-5">
         <div className="mb-5">
