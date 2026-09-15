@@ -633,9 +633,13 @@ export class AzureRealtimeBridge implements AIBridge {
     // In WebSocket mode, cancel generation and flush Twilio audio buffer.
     // In SIP mode, Azure Realtime's server VAD handles cancellation natively on the RTP stream.
     if (type === "input_audio_buffer.speech_started") {
+      // Do NOT optimistically clear activeResponse here: cancellation is async and
+      // Azure still sends response.done (status "cancelled") for the in-flight
+      // response afterwards. Clearing early let speech_stopped fire response.create
+      // before the server had actually torn down the previous response, causing
+      // "conversation_already_has_active_response" on nearly every turn.
       if (!this.options.attachCallId && this.activeResponse) {
         this.send({ type: "response.cancel" });
-        this.activeResponse = false;
       }
       this.speechStarted?.();
       this.bargeIn?.();
