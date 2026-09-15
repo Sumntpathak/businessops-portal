@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { AvailabilityOverrides } from "@/components/dashboard/availability-overrides";
 import { PageBody, PageHeader, PageShell } from "@/components/dashboard/page-shell";
 
 type JobStatus = "queued" | "crawling" | "distilling" | "ready_for_review" | "failed";
@@ -11,6 +12,7 @@ interface Service { id?: string; name: string; durationMinutes: number; price: s
 interface BusinessHour { weekday: number; opens: string; closes: string; closed: boolean; }
 interface AgentStatus {
   tenantStatus: string;
+  timezone: string;
   job: { status: JobStatus; error: string | null; crawlResult: Array<{ url: string; title: string; text: string }> | null } | null;
   profile: { agentMd: string; version: number; source: "auto" | "manual"; languages: string[] } | null;
   services: Service[];
@@ -267,6 +269,8 @@ export function AgentReview() {
           ))}
         </div>
       </section>
+
+      <AvailabilityOverrides timezone={status?.timezone ?? "Asia/Kolkata"} />
 
       <section className="rounded-xl border p-5">
         <div className="mb-5">

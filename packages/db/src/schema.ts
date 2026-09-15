@@ -63,6 +63,11 @@ export const transcriptRoleEnum = pgEnum("transcript_role", [
   "system",
   "tool"
 ]);
+export const availabilityOverrideKindEnum = pgEnum("availability_override_kind", [
+  "day_hours",
+  "block",
+  "add"
+]);
 export const bookingStatusEnum = pgEnum("booking_status", [
   "confirmed",
   "cancelled",
@@ -444,6 +449,53 @@ export const businessHours = pgTable(
     uniqueIndex("business_hours_tenant_weekday_uidx").on(table.tenantId, table.weekday),
     index("business_hours_tenant_id_idx").on(table.tenantId),
     check("business_hours_weekday_check", sql`${table.weekday} between 0 and 6`)
+  ]
+);
+
+/**
+ * Explicit admin overrides layered on top of the weekly business_hours
+ * template. These always win over generated slots for the date/window they
+ * cover — the single source of truth the voice agent's availability lookup
+ * must respect ahead of the mechanically generated default.
+ *
+ * - day_hours: replaces business_hours for one specific date only (opens/closes/closed).
+ * - block: marks an exact window unavailable even though it falls inside normal hours.
+ * - add: opens an exact window that would not otherwise exist (outside normal hours).
+ */
+export const availabilityOverrides = pgTable(
+  "availability_overrides",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    kind: availabilityOverrideKindEnum("kind").notNull(),
+    // Business-local calendar date (YYYY-MM-DD) this override applies to,
+    // stored separately from startsAt/endsAt so day_hours rows (which have no
+    // absolute timestamp of their own) can still be looked up by date.
+    date: date("date", { mode: "string" }).notNull(),
+    // day_hours only:
+    opens: time("opens"),
+    closes: time("closes"),
+    closed: boolean("closed"),
+    // block / add only:
+    startsAt: timestamp("starts_at", { withTimezone: true, mode: "date" }),
+    endsAt: timestamp("ends_at", { withTimezone: true, mode: "date" }),
+    note: text("note").notNull().default(""),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    ...auditColumns()
+  },
+  (table) => [
+    index("availability_overrides_tenant_date_idx").on(table.tenantId, table.date),
+    index("availability_overrides_tenant_id_idx").on(table.tenantId),
+    check(
+      "availability_overrides_day_hours_check",
+      sql`${table.kind} <> 'day_hours' OR (${table.closed} IS NOT NULL AND (${table.closed} OR (${table.opens} IS NOT NULL AND ${table.closes} IS NOT NULL)))`
+    ),
+    check(
+      "availability_overrides_window_check",
+      sql`${table.kind} = 'day_hours' OR (${table.startsAt} IS NOT NULL AND ${table.endsAt} IS NOT NULL AND ${table.startsAt} < ${table.endsAt})`
+    )
   ]
 );
 

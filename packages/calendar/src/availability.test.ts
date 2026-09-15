@@ -92,4 +92,54 @@ describe("computeAvailableSlots", () => {
 
     assert.deepEqual(slots, []);
   });
+
+  it("adds slots from an extra window outside normal hours, merged and sorted with the main window", () => {
+    const slots = computeAvailableSlots({
+      closed: false,
+      opensAt: at(9),
+      closesAt: at(10),
+      durationMinutes: 30,
+      busy: [],
+      extraWindows: [{ startsAt: at(18), endsAt: at(19) }]
+    });
+
+    assert.deepEqual(slots.map((slot) => slot.startsAt.toISOString()), [
+      at(9).toISOString(),
+      at(9, 30).toISOString(),
+      at(18).toISOString(),
+      at(18, 30).toISOString()
+    ]);
+  });
+
+  it("still opens extra-window slots on an otherwise closed day", () => {
+    const slots = computeAvailableSlots({
+      closed: true,
+      opensAt: at(9),
+      closesAt: at(17),
+      durationMinutes: 30,
+      busy: [],
+      extraWindows: [{ startsAt: at(11), endsAt: at(11, 30) }]
+    });
+
+    assert.deepEqual(slots.map((slot) => slot.startsAt.toISOString()), [
+      at(11).toISOString()
+    ]);
+  });
+
+  it("checks extra-window slots against busy time just like the main window", () => {
+    const slots = computeAvailableSlots({
+      closed: false,
+      opensAt: at(9),
+      closesAt: at(10),
+      durationMinutes: 30,
+      busy: [{ startsAt: at(18), endsAt: at(18, 30) }],
+      extraWindows: [{ startsAt: at(18), endsAt: at(19) }]
+    });
+
+    assert.deepEqual(slots.map((slot) => slot.startsAt.toISOString()), [
+      at(9).toISOString(),
+      at(9, 30).toISOString(),
+      at(18, 30).toISOString()
+    ]);
+  });
 });

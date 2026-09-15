@@ -18,6 +18,38 @@ export interface SlotComputation {
   durationMinutes: number;
   busy: readonly BusyInterval[];
   minStartsAt?: Date;
+  /**
+   * Admin-added windows (availability_overrides kind "add") that open up slots
+   * outside the normal opens/closesAt range for this date — e.g. a Saturday
+   * special-hours window. Sliced the same way as the main window and still
+   * checked against `busy`.
+   */
+  extraWindows?: readonly { startsAt: Date; endsAt: Date }[];
+}
+
+function sliceWindow(
+  opensAt: Date,
+  closesAt: Date,
+  durationMinutes: number,
+  busy: readonly BusyInterval[],
+  minStartsAt: Date | undefined
+): AvailabilitySlot[] {
+  if (closesAt <= opensAt || (minStartsAt && closesAt <= minStartsAt)) return [];
+
+  const slots: AvailabilitySlot[] = [];
+  for (
+    let startsAt = opensAt;
+    addMinutes(startsAt, durationMinutes) <= closesAt;
+    startsAt = addMinutes(startsAt, durationMinutes)
+  ) {
+    if (minStartsAt && startsAt <= minStartsAt) continue;
+
+    const slot = { startsAt, endsAt: addMinutes(startsAt, durationMinutes) };
+    if (!busy.some((interval) => overlaps(slot, interval))) {
+      slots.push(slot);
+    }
+  }
+  return slots;
 }
 
 export function buildBusinessWindow(
@@ -37,36 +69,19 @@ function overlaps(slot: AvailabilitySlot, busy: BusyInterval): boolean {
 }
 
 export function computeAvailableSlots(input: SlotComputation): AvailabilitySlot[] {
-  if (
-    input.closed ||
-    !Number.isInteger(input.durationMinutes) ||
-    input.durationMinutes <= 0 ||
-    input.closesAt <= input.opensAt ||
-    (input.minStartsAt && input.closesAt <= input.minStartsAt)
-  ) {
+  if (!Number.isInteger(input.durationMinutes) || input.durationMinutes <= 0) {
     return [];
   }
 
-  const slots: AvailabilitySlot[] = [];
+  const mainWindowSlots = input.closed
+    ? []
+    : sliceWindow(input.opensAt, input.closesAt, input.durationMinutes, input.busy, input.minStartsAt);
 
-  for (
-    let startsAt = input.opensAt;
-    addMinutes(startsAt, input.durationMinutes) <= input.closesAt;
-    startsAt = addMinutes(startsAt, input.durationMinutes)
-  ) {
-    if (input.minStartsAt && startsAt <= input.minStartsAt) {
-      continue;
-    }
+  const extraSlots = (input.extraWindows ?? []).flatMap((window) =>
+    sliceWindow(window.startsAt, window.endsAt, input.durationMinutes, input.busy, input.minStartsAt)
+  );
 
-    const slot = {
-      startsAt,
-      endsAt: addMinutes(startsAt, input.durationMinutes)
-    };
-
-    if (!input.busy.some((interval) => overlaps(slot, interval))) {
-      slots.push(slot);
-    }
-  }
-
-  return slots;
+  return [...mainWindowSlots, ...extraSlots].sort(
+    (a, b) => a.startsAt.getTime() - b.startsAt.getTime()
+  );
 }

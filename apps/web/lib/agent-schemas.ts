@@ -55,6 +55,56 @@ export const saveLanguagesSchema = z.object({
     )
 });
 
+const isoDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD");
+
+export const createAvailabilityOverrideSchema = z
+  .discriminatedUnion("kind", [
+    z.object({
+      kind: z.literal("day_hours"),
+      date: isoDateSchema,
+      closed: z.boolean(),
+      opens: timeSchema.optional(),
+      closes: timeSchema.optional(),
+      note: z.string().trim().max(280).optional()
+    }),
+    z.object({
+      kind: z.literal("block"),
+      date: isoDateSchema,
+      startsAt: z.string().datetime({ offset: true }),
+      endsAt: z.string().datetime({ offset: true }),
+      note: z.string().trim().max(280).optional()
+    }),
+    z.object({
+      kind: z.literal("add"),
+      date: isoDateSchema,
+      startsAt: z.string().datetime({ offset: true }),
+      endsAt: z.string().datetime({ offset: true }),
+      note: z.string().trim().max(280).optional()
+    })
+  ])
+  .superRefine((value, ctx) => {
+    if (value.kind === "day_hours") {
+      if (!value.closed && !(value.opens && value.closes)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Provide opens and closes unless the day is closed"
+        });
+      }
+      return;
+    }
+    if (new Date(value.startsAt) >= new Date(value.endsAt)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "startsAt must be before endsAt"
+      });
+    }
+  });
+
+export const listAvailabilityOverridesSchema = z.object({
+  from: isoDateSchema,
+  to: isoDateSchema
+});
+
 export const saveBusinessHoursSchema = z.object({
   hours: z
     .array(
