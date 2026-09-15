@@ -344,31 +344,34 @@ export class ToolExecutor {
     if (!selected) throw new Error("Requested booking slot is unavailable");
     const endsAt = selected.endsAt;
 
-    if (input.callerName) {
-      await this.dependencies.repository.updateCallerName(
-        this.session.tenantId,
-        this.session.caller.id,
-        input.callerName
-      );
-    }
+    // The caller-name update and the calendar sync are independent writes —
+    // running them concurrently instead of sequentially removes dead air
+    // right after the caller confirms a time slot.
+    const nameUpdate = input.callerName
+      ? this.dependencies.repository.updateCallerName(
+          this.session.tenantId,
+          this.session.caller.id,
+          input.callerName
+        )
+      : Promise.resolve();
 
     // A tenant without a connected Google Calendar still gets local bookings;
     // the dashboard remains the source of truth until OAuth is completed.
-    let eventId: string | null;
-    try {
-      eventId = await this.dependencies.calendar.createEvent(
-        this.session.tenantId,
-        {
-          title: serviceName + " — " + (input.callerName ?? this.session.caller.displayName ?? this.session.caller.phoneE164),
-          startsAt,
-          endsAt,
-          description: "Booked by the Recepto voice receptionist."
-        }
-      );
-    } catch (error) {
-      if (!(error instanceof CalendarConnectionRevokedError)) throw error;
-      eventId = null;
+    const calendarCreate = this.dependencies.calendar
+      .createEvent(this.session.tenantId, {
+        title: serviceName + " — " + (input.callerName ?? this.session.caller.displayName ?? this.session.caller.phoneE164),
+        startsAt,
+        endsAt,
+        description: "Booked by the Recepto voice receptionist."
+      })
+      .then((id) => ({ eventId: id, error: null as unknown }))
+      .catch((error: unknown) => ({ eventId: null, error }));
+
+    const [, calendarResult] = await Promise.all([nameUpdate, calendarCreate]);
+    if (calendarResult.error && !(calendarResult.error instanceof CalendarConnectionRevokedError)) {
+      throw calendarResult.error;
     }
+    const eventId = calendarResult.eventId;
 
     try {
       const booking = await this.dependencies.repository.createBooking(

@@ -17,6 +17,7 @@ import { GeminiLiveBridge } from "./gemini-live-bridge.js";
 import type { CallSession } from "./call-session.js";
 import { deriveCallerGeo } from "./caller-profile.js";
 import { createCallSummarizer } from "./call-summary-worker.js";
+import { VoiceLatencyTracker } from "./latency-tracker.js";
 import {
   AzureSipClient,
   incomingCallEventSchema,
@@ -885,6 +886,7 @@ async function handleAzureSipCall(
     logger: app.log
   });
 
+  const latencyTracker = new VoiceLatencyTracker(session.callId, app.log);
   let transcriptSeq = 0;
   let finalized = false;
   const finalize = async (status: "completed" | "failed") => {
@@ -916,6 +918,9 @@ async function handleAzureSipCall(
   };
 
   bridge.onTranscript((transcriptEvent) => {
+    if (transcriptEvent.role === "caller") {
+      latencyTracker.onCallerTranscriptReceived();
+    }
     transcriptSeq += 1;
     const seq = transcriptSeq;
     void db
@@ -934,12 +939,32 @@ async function handleAzureSipCall(
       });
   });
 
+  let firstAudioChunkOfTurn = true;
+  bridge.onSpeechStarted(() => {
+    firstAudioChunkOfTurn = true;
+    latencyTracker.onUserSpeechStarted();
+  });
+  bridge.onSpeechStopped(() => latencyTracker.onUserSpeechEnded());
+  bridge.onAudioOut(() => {
+    if (firstAudioChunkOfTurn) {
+      firstAudioChunkOfTurn = false;
+      latencyTracker.onFirstAudioChunk();
+    }
+  });
+
   const executor = new ToolExecutor(session, {
     availability: availabilityService,
     calendar: calendarService,
     repository: toolRepository
   });
-  bridge.onToolCall((name, input) => executor.execute(name, input));
+  bridge.onToolCall(async (name, input) => {
+    latencyTracker.onToolStart();
+    try {
+      return await executor.execute(name, input);
+    } finally {
+      latencyTracker.onToolEnd();
+    }
+  });
   bridge.onClose(() => void finalize("completed"));
   bridge.onEndCall(() => {
     void (async () => {

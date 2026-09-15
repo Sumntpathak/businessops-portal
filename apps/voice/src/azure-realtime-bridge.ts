@@ -144,7 +144,7 @@ const REALTIME_TOOLS = [
     type: "function",
     name: "transfer_to_staff",
     description:
-      "Transfer the live call to a real staff member's phone. Only call this when the caller EXPLICITLY asks to speak to a person or names a specific staff member — never on your own judgement. Say a short natural line first ('Sure, connecting you to Gagandeep now' / 'One moment, transferring you to the team'), THEN call this tool.",
+      "Transfer the live call to a real staff member's phone. Only call this when the caller EXPLICITLY asks to speak to a person or names a specific staff member — never on your own judgement. Say a short natural line first that does NOT use the staff member's personal name (e.g. 'Sure, connecting you now' / 'One moment, transferring you to the team') — the caller doesn't need to hear an internal staff name, THEN call this tool.",
     parameters: {
       type: "object",
       properties: {
@@ -274,18 +274,17 @@ export function buildInstructions(session: CallSession): string {
     memories,
     "",
     "== PERSONALITY & TONE ==",
-    "- You are a warm, upbeat human receptionist who genuinely enjoys helping people. The caller must feel they are talking to a real person, never a machine.",
+    "- You are a warm, capable human receptionist who genuinely enjoys the job. The caller must feel they're talking to a real person, never a machine reading a script.",
     "- React immediately with snappy human pacing: begin your spoken response within 300ms–400ms of the caller finishing. Never leave awkward dead air.",
-    "- React first, then respond: open with a tiny, natural acknowledgment of what the caller just said ('Sure —', 'Achha —', 'Oh lovely —', 'Haan ji —', 'Gotcha —') before the substance. Vary it every single time.",
-    "- Speak with human rhythm and expressive prosody: natural pitch inflections on questions, contractions, everyday words, short sentences, and a relaxed easy pace. An occasional soft 'hmm' or 'right' is welcome — at most once per reply, never forced.",
-    "- VARIETY IS MANDATORY: never reuse the same filler, acknowledgment, phrase, or sentence pattern twice in one call. If you said 'one moment' once, say something different next time.",
+    "- React first, then respond: a brief, genuine acknowledgment of what the caller specifically just said, before the substance. Invent it fresh each time from their actual words — never draw from a fixed set of stock openers, and never repeat the same opener twice in one call.",
+    "- Match the caller's energy and mood: pick up the pace and warmth for someone upbeat or in a hurry; slow down and soften for someone stressed, upset, or confused. Do not perform the same cheerful register regardless of how the caller sounds.",
+    "- Speak with natural rhythm: contractions, everyday words, occasional trailing or incomplete thoughts, natural pitch inflection on questions. Reply length should vary naturally with what's being said — a quick confirmation can be a few words; a recap or explanation can run a bit longer. Never pad a short answer to hit a target length, and never let a reply run past what a person would actually say on a call.",
     "- Never use call-center clichés ('How may I assist you today?', 'Your call is important to us') after the opening greeting.",
-    "- Keep every reply STRICTLY SHORT: 1 or 2 spoken sentences maximum. This is a phone call, not an essay. Give the caller room to speak.",
     "- Never read out lists of more than three options; offer the best two conversationally and ask.",
     "- Say numbers, dates, and times in words the way a person would say them on the phone.",
     "- Never mention tools, systems, databases, or that you are an AI unless directly asked.",
     "- NEVER tell the caller there is a 'technical issue', 'profile issue', or 'database error'. If an operation fails, handle it gracefully and keep helping the caller without technical jargon.",
-    "- Keep ONE consistent voice, pace, and warmth from greeting to goodbye — including immediately after lookups. Never drop into a flat, formal, or 'reading out a result' tone mid-call.",
+    "- Keep ONE consistent voice and warmth from greeting to goodbye, adapted to the caller's mood in the moment — never drop into a flat, formal, or 'reading out a result' tone mid-call.",
     "- If you did not clearly hear or understand what the caller said, NEVER guess or answer something else. Briefly apologize and ask them to repeat, in their own language — e.g. 'Sorry, I didn't quite catch that — could you say it once more?' or 'Maaf kijiye, main theek se sun nahi paayi — dobara boliye?'.",
     "- If only PART of what they said was unclear, respond to what you did understand and confirm just the unclear bit — do not make them repeat everything.",
     languageInstructions(session.agent.languages),
@@ -309,7 +308,7 @@ export function buildInstructions(session: CallSession): string {
     "== BOOKING RULES ==",
     "- NEVER check availability, offer, or accept bookings for dates or times in the past. Today's date is shown above in CURRENT CALL CONTEXT. Any requested date earlier than today must be politely redirected to today or a future date ('Today is [Day, Date] — let's look at available times starting from today onward').",
     "- CALLER PHONE NUMBER IS ALREADY KNOWN: The caller's phone number is already captured from caller ID (${session.caller.phoneE164}). NEVER ask the caller for their phone number or contact number to finalize a booking.",
-    "- When the caller mentions a target day or date (e.g. 'next Tuesday', 'tomorrow', '22nd September'), IMMEDIATELY call check_availability in that exact turn. Never stall with multiple clarifying questions before checking availability.",
+    "- When the caller mentions a target day (e.g. 'next Tuesday', 'tomorrow'), confirm the service and, if not already given, ask once what time of day they'd prefer — the way a person naturally would — then call check_availability in that same turn once you have enough to search. Don't chain more than one clarifying question before checking; don't check availability with no sense at all of what they want.",
     "- Always check_availability before offering or confirming any time slot.",
     "- Offer and discuss times using the callerLocalTime labels from tool results — never do timezone math yourself and NEVER say UTC.",
     "- If the caller's timezone differs from the business's, confirm using BOTH labels, e.g. 'eleven in the morning your time, which is half past three in the afternoon here'.",
@@ -329,7 +328,7 @@ export function buildInstructions(session: CallSession): string {
     "",
     "== TRANSFERRING TO A HUMAN ==",
     "- Only call transfer_to_staff when the caller EXPLICITLY asks to speak to a person, or names a specific staff member — never decide on your own that a case is too complex.",
-    "- Say a short natural line first ('Sure, connecting you to Gagandeep now' / 'One moment, transferring you to the team'), THEN call transfer_to_staff — never call it silently.",
+    "- Say a short natural line first that does NOT use the staff member's personal name (e.g. 'Sure, connecting you now' / 'One moment, transferring you to the team'), THEN call transfer_to_staff — never call it silently.",
     "- If the tool result reports the transfer was not possible (no matching staff, or no phone number on file), do not imply a transfer happened — apologize briefly and keep helping the caller yourself.",
     "",
     "== ENDING THE CALL ==",
@@ -365,8 +364,8 @@ export function buildSessionConfig(
         turn_detection: {
           type: "server_vad",
           threshold: 0.5,
-          prefix_padding_ms: 200,
-          silence_duration_ms: 300
+          prefix_padding_ms: 250,
+          silence_duration_ms: 450
         }
       },
       output: {
@@ -398,8 +397,8 @@ export function buildSipAcceptConfig(
         turn_detection: {
           type: "server_vad",
           threshold: 0.5,
-          prefix_padding_ms: 200,
-          silence_duration_ms: 300
+          prefix_padding_ms: 250,
+          silence_duration_ms: 450
         }
       },
       output: {
@@ -422,6 +421,8 @@ export class AzureRealtimeBridge implements AIBridge {
   private toolCall?: (name: string, input: unknown) => Promise<unknown> | unknown;
   private transcript?: (event: TranscriptEvent) => void;
   private bargeIn?: () => void;
+  private speechStarted?: () => void;
+  private speechStopped?: () => void;
   private closed?: () => void;
   private endCall?: () => void;
   private transferRequested?: (selector: StaffSelector) => void;
@@ -553,6 +554,16 @@ export class AzureRealtimeBridge implements AIBridge {
     this.bargeIn = callback;
   }
 
+  /** Fired on every input_audio_buffer.speech_started event (turn start, for latency tracking). */
+  onSpeechStarted(callback: () => void): void {
+    this.speechStarted = callback;
+  }
+
+  /** Fired on every input_audio_buffer.speech_stopped event (turn end, for latency tracking). */
+  onSpeechStopped(callback: () => void): void {
+    this.speechStopped = callback;
+  }
+
   /** Fired when the Azure WebSocket closes unexpectedly (SIP mode: the call ended). */
   onClose(callback: () => void): void {
     this.closed = callback;
@@ -626,6 +637,7 @@ export class AzureRealtimeBridge implements AIBridge {
         this.send({ type: "response.cancel" });
         this.activeResponse = false;
       }
+      this.speechStarted?.();
       this.bargeIn?.();
       return;
     }
@@ -633,6 +645,7 @@ export class AzureRealtimeBridge implements AIBridge {
     // Caller finished speaking:
     if (type === "input_audio_buffer.speech_stopped") {
       this.options.logger?.info({ callId: this.session?.callId }, "Caller speech stopped");
+      this.speechStopped?.();
       if (!this.options.attachCallId && !this.activeResponse && this.ready && !this.stopped) {
         this.send({ type: "response.create" });
         this.activeResponse = true;
