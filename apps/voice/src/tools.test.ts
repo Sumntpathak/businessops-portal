@@ -67,6 +67,7 @@ function harness() {
       findConfirmedBooking: async (...args: any[]) => { calls.push({ name: "findConfirmedBooking", args }); return { id: "booking-1", gcalEventId: "gcal-1" }; },
       cancelBooking: async (...args: any[]) => { calls.push({ name: "cancelBooking", args }); },
       saveMemory: async (...args: any[]) => { calls.push({ name: "saveMemory", args }); return { id: "memory-1" }; },
+      createCallbackRequest: async (...args: any[]) => { calls.push({ name: "createCallbackRequest", args }); return { id: "callback-1" }; },
       getCallerContext: async (...args: any[]) => { calls.push({ name: "getCallerContext", args }); return { caller: session.caller, memories: [], upcomingBookings: [], intakeFields: [] }; }
     }
   };
@@ -158,6 +159,32 @@ describe("ToolExecutor", () => {
     await executor.execute("save_memory", { kind: "preference", content: "Prefers morning appointments" });
     assert.deepEqual(calls.find((call) => call.name === "saveMemory")?.args, [session.tenantId, session.caller.id, session.callId, { kind: "preference", content: "Prefers morning appointments" }]);
     await assert.rejects(() => executor.execute("save_memory", { kind: "secret", content: "x" }));
+  });
+
+  it("records a callback request with the current call as source", async () => {
+    const { executor, calls } = harness();
+    const result = await executor.execute("request_callback", {
+      reason: "Wants to discuss visa renewal",
+      preferredTime: "tomorrow morning"
+    });
+    assert.deepEqual(calls.find((call) => call.name === "createCallbackRequest")?.args, [
+      session.tenantId,
+      session.caller.id,
+      session.callId,
+      { reason: "Wants to discuss visa renewal", preferredTime: "tomorrow morning" }
+    ]);
+    assert.deepEqual(result, { callbackRequestId: "callback-1", recorded: true });
+  });
+
+  it("defaults preferredTime to empty when the caller didn't give one", async () => {
+    const { executor, calls } = harness();
+    await executor.execute("request_callback", { reason: "General question about pricing" });
+    assert.deepEqual(calls.find((call) => call.name === "createCallbackRequest")?.args, [
+      session.tenantId,
+      session.caller.id,
+      session.callId,
+      { reason: "General question about pricing", preferredTime: "" }
+    ]);
   });
 
   it("updates the current caller profile through the tenant-scoped repository", async () => {

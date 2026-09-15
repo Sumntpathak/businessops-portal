@@ -10,6 +10,7 @@ import {
   Mic,
   PanelLeft,
   PhoneCall,
+  PhoneIncoming,
   Settings,
   Users
 } from "lucide-react";
@@ -18,6 +19,7 @@ const navigation = [
   { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
   { label: "Calls", href: "/dashboard/calls", icon: PhoneCall },
   { label: "Bookings", href: "/dashboard/bookings", icon: CalendarDays },
+  { label: "Callbacks", href: "/dashboard/callbacks", icon: PhoneIncoming },
   { label: "Agent", href: "/dashboard/agent", icon: Bot },
   { label: "Staff", href: "/dashboard/staff", icon: Users },
   { label: "Voice Test", href: "/dashboard/voice-test", icon: Mic },

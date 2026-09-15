@@ -74,6 +74,10 @@ export const bookingStatusEnum = pgEnum("booking_status", [
   "completed",
   "no_show"
 ]);
+export const callbackRequestStatusEnum = pgEnum("callback_request_status", [
+  "pending",
+  "done"
+]);
 export const googleConnectionStatusEnum = pgEnum("google_connection_status", [
   "active",
   "revoked"
@@ -429,6 +433,38 @@ export const bookings = pgTable(
     index("bookings_service_id_idx").on(table.serviceId),
     index("bookings_staff_id_idx").on(table.staffId),
     index("bookings_source_call_id_idx").on(table.sourceCallId)
+  ]
+);
+
+/**
+ * A "take a message" / call-back request the voice agent recorded during a
+ * call. Staff resolve these from the dashboard — there is no automatic
+ * notification channel yet, so this table is the only record that a caller
+ * asked to be called back.
+ */
+export const callbackRequests = pgTable(
+  "callback_requests",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    callerId: uuid("caller_id")
+      .notNull()
+      .references(() => callers.id, { onDelete: "restrict" }),
+    sourceCallId: uuid("source_call_id").references(() => calls.id, {
+      onDelete: "set null"
+    }),
+    reason: text("reason").notNull().default(""),
+    preferredTime: text("preferred_time").notNull().default(""),
+    status: callbackRequestStatusEnum("status").notNull().default("pending"),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true, mode: "date" }),
+    ...auditColumns()
+  },
+  (table) => [
+    index("callback_requests_tenant_status_idx").on(table.tenantId, table.status),
+    index("callback_requests_tenant_id_idx").on(table.tenantId),
+    index("callback_requests_caller_id_idx").on(table.callerId)
   ]
 );
 

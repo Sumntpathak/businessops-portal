@@ -7,6 +7,7 @@ const AZURE_TOOL_NAMES = [
   "create_booking",
   "cancel_booking",
   "save_memory",
+  "request_callback",
   "update_caller_profile",
   "get_caller_context",
   "list_staff",

@@ -127,6 +127,19 @@ export const REALTIME_TOOLS: FunctionDeclaration[] = [
     }
   },
   {
+    name: "request_callback",
+    description:
+      "Record a call-back / message request so staff can see it and call the caller back. Use this whenever the caller asks to be called back, or leaves a message for staff you cannot resolve yourself. The caller's phone number is already known — never ask for it again.",
+    parametersJsonSchema: {
+      type: "object",
+      properties: {
+        reason: { type: "string", description: "One short sentence describing what the caller wants, in their own words." },
+        preferredTime: { type: "string", description: "When the caller would like the call back, if they said (e.g. 'this afternoon', 'tomorrow morning'). Leave blank if not mentioned." }
+      },
+      required: ["reason"]
+    }
+  },
+  {
     name: "update_caller_profile",
     description:
       "Save structured caller details immediately. Use only the keys listed in CALLER PROFILE; name is always allowed. Valid fields save even if another field is rejected.",

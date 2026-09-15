@@ -106,6 +106,12 @@ export interface ToolRepository {
     sourceCallId: string,
     memory: { kind: "fact" | "preference" | "summary"; content: string }
   ): Promise<{ id: string }>;
+  createCallbackRequest(
+    tenantId: string,
+    callerId: string,
+    sourceCallId: string,
+    values: { reason: string; preferredTime: string }
+  ): Promise<{ id: string }>;
   getCallerContext(
     tenantId: string,
     callerId: string
@@ -209,6 +215,17 @@ const updateCallerProfileInput = z
     }
     return { fields: cleanFields };
   });
+const requestCallbackInput = z
+  .object({
+    reason: z.string().trim().min(1).max(500).nullable().optional(),
+    preferredTime: z.string().trim().max(200).nullable().optional(),
+    time: z.string().trim().max(200).nullable().optional()
+  })
+  .transform((val) => ({
+    reason: val.reason ?? "Caller asked for a call back",
+    preferredTime: val.preferredTime ?? val.time ?? ""
+  }));
+
 const emptyInput = z.object({}).strict();
 
 const TOOL_TIMEOUT_MS = 3_500;
@@ -240,6 +257,8 @@ export class ToolExecutor {
         return this.cancelBooking(cancelBookingInput.parse(rawInput));
       case "save_memory":
         return this.saveMemory(saveMemoryInput.parse(rawInput));
+      case "request_callback":
+        return this.requestCallback(requestCallbackInput.parse(rawInput));
       case "update_caller_profile":
         return this.updateCallerProfile(updateCallerProfileInput.parse(rawInput));
       case "get_caller_context":
@@ -453,6 +472,16 @@ export class ToolExecutor {
       input
     );
     return { memoryId: memory.id, saved: true };
+  }
+
+  private async requestCallback(input: z.infer<typeof requestCallbackInput>) {
+    const request = await this.dependencies.repository.createCallbackRequest(
+      this.session.tenantId,
+      this.session.caller.id,
+      this.session.callId,
+      input
+    );
+    return { callbackRequestId: request.id, recorded: true };
   }
 
   private async getCallerContext() {
@@ -826,6 +855,28 @@ export class DrizzleToolRepository implements ToolRepository {
       )
       .returning({ id: schema.callerMemories.id });
     if (!saved) throw new Error("Memory insert returned no row");
+    return saved;
+  }
+
+  async createCallbackRequest(
+    tenantId: string,
+    callerId: string,
+    sourceCallId: string,
+    values: { reason: string; preferredTime: string }
+  ): Promise<{ id: string }> {
+    const scoped = withTenant(this.db, tenantId);
+    const [saved] = await this.db
+      .insert(schema.callbackRequests)
+      .values(
+        scoped.values({
+          callerId,
+          sourceCallId,
+          reason: values.reason,
+          preferredTime: values.preferredTime
+        })
+      )
+      .returning({ id: schema.callbackRequests.id });
+    if (!saved) throw new Error("Callback request insert returned no row");
     return saved;
   }
 

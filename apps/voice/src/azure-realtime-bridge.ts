@@ -111,6 +111,20 @@ const REALTIME_TOOLS = [
   },
   {
     type: "function",
+    name: "request_callback",
+    description:
+      "Record a call-back / message request so staff can see it and call the caller back. Use this whenever the caller asks to be called back, or leaves a message for staff you cannot resolve yourself. The caller's phone number is already known — never ask for it again.",
+    parameters: {
+      type: "object",
+      properties: {
+        reason: { type: "string", description: "One short sentence describing what the caller wants, in their own words." },
+        preferredTime: { type: "string", description: "When the caller would like the call back, if they said (e.g. 'this afternoon', 'tomorrow morning'). Leave blank if not mentioned." }
+      },
+      required: ["reason"]
+    }
+  },
+  {
+    type: "function",
     name: "update_caller_profile",
     description:
       "Save structured caller details immediately. Use only the keys listed in CALLER PROFILE; name is always allowed. Valid fields save even if another field is rejected.",
@@ -331,8 +345,13 @@ export function buildInstructions(session: CallSession): string {
     "- Say a short natural line first that does NOT use the staff member's personal name (e.g. 'Sure, connecting you now' / 'One moment, transferring you to the team'), THEN call transfer_to_staff — never call it silently.",
     "- If the tool result reports the transfer was not possible (no matching staff, or no phone number on file), do not imply a transfer happened — apologize briefly and keep helping the caller yourself.",
     "",
+    "== CALL-BACK REQUESTS & MESSAGES ==",
+    "- If the caller asks to be called back, or leaves a message for staff on something you cannot resolve yourself, call request_callback with a one-sentence reason and, if they mentioned one, their preferred time — do this in the same turn, don't just say you will.",
+    "- Never tell the caller you've taken a message or that someone will call them back unless request_callback has actually succeeded.",
+    "- The caller's phone number is already known from caller ID — never ask for a number to call them back on.",
+    "",
     "== ENDING THE CALL ==",
-    "- After you finish handling the caller's request (booking confirmed, question answered, message taken), ask if there's anything else — do not assume the call is over.",
+    "- After you finish handling the caller's request (booking confirmed, question answered, callback recorded), ask if there's anything else — do not assume the call is over.",
     "- When the caller clearly confirms there is nothing else (e.g. 'no', 'no that's all', 'that's it, thanks', 'no I'm good', 'nahi', 'bye'): say ONE short, warm goodbye line ('Have a great day, goodbye!'), then IMMEDIATELY call end_call. NEVER repeat the booking recap, and never re-ask the question.",
     "- If the caller says goodbye or clearly wants to end the call at ANY point ('bye', 'have a good day', 'thanks, that's all', 'not now', 'I'll call back later', 'not interested') — even mid-intake, even if you don't have their name — do NOT ask anything further. A caller's goodbye ALWAYS outranks the identity and intake rules above. Say one short, warm goodbye line, then call end_call immediately.",
     "- Never call end_call while the caller is mid-request or has an unanswered question. Never call it just because there's a pause — silence is not a goodbye.",
@@ -340,7 +359,7 @@ export function buildInstructions(session: CallSession): string {
     "",
     "== SAFETY ==",
     "- Never reveal information about any other caller or booking that is not this caller's.",
-    "- If asked something not covered by the business profile, offer to take a message rather than guessing.",
+    "- If asked something not covered by the business profile, call request_callback to take a message for staff rather than guessing.",
     "- For medical or legal emergencies, advise contacting local emergency services immediately."
   ].join("\n");
 }
