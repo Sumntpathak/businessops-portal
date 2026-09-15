@@ -146,7 +146,11 @@ export function AgentReview() {
 
   const crawlPages = status?.job?.crawlResult?.length ?? 0;
   const reviewReady = Boolean(status?.profile);
-  const statusLabel = status?.job?.status?.replaceAll("_", " ") ?? "waiting";
+  // A tenant with a profile but no onboarding job was set up directly
+  // (e.g. seeded or manually written), not through the crawl/distill worker —
+  // "waiting" would wrongly suggest a background job is stuck.
+  const statusLabel = status?.job?.status?.replaceAll("_", " ")
+    ?? (reviewReady ? "manually configured" : "waiting");
 
   if (!status) {
     return (
@@ -198,7 +202,13 @@ export function AgentReview() {
         }
       >
         <p className="mt-1 text-sm text-muted-foreground">
-          {crawlPages > 0 ? crawlPages + " website pages collected." : "The worker is preparing your draft."}
+          {crawlPages > 0
+            ? crawlPages + " website pages collected."
+            : status?.job
+              ? "The worker is preparing your draft."
+              : reviewReady
+                ? "No onboarding crawl on file — agent instructions were set up directly."
+                : "The worker is preparing your draft."}
         </p>
         {status?.job?.error ? <p role="alert" className="mt-2 text-sm text-red-400">{status.job.error}</p> : null}
       </PageHeader>
