@@ -1,6 +1,6 @@
 import { addDays, startOfDay } from "date-fns";
 import { fromZonedTime, toZonedTime } from "date-fns-tz";
-import { and, asc, count, eq, gte, isNull, lt } from "drizzle-orm";
+import { and, asc, count, desc, eq, gte, isNull, lt } from "drizzle-orm";
 import { schema, withTenant } from "@recepto/db";
 import { CallingNumber } from "@/components/dashboard/calling-number";
 import { PageBody, PageHeader, PageShell } from "@/components/dashboard/page-shell";
@@ -26,6 +26,11 @@ export default async function DashboardPage() {
         eq(schema.phoneNumbers.status, "active")
       )
     )
+    // A tenant can end up with more than one active number (e.g. mid-migration
+    // to a new line); without an order Postgres returns an arbitrary row, so
+    // the dashboard showed the wrong number depending on query plan. Most
+    // recently added wins.
+    .orderBy(desc(schema.phoneNumbers.createdAt))
     .limit(1);
 
   const timezone = tenant?.timezone ?? "Asia/Kolkata";

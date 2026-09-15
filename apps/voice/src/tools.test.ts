@@ -28,7 +28,8 @@ function harness() {
   const service = {
     id: "018f5f86-9cf1-7f4d-81d2-6f11a3e841f6",
     name: "Consultation",
-    durationMinutes: 30
+    durationMinutes: 30,
+    price: "110.00"
   };
   const staffMember = {
     id: "018f5f86-9cf1-7f4d-81d2-6f11a3e841f8",
@@ -80,7 +81,7 @@ describe("ToolExecutor", () => {
     const result = await executor.execute("check_availability", {
       serviceName: "Consultation", date: "2027-01-07"
     });
-    assert.deepEqual(result, { serviceId: service.id, staffId: null, callerTimezone: "Asia/Kolkata", slots: [{ startsAt: "2027-01-07T03:30:00.000Z", endsAt: "2027-01-07T04:00:00.000Z", callerLocalTime: "Jan 7, 2027, 9:00 AM", businessLocalTime: "Jan 7, 2027, 9:00 AM" }] });
+    assert.deepEqual(result, { serviceId: service.id, serviceName: service.name, price: service.price, staffId: null, callerTimezone: "Asia/Kolkata", slots: [{ startsAt: "2027-01-07T03:30:00.000Z", endsAt: "2027-01-07T04:00:00.000Z", callerLocalTime: "Jan 7, 2027, 9:00 AM", businessLocalTime: "Jan 7, 2027, 9:00 AM" }] });
     assert.deepEqual(calls.find((call) => call.name === "findService")?.args, [session.tenantId, { serviceName: "Consultation" }]);
     assert.deepEqual(calls.find((call) => call.name === "getSlots")?.args, [session.tenantId, service.id, "2027-01-07", undefined]);
   });
@@ -126,7 +127,7 @@ describe("ToolExecutor", () => {
       startsAt: "2027-01-07T03:30:00.000Z",
       callerName: "Asha Patel"
     });
-    assert.deepEqual(result, { bookingId: "booking-1", eventId: "gcal-1", calendarSynced: true, startsAt: "2027-01-07T03:30:00.000Z", endsAt: "2027-01-07T04:00:00.000Z", callerLocalTime: "Jan 7, 2027, 9:00 AM", businessLocalTime: "Jan 7, 2027, 9:00 AM", serviceName: "Consultation", staffId: null });
+    assert.deepEqual(result, { bookingId: "booking-1", eventId: "gcal-1", calendarSynced: true, startsAt: "2027-01-07T03:30:00.000Z", endsAt: "2027-01-07T04:00:00.000Z", callerLocalTime: "Jan 7, 2027, 9:00 AM", businessLocalTime: "Jan 7, 2027, 9:00 AM", serviceName: "Consultation", price: service.price, staffId: null });
     const create = calls.find((call) => call.name === "createBooking");
     assert.equal(create?.args[0], session.tenantId);
     assert.equal(create?.args[1], session.caller.id);

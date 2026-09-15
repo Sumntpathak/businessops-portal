@@ -36,6 +36,7 @@ export interface ToolService {
   id: string;
   name: string;
   durationMinutes: number;
+  price: string | null;
 }
 
 export interface ToolStaff {
@@ -308,6 +309,8 @@ export class ToolExecutor {
       .filter((slot) => localDateInTimezone(slot.startsAt, callerTimezone) === input.date);
     return {
       serviceId,
+      serviceName: service.name,
+      price: service.price,
       staffId: staffId ?? null,
       callerTimezone,
       slots: slots.map((slot) => ({
@@ -416,6 +419,7 @@ export class ToolExecutor {
         ),
         businessLocalTime: formatCallerLocalTime(startsAt, this.session.timezone),
         serviceName,
+        price: service.price,
         staffId
       };
     } catch (error) {
@@ -553,7 +557,8 @@ export class DrizzleToolRepository implements ToolRepository {
       .select({
         id: schema.services.id,
         name: schema.services.name,
-        durationMinutes: schema.services.durationMinutes
+        durationMinutes: schema.services.durationMinutes,
+        price: schema.services.price
       })
       .from(schema.services)
       .where(scoped.where(schema.services, eq(schema.services.active, true)));
