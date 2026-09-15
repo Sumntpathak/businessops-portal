@@ -1,6 +1,7 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { CalendarConnectionRevokedError } from "@recepto/calendar";
 import { schema, withTenant } from "@recepto/db";
 import { apiError } from "@/lib/api";
 import { getApiTenantContext } from "@/lib/api-auth";

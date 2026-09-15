@@ -3,6 +3,7 @@ import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { and, asc, eq, gte, isNull, lt } from "drizzle-orm";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import { CalendarConnectionRevokedError } from "@recepto/calendar";
 import { schema, withTenant } from "@recepto/db";
 import { createBookingSchema, weekQuerySchema } from "@/lib/booking-schemas";
 import { apiError } from "@/lib/api";
@@ -178,6 +179,10 @@ export async function POST(request: NextRequest) {
         set: { displayName: parsed.data.callerName, updatedAt: new Date() }
       })
       .returning({ id: schema.callers.id });
+
+    if (!caller) {
+      return apiError("CALLER_SAVE_FAILED", "Could not save caller details.", 500);
+    }
 
     let eventId: string | null = null;
     try {
