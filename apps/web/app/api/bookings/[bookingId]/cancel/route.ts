@@ -1,6 +1,7 @@
-﻿import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { CalendarConnectionRevokedError } from "@recepto/calendar";
 import { schema, withTenant } from "@recepto/db";
 import { apiError } from "@/lib/api";
 import { getApiTenantContext } from "@/lib/api-auth";
@@ -40,7 +41,11 @@ export async function POST(
 
   try {
     if (booking.gcalEventId) {
-      await calendarService.deleteEvent(tenantId, booking.gcalEventId);
+      try {
+        await calendarService.deleteEvent(tenantId, booking.gcalEventId);
+      } catch (error) {
+        if (!(error instanceof CalendarConnectionRevokedError)) throw error;
+      }
     }
     await db
       .update(schema.bookings)

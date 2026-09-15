@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { buildInstructions } from "./azure-realtime-bridge.js";
+import { buildInstructions, buildSessionConfig, buildSipAcceptConfig } from "./azure-realtime-bridge.js";
 import type { CallSession } from "./call-session.js";
 
 const session: CallSession = {
@@ -21,7 +21,7 @@ const session: CallSession = {
     { id: "f1", key: "service_interest", label: "Service interest", type: "text", options: [], priority: "key", sort: 10, active: true },
     { id: "f2", key: "target_date", label: "Target date", type: "text", options: [], priority: "key", sort: 20, active: true }
   ],
-  agent: { agentMd: "# Holistic", voiceGreeting: "Hello", languageMode: "english" },
+  agent: { agentMd: "# Holistic", voiceGreeting: "Hello", languageMode: "english", languages: ["English"] },
   memories: [],
   startedAt: "2026-07-06T04:00:00.000Z"
 };
@@ -39,5 +39,86 @@ describe("realtime caller profile instructions", () => {
     const instructions = buildInstructions(session);
     assert.match(instructions, /update_caller_profile with fields \{name:/);
     assert.doesNotMatch(instructions, /save_memory with kind 'fact'.*Caller name/);
+  });
+
+  it("instructs holding the opening language until the caller clearly switches, then holding the new one", () => {
+    const instructions = buildInstructions({
+      ...session,
+      agent: { ...session.agent, languages: ["English", "Hindi", "Spanish"] }
+    });
+    assert.match(instructions, /English, Hindi, Spanish/);
+    assert.match(instructions, /Do not switch languages preemptively/);
+    assert.match(instructions, /HOLD that language for the rest of the call/);
+  });
+
+  it("locks to a single language when only one is configured", () => {
+    const instructions = buildInstructions({
+      ...session,
+      agent: { ...session.agent, languages: ["French"] }
+    });
+    assert.match(instructions, /Speak French only/);
+  });
+
+  it("instructs ending the call only after the caller confirms nothing else is needed", () => {
+    const instructions = buildInstructions(session);
+    assert.match(instructions, /then call end_call/);
+    assert.match(instructions, /Never call end_call while the caller is mid-request/);
+    assert.match(instructions, /Never call end_call more than once/);
+  });
+
+  it("instructs hanging up immediately when the caller says goodbye, even without a name", () => {
+    const instructions = buildInstructions(session);
+    assert.match(instructions, /says goodbye or clearly wants to end the call at ANY point/);
+    assert.match(instructions, /even if you don't have their name/);
+    assert.match(instructions, /goodbye ALWAYS outranks the identity and intake rules/);
+  });
+});
+
+describe("buildSessionConfig", () => {
+  it("formats session parameters with type realtime and audio input/output blocks", () => {
+    const config = buildSessionConfig(session, "alloy");
+    assert.equal(config.type, "realtime");
+    assert.deepEqual(config.audio, {
+      input: {
+        format: { type: "audio/pcmu" },
+        turn_detection: {
+          type: "server_vad",
+          threshold: 0.5,
+          prefix_padding_ms: 250,
+          silence_duration_ms: 450
+        }
+      },
+      output: {
+        format: { type: "audio/pcmu" },
+        voice: "alloy"
+      }
+    });
+    assert.equal(config.tool_choice, "auto");
+    assert.ok(Array.isArray(config.tools) && config.tools.length > 0);
+  });
+});
+
+describe("buildSipAcceptConfig", () => {
+  it("formats SIP accept payload with Azure SIP audio.input and audio.output blocks", () => {
+    const config = buildSipAcceptConfig(session, "gpt-realtime-mini", "shimmer");
+    assert.equal(config.type, "realtime");
+    assert.equal(config.model, "gpt-realtime-mini");
+    assert.deepEqual(config.audio, {
+      input: {
+        format: { type: "audio/pcmu" },
+        turn_detection: {
+          type: "server_vad",
+          threshold: 0.5,
+          prefix_padding_ms: 250,
+          silence_duration_ms: 450
+        }
+      },
+      output: {
+        format: { type: "audio/pcmu" },
+        voice: "shimmer"
+      }
+    });
+    assert.equal(config.tool_choice, "auto");
+    assert.ok(Array.isArray(config.tools) && config.tools.length > 0);
   });
 });

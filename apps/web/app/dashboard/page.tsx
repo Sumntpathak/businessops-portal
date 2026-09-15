@@ -2,6 +2,8 @@ import { addDays, startOfDay } from "date-fns";
 import { fromZonedTime, toZonedTime } from "date-fns-tz";
 import { and, asc, count, eq, gte, isNull, lt } from "drizzle-orm";
 import { schema, withTenant } from "@recepto/db";
+import { CallingNumber } from "@/components/dashboard/calling-number";
+import { PageBody, PageHeader, PageShell } from "@/components/dashboard/page-shell";
 import { requireTenant } from "@/lib/auth-helpers";
 import { db } from "@/lib/db";
 
@@ -14,6 +16,16 @@ export default async function DashboardPage() {
     })
     .from(schema.tenants)
     .where(eq(schema.tenants.id, context.tenantId))
+    .limit(1);
+  const [phoneNumber] = await db
+    .select({ e164: schema.phoneNumbers.e164, status: schema.phoneNumbers.status })
+    .from(schema.phoneNumbers)
+    .where(
+      and(
+        eq(schema.phoneNumbers.tenantId, context.tenantId),
+        eq(schema.phoneNumbers.status, "active")
+      )
+    )
     .limit(1);
 
   const timezone = tenant?.timezone ?? "Asia/Kolkata";
@@ -93,13 +105,14 @@ export default async function DashboardPage() {
   ];
 
   return (
-    <section>
-      <p className="text-sm text-muted-foreground">Dashboard</p>
-      <h1 className="mt-2 text-3xl font-semibold tracking-tight">
-        Good to see you, {context.user.name}.
-      </h1>
-
-      <div className="mt-8 grid gap-4 sm:grid-cols-3">
+    <PageShell>
+      <PageHeader
+        eyebrow="Dashboard"
+        title={"Good to see you, " + context.user.name + "."}
+        actions={<CallingNumber e164={phoneNumber?.e164 ?? null} />}
+      />
+      <PageBody>
+      <div className="grid gap-4 sm:grid-cols-3">
         {cards.map((card) => (
           <article key={card.label} className="rounded-xl border bg-muted/10 p-5">
             <p className="text-sm text-muted-foreground">{card.label}</p>
@@ -139,6 +152,7 @@ export default async function DashboardPage() {
           </div>
         )}
       </section>
-    </section>
+      </PageBody>
+    </PageShell>
   );
 }

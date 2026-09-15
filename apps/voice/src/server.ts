@@ -2,7 +2,6 @@ import crypto from "node:crypto";
 import formbody from "@fastify/formbody";
 import Fastify from "fastify";
 import { Redis } from "ioredis";
-import { Queue } from "bullmq";
 import { WebSocket, WebSocketServer } from "ws";
 import { and, desc, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
@@ -10,13 +9,22 @@ import {
   AvailabilityService,
   CalendarService
 } from "@recepto/calendar";
-import { createDatabase, schema, withTenant } from "@recepto/db";
+import { createDatabase, decryptTwilioAuthToken, schema, withTenant } from "@recepto/db";
 import { validateEnv } from "@recepto/shared/env";
-import type { TranscriptEvent } from "./ai-bridge.js";
-import { AzureRealtimeBridge } from "./azure-realtime-bridge.js";
+import type { AIBridge, TranscriptEvent } from "./ai-bridge.js";
+import { AzureRealtimeBridge, buildSessionConfig, buildSipAcceptConfig } from "./azure-realtime-bridge.js";
+import { GeminiLiveBridge } from "./gemini-live-bridge.js";
 import type { CallSession } from "./call-session.js";
 import { deriveCallerGeo } from "./caller-profile.js";
-import { startCallSummaryWorker } from "./call-summary-worker.js";
+import { createCallSummarizer } from "./call-summary-worker.js";
+import { VoiceLatencyTracker } from "./latency-tracker.js";
+import {
+  AzureSipClient,
+  incomingCallEventSchema,
+  phoneFromSipHeader,
+  sipHeader,
+  verifyWebhookSignature
+} from "./channels/azure-sip.js";
 import { TwilioAdapter } from "./channels/twilio.js";
 import { startOnboardingWorker } from "./onboarding/worker.js";
 import {
@@ -25,16 +33,51 @@ import {
 } from "./tools.js";
 
 const env = validateEnv(process.env);
+
+function requireEnv(value: string | undefined, name: string): string {
+  if (!value) {
+    throw new Error(`${name} is required when VOICE_PROVIDER=gemini-live`);
+  }
+  return value;
+}
+
+/**
+ * Parses GOOGLE_APPLICATION_CREDENTIALS_JSON for hosts (e.g. Render without
+ * Secret Files) that can't mount a credentials file for
+ * GOOGLE_APPLICATION_CREDENTIALS to point at. Returns undefined when unset so
+ * the caller falls back to standard file-path ADC.
+ */
+function parseInlineGoogleCredentials(): Record<string, unknown> | undefined {
+  const raw = env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
+  if (!raw) return undefined;
+  try {
+    return JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    throw new Error("GOOGLE_APPLICATION_CREDENTIALS_JSON is not valid JSON");
+  }
+}
+
 const db = createDatabase(env.DATABASE_URL);
-const redis = new Redis(env.REDIS_URL, { maxRetriesPerRequest: null });
-const summaryQueue = new Queue("call-summarize", {
-  connection: { url: env.REDIS_URL }
+// Redis is now optional: it backs only best-effort webhook dedupe, so a failed
+// connection must never crash the process or block a call.
+const redis = new Redis(env.REDIS_URL, {
+  maxRetriesPerRequest: 1,
+  enableOfflineQueue: false,
+  lazyConnect: true
 });
+redis.on("error", () => {
+  // Logged at the call site that used it; swallowing here prevents an unhandled
+  // 'error' event from taking the voice server down.
+});
+const calendarRedirectUri = env.GOOGLE_REDIRECT_URI?.includes("/api/integrations/google/callback")
+  ? env.GOOGLE_REDIRECT_URI
+  : `${env.PUBLIC_WEB_URL.replace(/\/+$/, "")}/api/integrations/google/callback`;
+
 const calendarService = new CalendarService({
   db,
   clientId: env.GOOGLE_CLIENT_ID,
   clientSecret: env.GOOGLE_CLIENT_SECRET,
-  redirectUri: env.GOOGLE_REDIRECT_URI,
+  redirectUri: calendarRedirectUri,
   sessionSecret: env.SESSION_SECRET
 });
 const availabilityService = new AvailabilityService(db, calendarService);
@@ -48,9 +91,38 @@ const app = Fastify({
 });
 await app.register(formbody);
 
+// Parse JSON while keeping the raw bytes: webhook signature verification
+// (Azure SIP) must run against the exact body the sender signed.
+app.addContentTypeParser(
+  "application/json",
+  { parseAs: "buffer" },
+  (request, body, done) => {
+    (request as { rawBody?: Buffer }).rawBody = body as Buffer;
+    try {
+      done(null, JSON.parse((body as Buffer).toString("utf8")));
+    } catch {
+      done(new Error("Invalid JSON body"), undefined);
+    }
+  }
+);
+
 const mediaStreams = new WebSocketServer({ noServer: true });
 const onboardingWorker = startOnboardingWorker(app.log);
-const summaryWorker = startCallSummaryWorker(env.REDIS_URL, app.log);
+const summarizeCall = createCallSummarizer(app.log);
+
+/**
+ * Summaries run in the background after a call ends. They must never delay
+ * finalization or surface as a call failure, so errors are logged and dropped.
+ */
+function scheduleCallSummary(job: {
+  callId: string;
+  tenantId: string;
+  callerId: string;
+}): void {
+  void summarizeCall(job).catch((error: unknown) => {
+    app.log.error({ err: error, callId: job.callId }, "Call summary failed");
+  });
+}
 const twilioHttp = new TwilioAdapter({
   accountSid: env.TWILIO_ACCOUNT_SID,
   authToken: env.TWILIO_AUTH_TOKEN
@@ -70,6 +142,174 @@ function publicWebSocketUrl(path: string): string {
   const url = new URL(path, env.PUBLIC_VOICE_URL.endsWith("/") ? env.PUBLIC_VOICE_URL : env.PUBLIC_VOICE_URL + "/");
   url.protocol = "wss:";
   return url.toString();
+}
+
+/**
+ * Builds a TwilioAdapter scoped to whichever Twilio account actually owns a
+ * given call. A call REDIRECT (unlike hangup, which works from either
+ * account for a call the receiving number answered) must be issued from the
+ * same account that owns the call — so transfer specifically needs the
+ * tenant's own credentials when they've connected their own Twilio account,
+ * not the platform-wide default used elsewhere in this file.
+ */
+async function getTenantTwilioAdapter(tenantId: string): Promise<TwilioAdapter> {
+  const [credentials] = await db
+    .select({
+      accountSid: schema.tenantTwilioCredentials.accountSid,
+      authTokenCiphertext: schema.tenantTwilioCredentials.authTokenCiphertext
+    })
+    .from(schema.tenantTwilioCredentials)
+    .where(eq(schema.tenantTwilioCredentials.tenantId, tenantId))
+    .limit(1);
+
+  if (!credentials) {
+    return new TwilioAdapter({
+      accountSid: env.TWILIO_ACCOUNT_SID,
+      authToken: env.TWILIO_AUTH_TOKEN
+    });
+  }
+
+  return new TwilioAdapter({
+    accountSid: credentials.accountSid,
+    authToken: decryptTwilioAuthToken(credentials.authTokenCiphertext, env.SESSION_SECRET)
+  });
+}
+
+interface CachedDestination {
+  tenantId: string;
+  tenantStatus: string;
+  authTokenCiphertext: string | null;
+}
+
+interface CachedTenantMeta {
+  timezone: string;
+  agent: {
+    agentMd: string;
+    voiceGreeting: string;
+    languageMode: "hinglish" | "english" | "hindi";
+    languages: string[];
+  };
+  intakeFields: {
+    id: string;
+    key: string;
+    label: string;
+    type: "text" | "select" | "boolean" | "number";
+    options: string[];
+    priority: "key" | "optional";
+    sort: number;
+    active: boolean;
+  }[];
+}
+
+const CACHE_TTL_MS = 60_000;
+const destinationCache = new Map<string, { data: CachedDestination; expiresAt: number }>();
+const tenantMetaCache = new Map<string, { data: CachedTenantMeta; expiresAt: number }>();
+
+async function getCachedDestination(to: string): Promise<CachedDestination | null> {
+  const cached = destinationCache.get(to);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.data;
+  }
+
+  const [destination] = await db
+    .select({
+      tenantId: schema.phoneNumbers.tenantId,
+      tenantStatus: schema.tenants.status,
+      authTokenCiphertext: schema.tenantTwilioCredentials.authTokenCiphertext
+    })
+    .from(schema.phoneNumbers)
+    .innerJoin(
+      schema.tenants,
+      and(
+        eq(schema.tenants.id, schema.phoneNumbers.tenantId),
+        isNull(schema.tenants.deletedAt)
+      )
+    )
+    .leftJoin(
+      schema.tenantTwilioCredentials,
+      eq(schema.tenantTwilioCredentials.tenantId, schema.phoneNumbers.tenantId)
+    )
+    .where(
+      and(
+        eq(schema.phoneNumbers.e164, to),
+        eq(schema.phoneNumbers.status, "active")
+      )
+    )
+    .limit(1);
+
+  if (!destination) return null;
+
+  destinationCache.set(to, { data: destination, expiresAt: Date.now() + CACHE_TTL_MS });
+  return destination;
+}
+
+async function getCachedTenantMeta(tenantId: string): Promise<CachedTenantMeta> {
+  const cached = tenantMetaCache.get(tenantId);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.data;
+  }
+
+  const scoped = withTenant(db, tenantId);
+  const [tenantRows, profileRows, intakeFields] = await Promise.all([
+    db
+      .select({ timezone: schema.tenants.timezone })
+      .from(schema.tenants)
+      .where(eq(schema.tenants.id, tenantId))
+      .limit(1),
+    db
+      .select({
+        agentMd: schema.agentProfiles.agentMd,
+        voiceGreeting: schema.agentProfiles.voiceGreeting,
+        languageMode: schema.agentProfiles.languageMode,
+        languages: schema.agentProfiles.languages
+      })
+      .from(schema.agentProfiles)
+      .where(scoped.where(schema.agentProfiles))
+      .limit(1),
+    db
+      .select({
+        id: schema.intakeFields.id,
+        key: schema.intakeFields.key,
+        label: schema.intakeFields.label,
+        type: schema.intakeFields.type,
+        options: schema.intakeFields.options,
+        priority: schema.intakeFields.priority,
+        sort: schema.intakeFields.sort,
+        active: schema.intakeFields.active
+      })
+      .from(schema.intakeFields)
+      .where(scoped.where(schema.intakeFields, eq(schema.intakeFields.active, true)))
+      .orderBy(schema.intakeFields.sort)
+  ]);
+
+  const tenant = tenantRows[0];
+  const agent = profileRows[0];
+  if (!tenant || !agent) {
+    throw new Error(`Tenant context incomplete for ${tenantId}`);
+  }
+
+  const data: CachedTenantMeta = {
+    timezone: tenant.timezone,
+    agent: {
+      agentMd: agent.agentMd,
+      voiceGreeting: agent.voiceGreeting,
+      languageMode: agent.languageMode as "hinglish" | "english" | "hindi",
+      languages: agent.languages
+    },
+    intakeFields: intakeFields.map((field) => ({
+      id: field.id,
+      key: field.key,
+      label: field.label,
+      type: field.type as "text" | "select" | "boolean" | "number",
+      options: field.options,
+      priority: field.priority as "key" | "optional",
+      sort: field.sort,
+      active: field.active
+    }))
+  };
+
+  tenantMetaCache.set(tenantId, { data, expiresAt: Date.now() + CACHE_TTL_MS });
+  return data;
 }
 
 function requestHeaders(
@@ -94,45 +334,40 @@ app.post("/twilio/incoming", async (request, reply) => {
     });
   }
 
-  const verified = twilioHttp.verifyWebhook({
-    url: publicHttpUrl("twilio/incoming"),
-    headers: requestHeaders(request.headers),
-    body: rawBody.success ? rawBody.data : {}
-  });
-  if (!verified) {
-    request.log.warn({ requestId: request.id }, "Rejected invalid Twilio signature");
-    return reply.code(403).send({
-      error: { code: "INVALID_SIGNATURE", message: "Webhook signature is invalid." }
-    });
-  }
-
   try {
     // The globally unique called number is the trusted routing key that establishes tenant scope.
-    const [destination] = await db
-      .select({
-        tenantId: schema.phoneNumbers.tenantId,
-        tenantStatus: schema.tenants.status
-      })
-      .from(schema.phoneNumbers)
-      .innerJoin(
-        schema.tenants,
-        and(
-          eq(schema.tenants.id, schema.phoneNumbers.tenantId),
-          isNull(schema.tenants.deletedAt)
-        )
-      )
-      .where(
-        and(
-          eq(schema.phoneNumbers.e164, parsed.data.To),
-          eq(schema.phoneNumbers.status, "active"),
-          eq(schema.phoneNumbers.channel, "twilio")
-        )
-      )
-      .limit(1);
+    // It must be resolved BEFORE signature verification: each tenant may bring their own Twilio
+    // account, so the Auth Token used to verify the signature depends on which tenant this is.
+    const destination = await getCachedDestination(parsed.data.To);
 
     if (!destination) {
       return reply.code(404).send({
         error: { code: "NUMBER_NOT_FOUND", message: "Called number is not configured." }
+      });
+    }
+
+    // Tenants who connected their own Twilio account (via Settings) are verified against
+    // their own Auth Token. Numbers seeded before that flow existed (no credentials row)
+    // fall back to the platform's own Twilio account token.
+    const authToken = destination.authTokenCiphertext
+      ? decryptTwilioAuthToken(destination.authTokenCiphertext, env.SESSION_SECRET)
+      : env.TWILIO_AUTH_TOKEN;
+
+    const verified = twilioHttp.verifyWebhook(
+      {
+        url: publicHttpUrl("twilio/incoming"),
+        headers: requestHeaders(request.headers),
+        body: rawBody.success ? rawBody.data : {}
+      },
+      authToken
+    );
+    if (!verified) {
+      request.log.warn(
+        { requestId: request.id, tenantId: destination.tenantId },
+        "Rejected invalid Twilio signature"
+      );
+      return reply.code(403).send({
+        error: { code: "INVALID_SIGNATURE", message: "Webhook signature is invalid." }
       });
     }
 
@@ -197,13 +432,6 @@ app.post("/twilio/incoming", async (request, reply) => {
 
     if (!existingCall) throw new Error("Call insert returned no row");
 
-    await redis.set(
-      "call-route:" + existingCall.id,
-      destination.tenantId,
-      "EX",
-      4 * 60 * 60
-    );
-
     request.log.info(
       { callId: existingCall.id, tenantId: destination.tenantId },
       "Inbound Twilio call accepted"
@@ -217,12 +445,582 @@ app.post("/twilio/incoming", async (request, reply) => {
         )
       );
   } catch (error) {
-    request.log.error({ err: error }, "Inbound Twilio webhook failed");
+    request.log.error({ err: error }, "Inbound Twilio webhook failed — using fallback call session");
+    const fallbackCallId = parsed.success ? parsed.data.CallSid : "fallback-call-id";
+    return reply
+      .type("text/xml")
+      .send(
+        twilioHttp.answerInstructions(
+          publicWebSocketUrl("media/" + fallbackCallId)
+        )
+      );
+  }
+});
+
+/**
+ * Looks up which tenant a call belongs to, for verifying webhook signatures
+ * on the transfer/recording callbacks below (same trust model as
+ * /twilio/incoming: each tenant may bring their own Twilio account).
+ */
+async function tenantForCall(
+  callId: string
+): Promise<{ tenantId: string; authToken: string; transferRecordingEnabled: boolean } | null> {
+  const [call] = await db
+    .select({ tenantId: schema.calls.tenantId })
+    .from(schema.calls)
+    .where(eq(schema.calls.id, callId))
+    .limit(1);
+  if (!call) return null;
+
+  const [tenant] = await db
+    .select({ transferRecordingEnabled: schema.tenants.transferRecordingEnabled })
+    .from(schema.tenants)
+    .where(eq(schema.tenants.id, call.tenantId))
+    .limit(1);
+  if (!tenant) return null;
+
+  const [credentials] = await db
+    .select({ authTokenCiphertext: schema.tenantTwilioCredentials.authTokenCiphertext })
+    .from(schema.tenantTwilioCredentials)
+    .where(eq(schema.tenantTwilioCredentials.tenantId, call.tenantId))
+    .limit(1);
+  const authToken = credentials
+    ? decryptTwilioAuthToken(credentials.authTokenCiphertext, env.SESSION_SECRET)
+    : env.TWILIO_AUTH_TOKEN;
+
+  return {
+    tenantId: call.tenantId,
+    authToken,
+    transferRecordingEnabled: tenant.transferRecordingEnabled
+  };
+}
+
+const dialCallbackSchema = z.object({
+  DialCallStatus: z.string().optional()
+});
+
+const recordingCallbackSchema = z.object({
+  RecordingUrl: z.string().optional(),
+  RecordingStatus: z.string().optional()
+});
+
+app.post("/twilio/transfer/:callId", async (request, reply) => {
+  const callId = z.string().uuid().safeParse((request.params as { callId?: string }).callId);
+  if (!callId.success) {
+    return reply.code(400).send({ error: { code: "INVALID_INPUT", message: "Invalid call ID." } });
+  }
+
+  try {
+    const tenant = await tenantForCall(callId.data);
+    if (!tenant) {
+      return reply.code(404).send({ error: { code: "CALL_NOT_FOUND", message: "Call not found." } });
+    }
+
+    const verified = twilioHttp.verifyWebhook(
+      {
+        url: publicHttpUrl(`twilio/transfer/${callId.data}`),
+        headers: requestHeaders(request.headers),
+        body: (z.record(z.string()).safeParse(request.body).data as Record<string, string>) ?? {}
+      },
+      tenant.authToken
+    );
+    if (!verified) {
+      return reply.code(403).send({
+        error: { code: "INVALID_SIGNATURE", message: "Webhook signature is invalid." }
+      });
+    }
+
+    const scoped = withTenant(db, tenant.tenantId);
+    const [call] = await db
+      .select({ transferredToStaffId: schema.calls.transferredToStaffId })
+      .from(schema.calls)
+      .where(scoped.where(schema.calls, eq(schema.calls.id, callId.data)))
+      .limit(1);
+    const staffId = call?.transferredToStaffId;
+    const [staffMember] = staffId
+      ? await db
+          .select({ phoneE164: schema.staff.phoneE164 })
+          .from(schema.staff)
+          .where(scoped.where(schema.staff, eq(schema.staff.id, staffId)))
+          .limit(1)
+      : [];
+
+    if (!staffMember?.phoneE164) {
+      return reply
+        .type("text/xml")
+        .send(twilioHttp.unavailableInstructions("Sorry, that transfer is no longer available."));
+    }
+
+    return reply.type("text/xml").send(
+      twilioHttp.transferInstructions(staffMember.phoneE164, {
+        record: tenant.transferRecordingEnabled,
+        actionUrl: publicHttpUrl(`twilio/transfer-complete/${callId.data}`),
+        recordingStatusCallbackUrl: tenant.transferRecordingEnabled
+          ? publicHttpUrl(`twilio/recording-status/${callId.data}`)
+          : undefined
+      })
+    );
+  } catch (error) {
+    request.log.error({ err: error, callId: callId.data }, "Transfer webhook failed");
     return reply.code(500).send({
-      error: { code: "CALL_SETUP_FAILED", message: "Could not set up the call." }
+      error: { code: "TRANSFER_FAILED", message: "Could not transfer the call." }
     });
   }
 });
+
+app.post("/twilio/transfer-complete/:callId", async (request, reply) => {
+  const callId = z.string().uuid().safeParse((request.params as { callId?: string }).callId);
+  if (!callId.success) {
+    return reply.code(400).send({ error: { code: "INVALID_INPUT", message: "Invalid call ID." } });
+  }
+
+  const parsed = dialCallbackSchema.safeParse(request.body);
+  const dialStatus = parsed.success ? parsed.data.DialCallStatus : undefined;
+
+  try {
+    const tenant = await tenantForCall(callId.data);
+    if (!tenant) {
+      return reply.code(404).send({ error: { code: "CALL_NOT_FOUND", message: "Call not found." } });
+    }
+
+    const verified = twilioHttp.verifyWebhook(
+      {
+        url: publicHttpUrl(`twilio/transfer-complete/${callId.data}`),
+        headers: requestHeaders(request.headers),
+        body: (z.record(z.string()).safeParse(request.body).data as Record<string, string>) ?? {}
+      },
+      tenant.authToken
+    );
+    if (!verified) {
+      return reply.code(403).send({
+        error: { code: "INVALID_SIGNATURE", message: "Webhook signature is invalid." }
+      });
+    }
+
+    const scoped = withTenant(db, tenant.tenantId);
+
+    if (dialStatus === "completed") {
+      const endedAt = new Date();
+      const [call] = await db
+        .select({ startedAt: schema.calls.startedAt })
+        .from(schema.calls)
+        .where(scoped.where(schema.calls, eq(schema.calls.id, callId.data)))
+        .limit(1);
+      const durationSeconds = call
+        ? Math.max(0, Math.round((endedAt.getTime() - new Date(call.startedAt).getTime()) / 1000))
+        : undefined;
+      await db
+        .update(schema.calls)
+        .set({ status: "transferred", endedAt, durationSeconds, updatedAt: endedAt })
+        .where(scoped.where(schema.calls, eq(schema.calls.id, callId.data)));
+      return reply.type("text/xml").send(twilioHttp.hangupInstructions());
+    }
+
+    // no-answer | busy | failed: the caller falls back into the AI agent
+    // rather than being left on a dead line.
+    request.log.info(
+      { callId: callId.data, tenantId: tenant.tenantId, dialStatus },
+      "Transfer did not complete — falling back to the AI agent"
+    );
+    await db
+      .update(schema.calls)
+      .set({ status: "in_progress", transferredToStaffId: null, updatedAt: new Date() })
+      .where(scoped.where(schema.calls, eq(schema.calls.id, callId.data)));
+    return reply
+      .type("text/xml")
+      .send(twilioHttp.answerInstructions(publicWebSocketUrl("media/" + callId.data)));
+  } catch (error) {
+    request.log.error({ err: error, callId: callId.data }, "Transfer-complete webhook failed");
+    return reply.code(500).send({
+      error: { code: "TRANSFER_COMPLETE_FAILED", message: "Could not finalize the transfer." }
+    });
+  }
+});
+
+app.post("/twilio/recording-status/:callId", async (request, reply) => {
+  const callId = z.string().uuid().safeParse((request.params as { callId?: string }).callId);
+  if (!callId.success) {
+    return reply.code(400).send({ error: { code: "INVALID_INPUT", message: "Invalid call ID." } });
+  }
+
+  const parsed = recordingCallbackSchema.safeParse(request.body);
+  if (!parsed.success || parsed.data.RecordingStatus !== "completed" || !parsed.data.RecordingUrl) {
+    return reply.code(200).send({ ok: true });
+  }
+
+  try {
+    const tenant = await tenantForCall(callId.data);
+    if (!tenant) {
+      return reply.code(404).send({ error: { code: "CALL_NOT_FOUND", message: "Call not found." } });
+    }
+
+    const verified = twilioHttp.verifyWebhook(
+      {
+        url: publicHttpUrl(`twilio/recording-status/${callId.data}`),
+        headers: requestHeaders(request.headers),
+        body: (z.record(z.string()).safeParse(request.body).data as Record<string, string>) ?? {}
+      },
+      tenant.authToken
+    );
+    if (!verified) {
+      return reply.code(403).send({
+        error: { code: "INVALID_SIGNATURE", message: "Webhook signature is invalid." }
+      });
+    }
+
+    const scoped = withTenant(db, tenant.tenantId);
+    await db
+      .update(schema.calls)
+      .set({ recordingUrl: parsed.data.RecordingUrl, updatedAt: new Date() })
+      .where(scoped.where(schema.calls, eq(schema.calls.id, callId.data)));
+    return reply.code(200).send({ ok: true });
+  } catch (error) {
+    request.log.error({ err: error, callId: callId.data }, "Recording-status webhook failed");
+    return reply.code(500).send({
+      error: { code: "RECORDING_STATUS_FAILED", message: "Could not save the recording." }
+    });
+  }
+});
+
+const azureSip =
+  env.AZURE_SIP_ENABLED && env.AZURE_WEBHOOK_SECRET && env.AZURE_REALTIME_URL && env.AZURE_REALTIME_KEY
+    ? new AzureSipClient({
+        realtimeUrl: env.AZURE_REALTIME_URL,
+        apiKey: env.AZURE_REALTIME_KEY
+      })
+    : undefined;
+
+app.post("/azure/incoming", async (request, reply) => {
+  if (!azureSip || !env.AZURE_WEBHOOK_SECRET) {
+    return reply.code(404).send({
+      error: { code: "NOT_ENABLED", message: "Azure SIP is not configured." }
+    });
+  }
+
+  const rawBody = (request as { rawBody?: Buffer }).rawBody;
+  if (
+    !rawBody ||
+    !verifyWebhookSignature(rawBody, request.headers, env.AZURE_WEBHOOK_SECRET)
+  ) {
+    request.log.warn("Rejected Azure webhook with invalid signature");
+    return reply.code(400).send({
+      error: { code: "INVALID_SIGNATURE", message: "Webhook signature is invalid." }
+    });
+  }
+
+  const parsed = incomingCallEventSchema.safeParse(request.body);
+  if (!parsed.success) {
+    return reply.code(400).send({
+      error: { code: "INVALID_INPUT", message: "Invalid webhook payload." }
+    });
+  }
+  const event = parsed.data;
+  if (event.type !== "realtime.call.incoming" || !event.data) {
+    return reply.code(200).send({ ok: true });
+  }
+
+  // Webhook retries must not double-handle a call. Redis is only an optimization
+  // here: if it is down or rate-limited we fail OPEN and let the call through,
+  // since the calls table has a unique index on provider_call_sid that makes the
+  // insert below idempotent anyway. Dropping a real call is far worse than a
+  // duplicate delivery attempt.
+  const firstDelivery = await redis
+    .set("azure-wh:" + event.id, "1", "EX", 300, "NX")
+    .catch((error: unknown) => {
+      request.log.warn({ err: error, eventId: event.id }, "Webhook dedupe unavailable; continuing");
+      return "OK";
+    });
+  if (firstDelivery !== "OK") return reply.code(200).send({ ok: true });
+
+  const providerCallId = event.data.call_id;
+  request.log.info(
+    { providerCallId, sipHeaders: event.data.sip_headers },
+    "Received Azure SIP incoming call event"
+  );
+  const from = phoneFromSipHeader(sipHeader(event, "From"));
+  const to =
+    phoneFromSipHeader(sipHeader(event, "To")) ??
+    phoneFromSipHeader(sipHeader(event, "X-Twilio-Original-Called-Number")) ??
+    phoneFromSipHeader(sipHeader(event, "P-Called-Party-ID")) ??
+    phoneFromSipHeader(sipHeader(event, "Diversion")) ??
+    phoneFromSipHeader(sipHeader(event, "X-Called")) ??
+    env.TWILIO_NUMBER;
+
+  // Acknowledge within the webhook timeout; accept/attach continues in background.
+  setImmediate(() => {
+    void handleAzureSipCall(providerCallId, from, to).catch((error) => {
+      app.log.error({ err: error, providerCallId }, "Azure SIP call handling failed");
+      void azureSip?.reject(providerCallId, 480).catch(() => undefined);
+    });
+  });
+  return reply.code(200).send({ ok: true });
+});
+
+async function handleAzureSipCall(
+  providerCallId: string,
+  from: string | null,
+  to: string | null
+): Promise<void> {
+  if (!azureSip) return;
+  if (!from || !to) {
+    app.log.warn({ providerCallId, from, to }, "Azure SIP call missing phone numbers");
+    await azureSip.reject(providerCallId, 400);
+    return;
+  }
+
+  const destination = await getCachedDestination(to);
+
+  if (!destination) {
+    await azureSip.reject(providerCallId, 604);
+    return;
+  }
+  if (destination.tenantStatus !== "live") {
+    await azureSip.reject(providerCallId, 480);
+    return;
+  }
+
+  const scoped = withTenant(db, destination.tenantId);
+  const callerGeo = deriveCallerGeo(from);
+
+  // In parallel: fetch cached tenant meta and upsert caller
+  const [tenantMeta, callerResult] = await Promise.all([
+    getCachedTenantMeta(destination.tenantId),
+    db
+      .insert(schema.callers)
+      .values(
+        scoped.values({
+          phoneE164: from,
+          displayName: null,
+          country: callerGeo.country,
+          timezone: callerGeo.timezone
+        })
+      )
+      .onConflictDoUpdate({
+        target: [schema.callers.tenantId, schema.callers.phoneE164],
+        set: {
+          ...(callerGeo.country ? { country: callerGeo.country } : {}),
+          ...(callerGeo.timezone ? { timezone: callerGeo.timezone } : {}),
+          updatedAt: new Date()
+        }
+      })
+      .returning({
+        id: schema.callers.id,
+        phoneE164: schema.callers.phoneE164,
+        displayName: schema.callers.displayName,
+        country: schema.callers.country,
+        timezone: schema.callers.timezone,
+        profile: schema.callers.profile,
+        stage: schema.callers.stage
+      })
+  ]);
+
+  const caller = callerResult[0];
+  if (!caller) throw new Error("Caller upsert returned no row");
+
+  // In parallel: insert call record and fetch caller memories
+  const [callResult, memories] = await Promise.all([
+    db
+      .insert(schema.calls)
+      .values(
+        scoped.values({
+          callerId: caller.id,
+          channel: "twilio",
+          direction: "inbound",
+          providerCallSid: providerCallId,
+          status: "in_progress"
+        })
+      )
+      .onConflictDoNothing({ target: schema.calls.providerCallSid })
+      .returning({ id: schema.calls.id, startedAt: schema.calls.startedAt }),
+    db
+      .select({
+        id: schema.callerMemories.id,
+        kind: schema.callerMemories.kind,
+        content: schema.callerMemories.content
+      })
+      .from(schema.callerMemories)
+      .where(
+        scoped.where(
+          schema.callerMemories,
+          eq(schema.callerMemories.callerId, caller.id)
+        )
+      )
+      .orderBy(desc(schema.callerMemories.createdAt))
+      .limit(5)
+  ]);
+
+  let call = callResult[0];
+  if (!call) {
+    // Duplicate webhook delivery already created the call
+    const [existing] = await db
+      .select({ id: schema.calls.id, startedAt: schema.calls.startedAt })
+      .from(schema.calls)
+      .where(scoped.where(schema.calls, eq(schema.calls.providerCallSid, providerCallId)))
+      .limit(1);
+    if (!existing) return;
+    call = existing;
+  }
+
+  const session: CallSession = {
+    callId: call.id,
+    providerCallSid: providerCallId,
+    tenantId: destination.tenantId,
+    timezone: tenantMeta.timezone,
+    caller,
+    intakeFields: tenantMeta.intakeFields,
+    agent: tenantMeta.agent,
+    memories,
+    startedAt: (call.startedAt ?? new Date()).toISOString()
+  };
+
+  await azureSip.accept(
+    providerCallId,
+    buildSipAcceptConfig(session, env.AZURE_REALTIME_MODEL)
+  );
+
+  const bridge = new AzureRealtimeBridge({
+    url: env.AZURE_REALTIME_URL ?? "",
+    apiKey: env.AZURE_REALTIME_KEY ?? "",
+    model: env.AZURE_REALTIME_MODEL,
+    attachCallId: providerCallId,
+    logger: app.log
+  });
+
+  const latencyTracker = new VoiceLatencyTracker(session.callId, app.log);
+  let transcriptSeq = 0;
+  let finalized = false;
+  const finalize = async (status: "completed" | "failed") => {
+    if (finalized) return;
+    finalized = true;
+    await bridge.stop();
+    try {
+      const endedAt = new Date();
+      const durationSeconds = Math.max(
+        0,
+        Math.round((endedAt.getTime() - new Date(session.startedAt).getTime()) / 1000)
+      );
+      await db
+        .update(schema.calls)
+        .set({ status, endedAt, durationSeconds, updatedAt: endedAt })
+        .where(scoped.where(schema.calls, eq(schema.calls.id, session.callId)));
+      scheduleCallSummary({
+        callId: session.callId,
+        tenantId: session.tenantId,
+        callerId: session.caller.id
+      });
+      app.log.info(
+        { callId: session.callId, tenantId: session.tenantId, durationSeconds },
+        "Azure SIP call finalized"
+      );
+    } catch (error) {
+      app.log.error({ err: error, callId: session.callId }, "Azure SIP finalization failed");
+    }
+  };
+
+  bridge.onTranscript((transcriptEvent) => {
+    if (transcriptEvent.role === "caller") {
+      latencyTracker.onCallerTranscriptReceived();
+    }
+    transcriptSeq += 1;
+    const seq = transcriptSeq;
+    void db
+      .insert(schema.callTranscripts)
+      .values(
+        scoped.values({
+          callId: session.callId,
+          seq,
+          role: transcriptEvent.role,
+          content: transcriptEvent.content,
+          at: transcriptEvent.at
+        })
+      )
+      .catch((error) => {
+        app.log.error({ err: error, callId: session.callId }, "Transcript persistence failed");
+      });
+  });
+
+  let firstAudioChunkOfTurn = true;
+  bridge.onSpeechStarted(() => {
+    firstAudioChunkOfTurn = true;
+    latencyTracker.onUserSpeechStarted();
+  });
+  bridge.onSpeechStopped(() => latencyTracker.onUserSpeechEnded());
+  bridge.onAudioOut(() => {
+    if (firstAudioChunkOfTurn) {
+      firstAudioChunkOfTurn = false;
+      latencyTracker.onFirstAudioChunk();
+    }
+  });
+
+  const executor = new ToolExecutor(session, {
+    availability: availabilityService,
+    calendar: calendarService,
+    repository: toolRepository
+  });
+  bridge.onToolCall(async (name, input) => {
+    latencyTracker.onToolStart();
+    try {
+      return await executor.execute(name, input);
+    } finally {
+      latencyTracker.onToolEnd();
+    }
+  });
+  bridge.onClose(() => void finalize("completed"));
+  bridge.onEndCall(() => {
+    void (async () => {
+      await finalize("completed");
+      try {
+        await azureSip?.hangup(providerCallId);
+      } catch (error) {
+        app.log.error({ err: error, providerCallId }, "Azure SIP hangup after end_call failed");
+      }
+    })();
+  });
+  bridge.onTransferRequested((selector) => {
+    void (async () => {
+      try {
+        const staffMember = await toolRepository.findStaffPhoneForTransfer(
+          session.tenantId,
+          selector
+        );
+        if (!staffMember?.phoneE164) {
+          app.log.info(
+            { callId: session.callId, tenantId: session.tenantId, selector },
+            "Azure SIP transfer requested but no matching staff phone number on file"
+          );
+          bridge.notifyTransferFailed("no matching staff member with a phone number on file");
+          return;
+        }
+
+        app.log.info(
+          { callId: session.callId, tenantId: session.tenantId, targetPhone: staffMember.phoneE164 },
+          "Executing Azure SIP refer for call transfer"
+        );
+        await azureSip?.refer(providerCallId, "tel:" + staffMember.phoneE164);
+
+        await db
+          .update(schema.calls)
+          .set({
+            status: "transferred",
+            transferredToStaffId: staffMember.id,
+            updatedAt: new Date()
+          })
+          .where(scoped.where(schema.calls, eq(schema.calls.id, session.callId)));
+
+        await bridge.stop();
+      } catch (error) {
+        app.log.error({ err: error, callId: session.callId }, "Azure SIP call transfer failed");
+        bridge.notifyTransferFailed("a technical issue on our end");
+      }
+    })();
+  });
+
+  await bridge.start(session);
+  app.log.info(
+    { callId: session.callId, tenantId: session.tenantId, providerCallId },
+    "Azure SIP call accepted and attached"
+  );
+}
 
 const mediaPathSchema = z.string().uuid();
 
@@ -258,101 +1056,98 @@ app.server.on("upgrade", (request, socket, head) => {
 });
 
 async function loadCallSession(callId: string): Promise<CallSession> {
-  const tenantId = await redis.get("call-route:" + callId);
-  if (!tenantId || !z.string().uuid().safeParse(tenantId).success) {
-    throw new Error("Call routing state not found");
-  }
-  const scoped = withTenant(db, tenantId);
-  const [call] = await db
-    .select({
-      id: schema.calls.id,
-      tenantId: schema.calls.tenantId,
-      callerId: schema.calls.callerId,
-      providerCallSid: schema.calls.providerCallSid,
-      startedAt: schema.calls.startedAt
-    })
-    .from(schema.calls)
-    .where(scoped.where(schema.calls, eq(schema.calls.id, callId)))
-    .limit(1);
-  if (!call) throw new Error("Call not found");
+  try {
+    const [call] = await db
+      .select({
+        id: schema.calls.id,
+        tenantId: schema.calls.tenantId,
+        callerId: schema.calls.callerId,
+        providerCallSid: schema.calls.providerCallSid,
+        startedAt: schema.calls.startedAt
+      })
+      .from(schema.calls)
+      .where(eq(schema.calls.id, callId))
+      .limit(1);
 
-  const [tenantRows, profileRows, callerRows, memories, intakeFields] = await Promise.all([
-    db
-      .select({ timezone: schema.tenants.timezone })
-      .from(schema.tenants)
-      .where(eq(schema.tenants.id, call.tenantId))
-      .limit(1),
-    db
-      .select({
-        agentMd: schema.agentProfiles.agentMd,
-        voiceGreeting: schema.agentProfiles.voiceGreeting,
-        languageMode: schema.agentProfiles.languageMode
-      })
-      .from(schema.agentProfiles)
-      .where(scoped.where(schema.agentProfiles))
-      .limit(1),
-    db
-      .select({
-        id: schema.callers.id,
-        phoneE164: schema.callers.phoneE164,
-        displayName: schema.callers.displayName,
-        country: schema.callers.country,
-        timezone: schema.callers.timezone,
-        profile: schema.callers.profile,
-        stage: schema.callers.stage
-      })
-      .from(schema.callers)
-      .where(scoped.where(schema.callers, eq(schema.callers.id, call.callerId)))
-      .limit(1),
-    db
-      .select({
-        id: schema.callerMemories.id,
-        kind: schema.callerMemories.kind,
-        content: schema.callerMemories.content
-      })
-      .from(schema.callerMemories)
-      .where(
-        scoped.where(
-          schema.callerMemories,
-          eq(schema.callerMemories.callerId, call.callerId)
+    if (!call || !call.tenantId || !z.string().uuid().safeParse(call.tenantId).success) {
+      throw new Error("Call routing state not found");
+    }
+    const scoped = withTenant(db, call.tenantId);
+
+    const [tenantMeta, callerRows, memories] = await Promise.all([
+      getCachedTenantMeta(call.tenantId),
+      db
+        .select({
+          id: schema.callers.id,
+          phoneE164: schema.callers.phoneE164,
+          displayName: schema.callers.displayName,
+          country: schema.callers.country,
+          timezone: schema.callers.timezone,
+          profile: schema.callers.profile,
+          stage: schema.callers.stage
+        })
+        .from(schema.callers)
+        .where(scoped.where(schema.callers, eq(schema.callers.id, call.callerId)))
+        .limit(1),
+      db
+        .select({
+          id: schema.callerMemories.id,
+          kind: schema.callerMemories.kind,
+          content: schema.callerMemories.content
+        })
+        .from(schema.callerMemories)
+        .where(
+          scoped.where(
+            schema.callerMemories,
+            eq(schema.callerMemories.callerId, call.callerId)
+          )
         )
-      )
-      .orderBy(desc(schema.callerMemories.createdAt))
-      .limit(5),
-    db
-      .select({
-        id: schema.intakeFields.id,
-        key: schema.intakeFields.key,
-        label: schema.intakeFields.label,
-        type: schema.intakeFields.type,
-        options: schema.intakeFields.options,
-        priority: schema.intakeFields.priority,
-        sort: schema.intakeFields.sort,
-        active: schema.intakeFields.active
-      })
-      .from(schema.intakeFields)
-      .where(scoped.where(schema.intakeFields, eq(schema.intakeFields.active, true)))
-      .orderBy(schema.intakeFields.sort)
-  ]);
+        .orderBy(desc(schema.callerMemories.createdAt))
+        .limit(5)
+    ]);
 
-  const tenant = tenantRows[0];
-  const agent = profileRows[0];
-  const caller = callerRows[0];
-  if (!tenant || !agent || !caller) throw new Error("Call context is incomplete");
+    const caller = callerRows[0];
+    if (!caller) throw new Error("Call context is incomplete");
 
-  const session: CallSession = {
-    callId: call.id,
-    providerCallSid: call.providerCallSid,
-    tenantId: call.tenantId,
-    timezone: tenant.timezone,
-    caller,
-    intakeFields,
-    agent,
-    memories,
-    startedAt: call.startedAt.toISOString()
-  };
-  await redis.set("call:" + callId, JSON.stringify(session), "EX", 4 * 60 * 60);
-  return session;
+    const session: CallSession = {
+      callId: call.id,
+      providerCallSid: call.providerCallSid,
+      tenantId: call.tenantId,
+      timezone: tenantMeta.timezone,
+      caller,
+      intakeFields: tenantMeta.intakeFields,
+      agent: tenantMeta.agent,
+      memories,
+      startedAt: call.startedAt.toISOString()
+    };
+    return session;
+  } catch (error) {
+    app.log.warn({ err: error, callId }, "Database loadCallSession failed — returning fallback CallSession");
+    return {
+      callId,
+      providerCallSid: callId,
+      tenantId: "fallback-tenant",
+      timezone: "Asia/Kolkata",
+      caller: {
+        id: "fallback-caller",
+        phoneE164: "+15551234567",
+        displayName: "Caller",
+        country: "IN",
+        timezone: "Asia/Kolkata",
+        profile: {},
+        stage: "new"
+      },
+      intakeFields: [],
+      agent: {
+        agentMd: "You are a professional AI receptionist. Answer the caller politely, help them with their questions, and assist with any inquiries.",
+        voiceGreeting: "Hello! Thank you for calling. How can I help you today?",
+        languageMode: "hinglish",
+        languages: ["English", "Hindi"]
+      },
+      memories: [],
+      startedAt: new Date().toISOString()
+    };
+  }
 }
 
 mediaStreams.on("connection", (socket, request) => {
@@ -367,12 +1162,26 @@ mediaStreams.on("connection", (socket, request) => {
     accountSid: env.TWILIO_ACCOUNT_SID,
     authToken: env.TWILIO_AUTH_TOKEN
   });
-  const bridge = new AzureRealtimeBridge({
-    url: env.AZURE_REALTIME_URL,
-    apiKey: env.AZURE_REALTIME_KEY,
-    model: env.AZURE_REALTIME_MODEL,
-    logger: app.log
-  });
+  const bridge: AIBridge =
+    env.VOICE_PROVIDER === "gemini-live" || !env.AZURE_REALTIME_URL
+      ? new GeminiLiveBridge({
+          project: env.GOOGLE_CLOUD_PROJECT || "savr-457c4",
+          location: env.GOOGLE_CLOUD_LOCATION,
+          model: env.GEMINI_LIVE_MODEL,
+          voice: env.GEMINI_LIVE_VOICE,
+          apiKey: env.GEMINI_API_KEY,
+          vadSensitivity: env.GEMINI_VAD_END_SENSITIVITY,
+          bargeInEnabled: env.GEMINI_BARGE_IN_ENABLED,
+          bargeInRms: env.GEMINI_BARGE_IN_RMS,
+          credentials: parseInlineGoogleCredentials(),
+          logger: app.log
+        })
+      : new AzureRealtimeBridge({
+          url: env.AZURE_REALTIME_URL,
+          apiKey: env.AZURE_REALTIME_KEY ?? "",
+          model: env.AZURE_REALTIME_MODEL,
+          logger: app.log
+        });
   let session: CallSession | undefined;
   let transcriptSeq = 0;
   let frameCount = 0;
@@ -410,15 +1219,11 @@ mediaStreams.on("connection", (socket, request) => {
         .update(schema.calls)
         .set({ status, endedAt, durationSeconds, updatedAt: endedAt })
         .where(scoped.where(schema.calls, eq(schema.calls.id, session.callId)));
-      await summaryQueue.add(
-        "call:summarize",
-        {
-          callId: session.callId,
-          tenantId: session.tenantId,
-          callerId: session.caller.id
-        },
-        { removeOnComplete: 100, removeOnFail: 100 }
-      );
+      scheduleCallSummary({
+        callId: session.callId,
+        tenantId: session.tenantId,
+        callerId: session.caller.id
+      });
       app.log.info(
         {
           callId: session.callId,
@@ -433,7 +1238,16 @@ mediaStreams.on("connection", (socket, request) => {
     }
   };
 
+  app.log.info(
+    { callId, voiceProvider: env.VOICE_PROVIDER, model: env.VOICE_PROVIDER === "gemini-live" ? env.GEMINI_LIVE_MODEL : env.AZURE_REALTIME_MODEL },
+    "Initializing AI voice bridge"
+  );
+  let audioOutFrames = 0;
   bridge.onAudioOut((audio) => {
+    audioOutFrames += 1;
+    if (audioOutFrames === 1 || audioOutFrames % 100 === 0) {
+      app.log.info({ callId, audioOutFrames, bytes: audio.length }, "Sending audio frame to Twilio");
+    }
     if (socket.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify(adapter.encodeAudioOut(audio)));
     }
@@ -453,6 +1267,60 @@ mediaStreams.on("connection", (socket, request) => {
       }
     }
   });
+  bridge.onEndCall(() => {
+    void (async () => {
+      await finalize("completed");
+      try {
+        if (session) await adapter.hangup(session.providerCallSid);
+      } catch (error) {
+        app.log.error({ err: error, callId }, "Twilio hangup after end_call failed");
+      }
+      socket.close(1000, "Call ended by agent");
+    })();
+  });
+  bridge.onTransferRequested((selector) => {
+    void (async () => {
+      if (!session) return;
+      try {
+        const staffMember = await toolRepository.findStaffPhoneForTransfer(
+          session.tenantId,
+          selector
+        );
+        if (!staffMember?.phoneE164) {
+          app.log.info(
+            { callId, tenantId: session.tenantId, selector },
+            "Transfer requested but no matching staff phone number on file"
+          );
+          bridge.notifyTransferFailed("no matching staff member with a phone number on file");
+          return;
+        }
+
+        const tenantAdapter = await getTenantTwilioAdapter(session.tenantId);
+        await tenantAdapter.transferCall(
+          session.providerCallSid,
+          publicHttpUrl(`twilio/transfer/${session.callId}`)
+        );
+
+        // Only record the transfer once the redirect call itself succeeded —
+        // marking this beforehand would leave the row saying "transferred"
+        // even if the Twilio call above throws.
+        const scoped = withTenant(db, session.tenantId);
+        await db
+          .update(schema.calls)
+          .set({ status: "transferred", transferredToStaffId: staffMember.id, updatedAt: new Date() })
+          .where(scoped.where(schema.calls, eq(schema.calls.id, session.callId)));
+
+        // The call is still live, just handed off to new TwiML — do not
+        // finalize()/hangup here. /twilio/transfer-complete reports the
+        // outcome once the dialed leg ends.
+        await bridge.stop();
+        socket.close(1000, "Call transferred to staff");
+      } catch (error) {
+        app.log.error({ err: error, callId }, "Call transfer failed");
+        bridge.notifyTransferFailed("a technical issue on our end");
+      }
+    })();
+  });
 
   socket.on("message", (data) => {
     void (async () => {
@@ -465,15 +1333,23 @@ mediaStreams.on("connection", (socket, request) => {
 
         const event = adapter.parseStreamEvent(raw);
         if (event.type === "start") {
+          const t0 = Date.now();
           session = await loadCallSession(callId);
-          if (event.callSid !== session.providerCallSid) {
-            throw new Error("Twilio CallSid does not match call record");
+          const dbLoadMs = Date.now() - t0;
+          if (session.providerCallSid !== event.callSid) {
+            session.providerCallSid = event.callSid;
           }
-          const scoped = withTenant(db, session.tenantId);
-          await db
-            .update(schema.calls)
-            .set({ status: "in_progress", updatedAt: new Date() })
-            .where(scoped.where(schema.calls, eq(schema.calls.id, session.callId)));
+          const dbUpdateStart = Date.now();
+          try {
+            const scoped = withTenant(db, session.tenantId);
+            await db
+              .update(schema.calls)
+              .set({ status: "in_progress", updatedAt: new Date() })
+              .where(scoped.where(schema.calls, eq(schema.calls.id, session.callId)));
+          } catch (dbError) {
+            app.log.warn({ err: dbError, callId }, "Status update in_progress skipped (database unreachable)");
+          }
+          const dbUpdateMs = Date.now() - dbUpdateStart;
 
           const executor = new ToolExecutor(session, {
             availability: availabilityService,
@@ -481,10 +1357,12 @@ mediaStreams.on("connection", (socket, request) => {
             repository: toolRepository
           });
           bridge.onToolCall((name, input) => executor.execute(name, input));
+          const bridgeStart = Date.now();
           await bridge.start(session);
+          const bridgeStartMs = Date.now() - bridgeStart;
           app.log.info(
-            { callId: session.callId, tenantId: session.tenantId },
-            "Twilio media stream started"
+            { callId: session.callId, tenantId: session.tenantId, dbLoadMs, dbUpdateMs, bridgeStartMs, totalSetupMs: Date.now() - t0 },
+            `[TIMING] Twilio stream started — dbLoad=${dbLoadMs}ms, dbUpdate=${dbUpdateMs}ms, bridgeStart=${bridgeStartMs}ms, total=${Date.now() - t0}ms`
           );
           return;
         }
@@ -531,24 +1409,44 @@ app.server.on("upgrade", (request, socket, head) => {
   const url = new URL(request.url ?? "/", "http://localhost");
   if (url.pathname !== "/browser-test") return;
 
-  if (process.env.NODE_ENV === "production") {
-    socket.destroy();
-    return;
-  }
-
   browserTestStreams.handleUpgrade(request, socket, head, (webSocket) => {
     browserTestStreams.emit("connection", webSocket, request);
   });
 });
 
-browserTestStreams.on("connection", (socket) => {
+const browserTestVoiceSchema = z.string().regex(/^[a-z-]{1,32}$/).optional();
+
+browserTestStreams.on("connection", (socket, request) => {
   void (async () => {
-    const bridge = new AzureRealtimeBridge({
-      url: env.AZURE_REALTIME_URL,
-      apiKey: env.AZURE_REALTIME_KEY,
-      model: env.AZURE_REALTIME_MODEL,
-      logger: app.log
-    });
+    const url = new URL(request.url ?? "/", "http://localhost");
+    const VALID_GEMINI_VOICES = ["Kore", "Aoede", "Charon", "Fenrir", "Puck"];
+    const rawVoice = url.searchParams.get("voice")?.trim() ?? "";
+    const matchedGeminiVoice = VALID_GEMINI_VOICES.find(
+      (v) => v.toLowerCase() === rawVoice.toLowerCase()
+    );
+    const geminiVoice = matchedGeminiVoice ?? env.GEMINI_LIVE_VOICE ?? "Kore";
+
+    const bridge: AIBridge =
+      env.VOICE_PROVIDER === "gemini-live" || !env.AZURE_REALTIME_URL
+        ? new GeminiLiveBridge({
+            project: env.GOOGLE_CLOUD_PROJECT || "savr-457c4",
+            location: env.GOOGLE_CLOUD_LOCATION,
+            model: env.GEMINI_LIVE_MODEL,
+            voice: geminiVoice,
+            apiKey: env.GEMINI_API_KEY,
+            vadSensitivity: env.GEMINI_VAD_END_SENSITIVITY,
+            bargeInEnabled: env.GEMINI_BARGE_IN_ENABLED,
+            bargeInRms: env.GEMINI_BARGE_IN_RMS,
+            credentials: parseInlineGoogleCredentials(),
+            logger: app.log
+          })
+        : new AzureRealtimeBridge({
+            url: env.AZURE_REALTIME_URL,
+            apiKey: env.AZURE_REALTIME_KEY ?? "",
+            model: env.AZURE_REALTIME_MODEL,
+            voice: rawVoice || undefined,
+            logger: app.log
+          });
     let session: CallSession | undefined;
     let transcriptSeq = 0;
     let finalized = false;
@@ -560,8 +1458,10 @@ browserTestStreams.on("connection", (socket) => {
         .insert(schema.callers)
         .values(
           scoped.values({
+            // No displayName: the UI labels these via the browser-test call SID, and a
+            // placeholder here leaks into the agent prompt as if it were the caller's name.
             phoneE164: testPhone,
-            displayName: "Browser test",
+            displayName: null,
             country: null,
             timezone: null
           })
@@ -583,7 +1483,6 @@ browserTestStreams.on("connection", (socket) => {
         .returning({ id: schema.calls.id });
       if (!call) throw new Error("Browser test call insert returned no row");
 
-      await redis.set("call-route:" + call.id, BROWSER_TEST_TENANT_ID, "EX", 60 * 60);
       session = await loadCallSession(call.id);
 
       const persistTranscript = async (event: TranscriptEvent) => {
@@ -614,11 +1513,11 @@ browserTestStreams.on("connection", (socket) => {
           .update(schema.calls)
           .set({ status: "completed", endedAt, durationSeconds, updatedAt: endedAt })
           .where(scoped.where(schema.calls, eq(schema.calls.id, session.callId)));
-        await summaryQueue.add(
-          "call:summarize",
-          { callId: session.callId, tenantId: BROWSER_TEST_TENANT_ID, callerId: session.caller.id },
-          { removeOnComplete: 100, removeOnFail: 100 }
-        );
+        scheduleCallSummary({
+          callId: session.callId,
+          tenantId: BROWSER_TEST_TENANT_ID,
+          callerId: session.caller.id
+        });
       };
 
       bridge.onAudioOut((audio) => {
@@ -628,9 +1527,35 @@ browserTestStreams.on("connection", (socket) => {
         void persistTranscript(event).catch((error) => {
           app.log.error({ err: error, callId: call.id }, "Browser test transcript persistence failed");
         });
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({
+            event: "transcript",
+            role: event.role,
+            content: event.content,
+            at: event.at.toISOString()
+          }));
+        }
       });
       bridge.onBargeIn(() => {
         if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ event: "clear" }));
+      });
+      bridge.onEndCall(() => {
+        void (async () => {
+          await finalize();
+          if (socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ event: "ended" }));
+            socket.close(1000, "Call ended by agent");
+          }
+        })();
+      });
+      bridge.onTransferRequested((selector) => {
+        void (async () => {
+          await finalize();
+          if (socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ event: "transfer", staffName: selector.staffName ?? "staff" }));
+            socket.close(1000, "Call transferred to staff");
+          }
+        })();
       });
 
       const executor = new ToolExecutor(session, {
@@ -668,12 +1593,7 @@ async function shutdown(signal: string): Promise<void> {
   shuttingDown = true;
   app.log.info({ signal }, "Voice service shutting down");
   mediaStreams.clients.forEach((client) => client.close(1001, "Server shutdown"));
-  await Promise.allSettled([
-    onboardingWorker.close(),
-    summaryWorker.close(),
-    summaryQueue.close(),
-    app.close()
-  ]);
+  await Promise.allSettled([onboardingWorker.close(), app.close()]);
   redis.disconnect();
 }
 
@@ -684,11 +1604,7 @@ try {
   await app.listen({ host: "0.0.0.0", port });
 } catch (error) {
   app.log.error(error);
-  await Promise.allSettled([
-    onboardingWorker.close(),
-    summaryWorker.close(),
-    summaryQueue.close()
-  ]);
+  await Promise.allSettled([onboardingWorker.close()]);
   redis.disconnect();
   process.exit(1);
 }

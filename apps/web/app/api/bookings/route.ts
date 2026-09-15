@@ -1,8 +1,9 @@
-﻿import { addDays } from "date-fns";
+import { addDays } from "date-fns";
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { and, asc, eq, gte, isNull, lt } from "drizzle-orm";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import { CalendarConnectionRevokedError } from "@recepto/calendar";
 import { schema, withTenant } from "@recepto/db";
 import { createBookingSchema, weekQuerySchema } from "@/lib/booking-schemas";
 import { apiError } from "@/lib/api";
@@ -46,7 +47,8 @@ export async function GET(request: NextRequest) {
           notes: schema.bookings.notes,
           serviceName: schema.services.name,
           callerName: schema.callers.displayName,
-          callerPhone: schema.callers.phoneE164
+          callerPhone: schema.callers.phoneE164,
+          staffName: schema.staff.name
         })
         .from(schema.bookings)
         .innerJoin(
@@ -61,6 +63,15 @@ export async function GET(request: NextRequest) {
           and(
             eq(schema.callers.id, schema.bookings.callerId),
             eq(schema.callers.tenantId, tenantId)
+          )
+        )
+        // A booking may have no staff assigned (auto-assign mode) — left join
+        // so those bookings still appear, just with staffName null.
+        .leftJoin(
+          schema.staff,
+          and(
+            eq(schema.staff.id, schema.bookings.staffId),
+            eq(schema.staff.tenantId, tenantId)
           )
         )
         .where(
@@ -137,6 +148,9 @@ export async function POST(request: NextRequest) {
   if (!tenant) return apiError("TENANT_NOT_FOUND", "Business not found.", 404);
 
   const startsAt = new Date(parsed.data.startsAt);
+  if (Number.isNaN(startsAt.getTime()) || startsAt <= new Date()) {
+    return apiError("INVALID_INPUT", "Cannot create a booking in the past.", 400);
+  }
   const date = formatInTimeZone(
     startsAt,
     tenant.timezone,
@@ -166,14 +180,22 @@ export async function POST(request: NextRequest) {
       })
       .returning({ id: schema.callers.id });
 
-    if (!caller) throw new Error("Caller upsert returned no row");
+    if (!caller) {
+      return apiError("CALLER_SAVE_FAILED", "Could not save caller details.", 500);
+    }
 
-    const eventId = await calendarService.createEvent(tenantId, {
-      title: `${service.name} — ${parsed.data.callerName}`,
-      startsAt: selected.startsAt,
-      endsAt: selected.endsAt,
-      description: parsed.data.notes || `Booked through Recepto for ${parsed.data.callerPhone}`
-    });
+    let eventId: string | null = null;
+    try {
+      eventId = await calendarService.createEvent(tenantId, {
+        title: `${service.name} — ${parsed.data.callerName}`,
+        startsAt: selected.startsAt,
+        endsAt: selected.endsAt,
+        description: parsed.data.notes || `Booked through Recepto for ${parsed.data.callerPhone}`
+      });
+    } catch (error) {
+      if (!(error instanceof CalendarConnectionRevokedError)) throw error;
+      eventId = null;
+    }
 
     try {
       const [booking] = await db
@@ -192,7 +214,9 @@ export async function POST(request: NextRequest) {
         .returning();
       return NextResponse.json({ data: { booking } }, { status: 201 });
     } catch (error) {
-      await calendarService.deleteEvent(tenantId, eventId).catch(() => undefined);
+      if (eventId) {
+        await calendarService.deleteEvent(tenantId, eventId).catch(() => undefined);
+      }
       throw error;
     }
   } catch (error) {

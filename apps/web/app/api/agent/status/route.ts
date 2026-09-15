@@ -18,7 +18,7 @@ async function getStatus() {
   const [tenantRows, jobs, profiles, serviceRows, hours, revisions, connections] =
     await Promise.all([
       db
-        .select({ status: schema.tenants.status })
+        .select({ status: schema.tenants.status, timezone: schema.tenants.timezone })
         .from(schema.tenants)
         .where(eq(schema.tenants.id, tenantId))
         .limit(1),
@@ -40,6 +40,7 @@ async function getStatus() {
           agentMd: schema.agentProfiles.agentMd,
           version: schema.agentProfiles.version,
           source: schema.agentProfiles.source,
+          languages: schema.agentProfiles.languages,
           updatedAt: schema.agentProfiles.updatedAt
         })
         .from(schema.agentProfiles)
@@ -87,6 +88,7 @@ async function getStatus() {
   return NextResponse.json({
     data: {
       tenantStatus: tenantRows[0]?.status ?? "onboarding",
+      timezone: tenantRows[0]?.timezone ?? "Asia/Kolkata",
       job: jobs[0] ?? null,
       profile: profiles[0] ?? null,
       services: serviceRows,

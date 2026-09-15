@@ -9,7 +9,6 @@ import {
   setActiveTenantCookie
 } from "@/lib/auth-helpers";
 import { db } from "@/lib/db";
-import { getOnboardingQueue } from "@/lib/queue";
 
 export const runtime = "nodejs";
 
@@ -79,22 +78,14 @@ export async function POST(request: NextRequest) {
         )
       );
 
+      // The 'queued' row IS the job: the voice service polls onboarding_jobs and
+      // claims it. No external queue, so business creation cannot fail on Redis.
       await tx.insert(schema.onboardingJobs).values(
         scoped.values({
           status: "queued",
           inputUrl: parsed.data.websiteUrl,
           inputHint: parsed.data.hint
         })
-      );
-
-      await getOnboardingQueue().add(
-        "onboard:crawl",
-        {
-          tenantId: createdTenant.id,
-          url: parsed.data.websiteUrl,
-          hint: parsed.data.hint
-        },
-        { jobId: `onboard-${createdTenant.id}` }
       );
 
       return createdTenant;

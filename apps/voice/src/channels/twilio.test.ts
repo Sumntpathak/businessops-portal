@@ -33,6 +33,34 @@ describe("TwilioAdapter", () => {
     assert.match(xml, /<Stream url="wss:\/\/voice\.example\.com\/media\//);
   });
 
+  it("produces Dial TwiML to the staff number without recording by default", () => {
+    const xml = new TwilioAdapter(options).transferInstructions("+15558675309", {
+      record: false,
+      actionUrl: "https://voice.example.com/twilio/transfer-complete/call-1"
+    });
+    assert.match(xml, /<Dial[^>]*action="https:\/\/voice\.example\.com\/twilio\/transfer-complete\/call-1"/);
+    assert.match(xml, /<Number>\+15558675309<\/Number>/);
+    assert.match(xml, /record="do-not-record"/);
+    assert.doesNotMatch(xml, /<Say>/);
+  });
+
+  it("says a consent line and records dual-channel when recording is enabled", () => {
+    const xml = new TwilioAdapter(options).transferInstructions("+15558675309", {
+      record: true,
+      actionUrl: "https://voice.example.com/twilio/transfer-complete/call-1",
+      recordingStatusCallbackUrl: "https://voice.example.com/twilio/recording-status/call-1"
+    });
+    assert.match(xml, /<Say[^>]*>This call may be recorded/);
+    assert.match(xml, /record="record-from-answer-dual"/);
+    assert.match(xml, /recordingStatusCallback="https:\/\/voice\.example\.com\/twilio\/recording-status\/call-1"/);
+  });
+
+  it("ends the call cleanly with no spoken message", () => {
+    const xml = new TwilioAdapter(options).hangupInstructions();
+    assert.match(xml, /<Hangup\s*\/>/);
+    assert.doesNotMatch(xml, /<Say/);
+  });
+
   it("normalizes start, media, dtmf, and stop events and frames outbound audio", () => {
     const adapter = new TwilioAdapter(options);
     assert.deepEqual(adapter.parseStreamEvent(JSON.stringify({

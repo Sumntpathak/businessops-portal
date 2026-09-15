@@ -18,7 +18,7 @@ const session: CallSession = {
     stage: "new"
   },
   intakeFields: [],
-  agent: { agentMd: "# Clinic", voiceGreeting: "Hello", languageMode: "hinglish" },
+  agent: { agentMd: "# Clinic", voiceGreeting: "Hello", languageMode: "hinglish", languages: ["English", "Hindi"] },
   memories: [],
   startedAt: "2026-07-06T04:00:00.000Z"
 };
@@ -30,13 +30,19 @@ function harness() {
     name: "Consultation",
     durationMinutes: 30
   };
+  const staffMember = {
+    id: "018f5f86-9cf1-7f4d-81d2-6f11a3e841f8",
+    name: "Gagandeep Singh",
+    isRegisteredAgent: true,
+    credentialLabel: "MARA registered"
+  };
   const dependencies: ToolExecutorDependencies = {
     availability: {
       getSlots: async (...args: any[]) => {
         calls.push({ name: "getSlots", args });
         return [{
-          startsAt: new Date("2026-07-07T03:30:00.000Z"),
-          endsAt: new Date("2026-07-07T04:00:00.000Z")
+          startsAt: new Date("2027-01-07T03:30:00.000Z"),
+          endsAt: new Date("2027-01-07T04:00:00.000Z")
         }];
       }
     },
@@ -49,27 +55,51 @@ function harness() {
     },
     repository: {
       findService: async (...args: any[]) => { calls.push({ name: "findService", args }); return service; },
+      findStaff: async (...args: any[]) => { calls.push({ name: "findStaff", args }); return staffMember; },
+      listStaff: async (...args: any[]) => { calls.push({ name: "listStaff", args }); return [staffMember]; },
+      findStaffPhoneForTransfer: async (...args: any[]) => {
+        calls.push({ name: "findStaffPhoneForTransfer", args });
+        return { id: staffMember.id, name: staffMember.name, phoneE164: "+15558675309" };
+      },
       updateCallerName: async (...args: any[]) => { calls.push({ name: "updateCallerName", args }); },
       updateCallerProfile: async (...args: any[]) => { calls.push({ name: "updateCallerProfile", args }); return { updated: ["name"], rejected: [], name: "Asha", profile: {} }; },
       createBooking: async (...args: any[]) => { calls.push({ name: "createBooking", args }); return { id: "booking-1" }; },
       findConfirmedBooking: async (...args: any[]) => { calls.push({ name: "findConfirmedBooking", args }); return { id: "booking-1", gcalEventId: "gcal-1" }; },
       cancelBooking: async (...args: any[]) => { calls.push({ name: "cancelBooking", args }); },
       saveMemory: async (...args: any[]) => { calls.push({ name: "saveMemory", args }); return { id: "memory-1" }; },
+      createCallbackRequest: async (...args: any[]) => { calls.push({ name: "createCallbackRequest", args }); return { id: "callback-1" }; },
       getCallerContext: async (...args: any[]) => { calls.push({ name: "getCallerContext", args }); return { caller: session.caller, memories: [], upcomingBookings: [], intakeFields: [] }; }
     }
   };
-  return { executor: new ToolExecutor(session, dependencies), calls, service, dependencies };
+  return { executor: new ToolExecutor(session, dependencies), calls, service, staffMember, dependencies };
 }
 
 describe("ToolExecutor", () => {
   it("resolves a service name and scopes availability to the session tenant", async () => {
     const { executor, calls, service } = harness();
     const result = await executor.execute("check_availability", {
-      serviceName: "Consultation", date: "2026-07-07"
+      serviceName: "Consultation", date: "2027-01-07"
     });
-    assert.deepEqual(result, { serviceId: service.id, callerTimezone: "Asia/Kolkata", slots: [{ startsAt: "2026-07-07T03:30:00.000Z", endsAt: "2026-07-07T04:00:00.000Z", callerLocalTime: "7 Jul 2026, 09:00", businessLocalTime: "7 Jul 2026, 09:00" }] });
+    assert.deepEqual(result, { serviceId: service.id, staffId: null, callerTimezone: "Asia/Kolkata", slots: [{ startsAt: "2027-01-07T03:30:00.000Z", endsAt: "2027-01-07T04:00:00.000Z", callerLocalTime: "Jan 7, 2027, 9:00 AM", businessLocalTime: "Jan 7, 2027, 9:00 AM" }] });
     assert.deepEqual(calls.find((call) => call.name === "findService")?.args, [session.tenantId, { serviceName: "Consultation" }]);
-    assert.deepEqual(calls.find((call) => call.name === "getSlots")?.args, [session.tenantId, service.id, "2026-07-07"]);
+    assert.deepEqual(calls.find((call) => call.name === "getSlots")?.args, [session.tenantId, service.id, "2027-01-07", undefined]);
+  });
+
+  it("resolves a named staff member and scopes availability to them", async () => {
+    const { executor, calls, service, staffMember } = harness();
+    const result = await executor.execute("check_availability", {
+      serviceName: "Consultation", staffName: "Gagandeep", date: "2027-01-07"
+    }) as { staffId: string };
+    assert.equal(result.staffId, staffMember.id);
+    assert.deepEqual(calls.find((call) => call.name === "findStaff")?.args, [session.tenantId, { staffName: "Gagandeep" }]);
+    assert.deepEqual(calls.find((call) => call.name === "getSlots")?.args, [session.tenantId, service.id, "2027-01-07", staffMember.id]);
+  });
+
+  it("lists active staff for the tenant", async () => {
+    const { executor, calls, staffMember } = harness();
+    const result = await executor.execute("list_staff", {});
+    assert.deepEqual(result, { staff: [staffMember] });
+    assert.deepEqual(calls.find((call) => call.name === "listStaff")?.args, [session.tenantId]);
   });
 
   it("filters adjacent business dates into the caller's local date", async () => {
@@ -82,7 +112,7 @@ describe("ToolExecutor", () => {
     const executor = new ToolExecutor(callerSession, dependencies);
     const result = await executor.execute("check_availability", {
       serviceId: service.id,
-      date: "2026-07-07"
+      date: "2027-01-07"
     }) as { callerTimezone: string; slots: unknown[] };
     assert.equal(result.callerTimezone, "Asia/Kolkata");
     assert.equal(result.slots.length, 1);
@@ -93,13 +123,28 @@ describe("ToolExecutor", () => {
     const { executor, calls, service } = harness();
     const result = await executor.execute("create_booking", {
       serviceId: service.id,
-      startsAt: "2026-07-07T03:30:00.000Z",
+      startsAt: "2027-01-07T03:30:00.000Z",
       callerName: "Asha Patel"
     });
-    assert.deepEqual(result, { bookingId: "booking-1", eventId: "gcal-1", calendarSynced: true, startsAt: "2026-07-07T03:30:00.000Z", endsAt: "2026-07-07T04:00:00.000Z", callerLocalTime: "7 Jul 2026, 09:00", businessLocalTime: "7 Jul 2026, 09:00", serviceName: "Consultation" });
+    assert.deepEqual(result, { bookingId: "booking-1", eventId: "gcal-1", calendarSynced: true, startsAt: "2027-01-07T03:30:00.000Z", endsAt: "2027-01-07T04:00:00.000Z", callerLocalTime: "Jan 7, 2027, 9:00 AM", businessLocalTime: "Jan 7, 2027, 9:00 AM", serviceName: "Consultation", staffId: null });
     const create = calls.find((call) => call.name === "createBooking");
     assert.equal(create?.args[0], session.tenantId);
     assert.equal(create?.args[1], session.caller.id);
+    assert.equal((create?.args[2] as { staffId: string | null }).staffId, null);
+  });
+
+  it("assigns a booking to a specific requested staff member", async () => {
+    const { executor, calls, service, staffMember } = harness();
+    const result = await executor.execute("create_booking", {
+      serviceId: service.id,
+      staffId: staffMember.id,
+      startsAt: "2027-01-07T03:30:00.000Z",
+      callerName: "Asha Patel"
+    }) as { staffId: string };
+    assert.equal(result.staffId, staffMember.id);
+    const create = calls.find((call) => call.name === "createBooking");
+    assert.equal((create?.args[2] as { staffId: string | null }).staffId, staffMember.id);
+    assert.deepEqual(calls.find((call) => call.name === "findStaff")?.args, [session.tenantId, { staffId: staffMember.id }]);
   });
 
   it("only cancels a confirmed booking belonging to the session caller", async () => {
@@ -114,6 +159,32 @@ describe("ToolExecutor", () => {
     await executor.execute("save_memory", { kind: "preference", content: "Prefers morning appointments" });
     assert.deepEqual(calls.find((call) => call.name === "saveMemory")?.args, [session.tenantId, session.caller.id, session.callId, { kind: "preference", content: "Prefers morning appointments" }]);
     await assert.rejects(() => executor.execute("save_memory", { kind: "secret", content: "x" }));
+  });
+
+  it("records a callback request with the current call as source", async () => {
+    const { executor, calls } = harness();
+    const result = await executor.execute("request_callback", {
+      reason: "Wants to discuss visa renewal",
+      preferredTime: "tomorrow morning"
+    });
+    assert.deepEqual(calls.find((call) => call.name === "createCallbackRequest")?.args, [
+      session.tenantId,
+      session.caller.id,
+      session.callId,
+      { reason: "Wants to discuss visa renewal", preferredTime: "tomorrow morning" }
+    ]);
+    assert.deepEqual(result, { callbackRequestId: "callback-1", recorded: true });
+  });
+
+  it("defaults preferredTime to empty when the caller didn't give one", async () => {
+    const { executor, calls } = harness();
+    await executor.execute("request_callback", { reason: "General question about pricing" });
+    assert.deepEqual(calls.find((call) => call.name === "createCallbackRequest")?.args, [
+      session.tenantId,
+      session.caller.id,
+      session.callId,
+      { reason: "General question about pricing", preferredTime: "" }
+    ]);
   });
 
   it("updates the current caller profile through the tenant-scoped repository", async () => {
@@ -138,7 +209,7 @@ describe("ToolExecutor", () => {
     dependencies.repository.findService = async () => null;
     await assert.rejects(
       () => executor.execute("check_availability", {
-        serviceName: "Missing", date: "2026-07-07"
+        serviceName: "Missing", date: "2027-01-07"
       }),
       /Service not found/
     );
@@ -152,7 +223,7 @@ describe("ToolExecutor", () => {
     await assert.rejects(
       () => executor.execute("create_booking", {
         serviceId: service.id,
-        startsAt: "2026-07-07T03:30:00.000Z"
+        startsAt: "2027-01-07T03:30:00.000Z"
       }),
       /database failed/
     );
@@ -160,7 +231,19 @@ describe("ToolExecutor", () => {
       calls.find((call) => call.name === "deleteEvent")?.args,
       [session.tenantId, "gcal-1"]
     );
-  });});
+  });
+
+  it("rejects booking requests for past timestamps", async () => {
+    const { executor, service } = harness();
+    await assert.rejects(
+      () => executor.execute("create_booking", {
+        serviceId: service.id,
+        startsAt: "2020-01-01T03:30:00.000Z"
+      }),
+      /Cannot book appointment in the past/
+    );
+  });
+});
 
 
 

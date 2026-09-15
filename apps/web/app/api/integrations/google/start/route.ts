@@ -1,6 +1,6 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import { validateEnv } from "@recepto/shared/env";
+import { validateCoreEnv } from "@recepto/shared/env";
 import { getApiTenantContext } from "@/lib/api-auth";
 import { calendarService } from "@/lib/calendar";
 import {
@@ -16,7 +16,7 @@ export async function GET() {
   const auth = await getApiTenantContext();
   if (!auth.context) return auth.response;
 
-  const env = validateEnv(process.env);
+  const env = validateCoreEnv(process.env);
   const oauth = createGoogleOAuthState(
     auth.context.user.id,
     auth.context.tenantId,

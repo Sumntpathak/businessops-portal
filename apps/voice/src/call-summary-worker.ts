@@ -1,9 +1,9 @@
-import { Worker, type Job } from "bullmq";
 import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { createDatabase, schema, withTenant } from "@recepto/db";
 import { validateEnv } from "@recepto/shared/env";
 import { mergeMissingProfile, promoteStage, validateProfileFields } from "./caller-profile.js";
+import { parseToolCallArguments } from "./cloudflare-tool-call.js";
 
 const summaryJobSchema = z.object({
   callId: z.string().uuid(),
@@ -11,15 +11,23 @@ const summaryJobSchema = z.object({
   callerId: z.string().uuid()
 });
 
+export type SummaryJobData = z.infer<typeof summaryJobSchema>;
+
 export interface SummaryLogger {
   info(values: Record<string, unknown>, message: string): void;
   error(values: Record<string, unknown>, message: string): void;
 }
 
-const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
-const ANTHROPIC_VERSION = "2023-06-01";
-const SUMMARY_MODEL = "claude-haiku-4-5";
+const SUMMARY_MODEL = "@cf/zai-org/glm-4.7-flash";
 const MAX_TRANSCRIPT_CHARS = 60_000;
+
+function cloudflareChatUrl(accountId: string): string {
+  return `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1/chat/completions`;
+}
+
+function isConfigured(apiKey: string | undefined): apiKey is string {
+  return typeof apiKey === "string" && apiKey.length > 0 && apiKey !== "change-me";
+}
 
 const resultSchema = z.object({
   summary: z.string().trim().min(1).max(2_000),
@@ -37,56 +45,59 @@ const resultSchema = z.object({
 });
 
 const SUBMIT_TOOL = {
-  name: "submit_call_summary",
-  description: "Submit the summary and durable memories extracted from this call.",
-  input_schema: {
-    type: "object" as const,
-    properties: {
-      summary: {
-        type: "string",
-        description:
-          "2-4 sentences: why the caller called, what was discussed, and the outcome (booked/cancelled/message taken/nothing)."
-      },
-      caller_name: {
-        type: ["string", "null"],
-        description: "The caller's name if they stated it during the call, else null."
-      },
-      memories: {
-        type: "array",
-        description:
-          "0-5 durable facts or preferences about the CALLER worth remembering on future calls. Never include one-off details like a specific slot time already captured by the booking.",
-        items: {
+  type: "function" as const,
+  function: {
+    name: "submit_call_summary",
+    description: "Submit the summary and durable memories extracted from this call.",
+    parameters: {
+      type: "object",
+      properties: {
+        summary: {
+          type: "string",
+          description:
+            "2-4 sentences: why the caller called, what was discussed, and the outcome (booked/cancelled/message taken/nothing)."
+        },
+        caller_name: {
+          type: ["string", "null"],
+          description: "The caller's name if they stated it during the call, else null."
+        },
+        memories: {
+          type: "array",
+          description:
+            "0-5 durable facts or preferences about the CALLER worth remembering on future calls. Never include one-off details like a specific slot time already captured by the booking.",
+          items: {
+            type: "object",
+            properties: {
+              kind: { type: "string", enum: ["fact", "preference"] },
+              content: { type: "string", description: "One short sentence." }
+            },
+            required: ["kind", "content"]
+          }
+        },
+        profile_updates: {
           type: "object",
-          properties: {
-            kind: { type: "string", enum: ["fact", "preference"] },
-            content: { type: "string", description: "One short sentence." }
-          },
-          required: ["kind", "content"]
+          description: "Structured caller fields learned in this call. Use only keys listed in the prompt.",
+          additionalProperties: { type: ["string", "number", "boolean"] }
+        },
+        stage: {
+          type: "string",
+          enum: ["new", "interested", "booked", "client"],
+          description: "new=no clear need, interested=qualified interest, booked=confirmed booking, client=active or completed customer"
         }
       },
-      profile_updates: {
-        type: "object",
-        description: "Structured caller fields learned in this call. Use only keys listed in the prompt.",
-        additionalProperties: { type: ["string", "number", "boolean"] }
-      },
-      stage: {
-        type: "string",
-        enum: ["new", "interested", "booked", "client"],
-        description: "new=no clear need, interested=qualified interest, booked=confirmed booking, client=active or completed customer"
-      }
-    },
-    required: ["summary", "caller_name", "memories", "profile_updates", "stage"]
+      required: ["summary", "caller_name", "memories", "profile_updates", "stage"]
+    }
   }
 };
 
-interface AnthropicToolUseBlock {
-  type: "tool_use";
-  name: string;
-  input: unknown;
+interface OpenAiToolCall {
+  id: string;
+  function: { name: string; arguments: string };
 }
 
 async function summarizeWithClaude(
   apiKey: string,
+  accountId: string,
   transcript: string,
   existingMemories: readonly string[],
   intakeFields: ReadonlyArray<{ key: string; label: string; type: string; options: string[] }>
@@ -95,19 +106,17 @@ async function summarizeWithClaude(
   const timeout = setTimeout(() => controller.abort(), 60_000);
 
   try {
-    const response = await fetch(ANTHROPIC_URL, {
+    const response = await fetch(cloudflareChatUrl(accountId), {
       method: "POST",
       signal: controller.signal,
       headers: {
         "content-type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": ANTHROPIC_VERSION
+        authorization: `Bearer ${apiKey}`
       },
       body: JSON.stringify({
         model: SUMMARY_MODEL,
-        max_tokens: 1_500,
         tools: [SUBMIT_TOOL],
-        tool_choice: { type: "tool", name: "submit_call_summary" },
+        tool_choice: { type: "function", function: { name: "submit_call_summary" } },
         messages: [
           {
             role: "user",
@@ -141,31 +150,45 @@ async function summarizeWithClaude(
     if (!response.ok) {
       const body = await response.text().catch(() => "");
       throw new Error(
-        `Claude summary failed with HTTP ${response.status}: ${body.slice(0, 500)}`
+        `Call summary model failed with HTTP ${response.status}: ${body.slice(0, 500)}`
       );
     }
 
-    const payload = (await response.json()) as { content?: Array<{ type: string }> };
-    const toolUse = (payload.content ?? []).find(
-      (block): block is AnthropicToolUseBlock =>
-        block.type === "tool_use" &&
-        (block as AnthropicToolUseBlock).name === "submit_call_summary"
+    const payload = (await response.json()) as {
+      choices?: Array<{ message?: { tool_calls?: OpenAiToolCall[] } }>;
+    };
+    const toolCall = payload.choices?.[0]?.message?.tool_calls?.find(
+      (call) => call.function.name === "submit_call_summary"
     );
-    if (!toolUse) throw new Error("Claude summary returned no submit_call_summary tool call");
-    return resultSchema.parse(toolUse.input);
+    if (!toolCall) throw new Error("Call summary model returned no submit_call_summary tool call");
+    return resultSchema.parse(parseToolCallArguments(toolCall.function.arguments));
   } finally {
     clearTimeout(timeout);
   }
 }
 
-export function startCallSummaryWorker(redisUrl: string, logger: SummaryLogger) {
+/**
+ * Runs call summarization directly in-process (no queue). Returns a function
+ * that summarizes one finished call; callers should fire-and-forget it so call
+ * finalization is never blocked on the summary model.
+ */
+export function createCallSummarizer(logger: SummaryLogger) {
   const env = validateEnv(process.env);
   const db = createDatabase(env.DATABASE_URL);
 
-  const worker = new Worker(
-    "call-summarize",
-    async (job: Job) => {
-      const data = summaryJobSchema.parse(job.data);
+  return async (input: SummaryJobData): Promise<void> => {
+      const data = summaryJobSchema.parse(input);
+      const anthropicApiKey = env.ANTHROPIC_API_KEY;
+      const cloudflareAccountId = env.CLOUDFLARE_ACCOUNT_ID;
+
+      if (!isConfigured(anthropicApiKey) || !isConfigured(cloudflareAccountId)) {
+        logger.info(
+          { callId: data.callId, tenantId: data.tenantId },
+          "ANTHROPIC_API_KEY / CLOUDFLARE_ACCOUNT_ID not configured; skipping call summary"
+        );
+        return;
+      }
+
       const scoped = withTenant(db, data.tenantId);
 
       const [rows, existing, intakeFields] = await Promise.all([
@@ -223,7 +246,8 @@ export function startCallSummaryWorker(redisUrl: string, logger: SummaryLogger) 
         .slice(0, MAX_TRANSCRIPT_CHARS);
 
       const result = await summarizeWithClaude(
-        env.ANTHROPIC_API_KEY,
+        anthropicApiKey,
+        cloudflareAccountId,
         transcript,
         existing.map((memory) => memory.content),
         intakeFields
@@ -311,12 +335,5 @@ export function startCallSummaryWorker(redisUrl: string, logger: SummaryLogger) 
         },
         "Call summarized into durable memory"
       );
-    },
-    { connection: { url: redisUrl }, concurrency: 2 }
-  );
-
-  worker.on("error", (error) => {
-    logger.error({ error: error.message }, "Call summary worker error");
-  });
-  return worker;
+  };
 }

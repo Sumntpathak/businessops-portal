@@ -18,3 +18,7 @@ export const createBookingSchema = z.object({
   callerPhone: z.string().regex(/^\+[1-9]\d{7,14}$/),
   notes: z.string().trim().max(1000).default("")
 });
+
+export const callbackRequestStatusQuerySchema = z.object({
+  status: z.enum(["pending", "done", "all"]).default("pending")
+});

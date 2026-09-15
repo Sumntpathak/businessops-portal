@@ -5,6 +5,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { CalendarIcon, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
+import { AvailabilityOverrides } from "@/components/dashboard/availability-overrides";
+import { PageBody, PageHeader, PageShell } from "@/components/dashboard/page-shell";
 import { cn } from "@/lib/utils";
 import {
   Dialog,
@@ -25,6 +27,7 @@ type Booking = {
   serviceName: string;
   callerName: string | null;
   callerPhone: string;
+  staffName: string | null;
 };
 type Service = { id: string; name: string; durationMinutes: number };
 type Slot = { startsAt: string; endsAt: string };
@@ -142,26 +145,26 @@ export function BookingsCalendar() {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <p className="text-sm text-muted-foreground">Times shown in {timezone}</p>
-          <h1 className="text-2xl font-semibold">Bookings</h1>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <button className="rounded-md border px-3 py-2 text-sm" onClick={() => setWeekStart(format(addDays(new Date(`${weekStart}T00:00:00`), -7), "yyyy-MM-dd"))}>Previous</button>
-          <button className="rounded-md border px-3 py-2 text-sm" onClick={() => setWeekStart(monday())}>Today</button>
-          <button className="rounded-md border px-3 py-2 text-sm" onClick={() => setWeekStart(format(addDays(new Date(`${weekStart}T00:00:00`), 7), "yyyy-MM-dd"))}>Next</button>
-          <Button onClick={() => setDialogOpen(true)} className="gap-2">
-            <Plus className="h-4 w-4" />
-            New booking
-            <kbd className="ml-1 hidden rounded border border-primary-foreground/30 px-1.5 py-0.5 text-[10px] font-normal opacity-70 sm:inline">
-              ⌘K
-            </kbd>
-          </Button>
-        </div>
-      </div>
-
+    <PageShell>
+      <PageHeader
+        eyebrow={"Times shown in " + timezone}
+        title="Bookings"
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            <button className="rounded-md border px-3 py-2 text-sm" onClick={() => setWeekStart(format(addDays(new Date(`${weekStart}T00:00:00`), -7), "yyyy-MM-dd"))}>Previous</button>
+            <button className="rounded-md border px-3 py-2 text-sm" onClick={() => setWeekStart(monday())}>Today</button>
+            <button className="rounded-md border px-3 py-2 text-sm" onClick={() => setWeekStart(format(addDays(new Date(`${weekStart}T00:00:00`), 7), "yyyy-MM-dd"))}>Next</button>
+            <Button onClick={() => setDialogOpen(true)} className="gap-2">
+              <Plus className="h-4 w-4" />
+              New booking
+              <kbd className="ml-1 hidden rounded border border-primary-foreground/30 px-1.5 py-0.5 text-[10px] font-normal opacity-70 sm:inline">
+                ⌘K
+              </kbd>
+            </Button>
+          </div>
+        }
+      />
+      <PageBody className="space-y-6">
       {message && <p role="status" className="rounded-md border bg-muted/40 px-4 py-3 text-sm">{message}</p>}
 
       <section className="overflow-x-auto rounded-lg border">
@@ -177,6 +180,7 @@ export function BookingsCalendar() {
                     <article key={booking.id} className="rounded-md border bg-card p-2 text-xs">
                       <p className="font-semibold">{localTime(booking.startsAt)} · {booking.serviceName}</p>
                       <p className="mt-1 text-muted-foreground">{booking.callerName || booking.callerPhone}</p>
+                      {booking.staffName && <p className="mt-0.5 text-muted-foreground">with {booking.staffName}</p>}
                     </article>
                   ))}
                   {!loading && dayBookings.length === 0 && <p className="text-xs text-muted-foreground">No bookings</p>}
@@ -187,13 +191,18 @@ export function BookingsCalendar() {
         </div>
       </section>
 
+      <AvailabilityOverrides timezone={timezone} />
+
       <section className="rounded-lg border p-5">
         <h2 className="font-semibold">This week</h2>
         <div className="mt-4 divide-y">
           {bookings.map((booking) => (
             <div key={booking.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
               <div>
-                <p className="text-sm font-medium">{booking.serviceName} · {booking.callerName || booking.callerPhone}</p>
+                <p className="text-sm font-medium">
+                  {booking.serviceName} · {booking.callerName || booking.callerPhone}
+                  {booking.staffName ? ` · ${booking.staffName}` : ""}
+                </p>
                 <p className="text-xs text-muted-foreground">{localDate(booking.startsAt)} at {localTime(booking.startsAt)} · {booking.status}</p>
               </div>
               {booking.status === "confirmed" && <button className="text-sm text-destructive hover:underline" onClick={() => void cancelBooking(booking.id)}>Cancel</button>}
@@ -202,6 +211,7 @@ export function BookingsCalendar() {
           {!loading && bookings.length === 0 && <p className="py-8 text-center text-sm text-muted-foreground">No bookings this week yet.</p>}
         </div>
       </section>
+      </PageBody>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="sm:max-w-md">
@@ -287,7 +297,7 @@ export function BookingsCalendar() {
           </form>
         </DialogContent>
       </Dialog>
-    </div>
+    </PageShell>
   );
 }
 

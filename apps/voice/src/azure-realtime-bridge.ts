@@ -1,6 +1,6 @@
 import { WebSocket } from "ws";
 import { z } from "zod";
-import type { AIBridge, TranscriptEvent } from "./ai-bridge.js";
+import type { AIBridge, StaffSelector, TranscriptEvent } from "./ai-bridge.js";
 import type { CallSession } from "./call-session.js";
 
 export interface AzureRealtimeBridgeOptions {
@@ -9,6 +9,12 @@ export interface AzureRealtimeBridgeOptions {
   apiKey: string;
   model: string;
   voice?: string;
+  /**
+   * SIP mode: attach to a call already accepted via the REST accept endpoint
+   * instead of opening a fresh model session. Audio flows carrier <-> Azure;
+   * this WebSocket only carries events (tools, transcripts, responses).
+   */
+  attachCallId?: string;
   logger?: {
     info(values: Record<string, unknown>, message: string): void;
     error(values: Record<string, unknown>, message: string): void;
@@ -38,6 +44,14 @@ const REALTIME_TOOLS = [
           type: "string",
           description: "Name of the service as the caller said it (fuzzy matched)."
         },
+        staffId: {
+          type: "string",
+          description: "UUID of a specific staff member, if already known from a previous tool result."
+        },
+        staffName: {
+          type: "string",
+          description: "Name of a specific staff member the caller asked for (fuzzy matched). Omit to check availability across any staff member."
+        },
         date: {
           type: "string",
           description: "Requested date in YYYY-MM-DD, in the caller's local timezone shown in instructions."
@@ -55,6 +69,10 @@ const REALTIME_TOOLS = [
       type: "object",
       properties: {
         serviceId: { type: "string", description: "UUID of the service from check_availability." },
+        staffId: {
+          type: "string",
+          description: "UUID of the specific staff member to assign, from check_availability, if the caller requested a specific person."
+        },
         startsAt: {
           type: "string",
           description: "Slot start time, copied verbatim from a check_availability slot (ISO 8601 with offset)."
@@ -93,6 +111,20 @@ const REALTIME_TOOLS = [
   },
   {
     type: "function",
+    name: "request_callback",
+    description:
+      "Record a call-back / message request so staff can see it and call the caller back. Use this whenever the caller asks to be called back, or leaves a message for staff you cannot resolve yourself. The caller's phone number is already known — never ask for it again.",
+    parameters: {
+      type: "object",
+      properties: {
+        reason: { type: "string", description: "One short sentence describing what the caller wants, in their own words." },
+        preferredTime: { type: "string", description: "When the caller would like the call back, if they said (e.g. 'this afternoon', 'tomorrow morning'). Leave blank if not mentioned." }
+      },
+      required: ["reason"]
+    }
+  },
+  {
+    type: "function",
     name: "update_caller_profile",
     description:
       "Save structured caller details immediately. Use only the keys listed in CALLER PROFILE; name is always allowed. Valid fields save even if another field is rejected.",
@@ -114,37 +146,110 @@ const REALTIME_TOOLS = [
     description:
       "Fetch this caller's saved details: name, remembered facts, and upcoming confirmed bookings (with bookingIds). Call when the caller references past visits, wants to change/cancel a booking, or when you are unsure of a detail you were already told.",
     parameters: { type: "object", properties: {} }
+  },
+  {
+    type: "function",
+    name: "list_staff",
+    description:
+      "Look up the business's staff members, including which are registered agents and what that credential is called. Call this when the caller asks who they'll be speaking with, whether a specific person is registered/qualified, or wants to know their options before choosing someone.",
+    parameters: { type: "object", properties: {} }
+  },
+  {
+    type: "function",
+    name: "transfer_to_staff",
+    description:
+      "Transfer the live call to a real staff member's phone. Only call this when the caller EXPLICITLY asks to speak to a person or names a specific staff member — never on your own judgement. Say a short natural line first that does NOT use the staff member's personal name (e.g. 'Sure, connecting you now' / 'One moment, transferring you to the team') — the caller doesn't need to hear an internal staff name, THEN call this tool.",
+    parameters: {
+      type: "object",
+      properties: {
+        staffId: { type: "string", description: "UUID of a specific staff member, if already known from a previous tool result." },
+        staffName: { type: "string", description: "Name of a specific staff member the caller asked for. Omit if the caller just asked for \"a person\" generically." }
+      }
+    }
+  },
+  {
+    type: "function",
+    name: "end_call",
+    description:
+      "End the phone call. Call this when the caller confirms there is nothing else they need ('no that's all', 'that's it, thanks'), OR whenever the caller says goodbye or clearly wants to end the call ('bye', 'have a good day', 'not now', 'I'll call back later') — even if you have not collected their name or handled any request. Say a short natural goodbye in your reply FIRST, then call this tool.",
+    parameters: { type: "object", properties: {} }
   }
 ] as const;
 
-function languageInstructions(mode: CallSession["agent"]["languageMode"]): string {
-  switch (mode) {
-    case "hinglish":
-      return [
-        "LANGUAGE: Mirror the caller. If they speak Hindi, reply in natural conversational Hindi.",
-        "If they speak English, reply in English. If they mix (Hinglish), mix the same way they do.",
-        "Use everyday spoken Hindi written naturally — never stiff, formal, or textbook phrasing."
-      ].join(" ");
-    case "hindi":
-      return "LANGUAGE: Speak natural conversational Hindi. Switch to English only if the caller clearly cannot follow Hindi.";
-    case "english":
-    default:
-      return "LANGUAGE: Speak English only, in a warm natural tone.";
+function languageInstructions(languages: string[]): string {
+  if (languages.length <= 1) {
+    const only = languages[0] ?? "English";
+    return `LANGUAGE: Speak ${only} only, in a warm natural tone.`;
   }
+  return [
+    `LANGUAGE: The caller may speak any of these languages: ${languages.join(", ")}.`,
+    "You opened the call in the greeting's language — that is your working language until something changes it. Do not switch languages preemptively or guess based on the caller's name, accent, or phone number.",
+    "Only switch language when ONE of these actually happens: (a) the caller speaks a full sentence clearly in a different supported language (not just one borrowed word), or (b) the caller directly asks to continue in another language.",
+    "When you do switch, treat it as a real, deliberate moment: acknowledge it naturally in one short phrase (e.g. 'Sure, switching to Hindi' / 'Theek hai, Hindi mein baat karte hain'), then continue.",
+    "If it is unclear which language the caller wants — they said one ambiguous word, or mixed two languages in a way you cannot confidently read as a switch — do not silently guess. Briefly ask which language they'd prefer, then wait for their answer before changing anything.",
+    "Once you switch, HOLD that language for the rest of the call. Do not flip back and forth turn to turn. A single stray word from the caller in another language is not a signal to switch back — only a clear new sentence or an explicit request is.",
+    "If the caller mixes languages naturally within their own speech (e.g. Hinglish) throughout the call, mirror that same mixed style consistently rather than picking one artificially.",
+    "Use natural everyday spoken phrasing in whichever language you are using — never stiff, formal, or textbook phrasing."
+  ].join(" ");
+}
+
+const TRANSCRIBE_LANGUAGE_CODES: Record<string, string> = {
+  english: "en",
+  hindi: "hi",
+  punjabi: "pa",
+  tamil: "ta",
+  telugu: "te",
+  bengali: "bn",
+  marathi: "mr",
+  gujarati: "gu",
+  kannada: "kn",
+  malayalam: "ml",
+  urdu: "ur",
+  spanish: "es",
+  french: "fr",
+  german: "de",
+  arabic: "ar",
+  mandarin: "zh",
+  chinese: "zh",
+  japanese: "ja"
+};
+
+/**
+ * Anchors input transcription to the tenant's configured languages. Without this
+ * the transcriber guesses a language per utterance and writes Hindi speech in
+ * random scripts (Urdu, Tamil, ...) in the call history.
+ */
+export function transcriptionConfig(
+  model: string,
+  languages: string[]
+): { model: string; language?: string; prompt?: string } {
+  if (languages.length === 1) {
+    const code = TRANSCRIBE_LANGUAGE_CODES[(languages[0] ?? "").toLowerCase()];
+    return code ? { model, language: code } : { model };
+  }
+  return {
+    model,
+    prompt:
+      `The speaker uses only these languages, often mixed in one sentence: ${languages.join(", ")}. ` +
+      "Always transcribe in the language actually spoken, using its standard script " +
+      "(Hindi in Devanagari, Punjabi in Gurmukhi). Never transcribe into any other language."
+  };
 }
 
 export function buildInstructions(session: CallSession): string {
-  const now = new Intl.DateTimeFormat("en-GB", {
+  const now = new Intl.DateTimeFormat("en-US", {
     timeZone: session.timezone,
     dateStyle: "full",
-    timeStyle: "short"
+    timeStyle: "short",
+    hour12: true
   }).format(new Date());
 
   const callerTimezone = session.caller.timezone ?? session.timezone;
-  const callerNow = new Intl.DateTimeFormat("en-GB", {
+  const callerNow = new Intl.DateTimeFormat("en-US", {
     timeZone: callerTimezone,
     dateStyle: "full",
-    timeStyle: "short"
+    timeStyle: "short",
+    hour12: true
   }).format(new Date());
   const profileLines = [
     `- name: ${session.caller.displayName ?? "— not yet known"}`,
@@ -182,35 +287,145 @@ export function buildInstructions(session: CallSession): string {
     "What we remember about this caller from previous calls:",
     memories,
     "",
-    "== VOICE STYLE ==",
-    "- Keep every reply SHORT: one or two spoken sentences. This is a phone call, not an essay.",
-    "- Never read out lists of more than three options; offer the best two and ask.",
+    "== PERSONALITY & TONE ==",
+    "- You are a warm, capable human receptionist who genuinely enjoys the job. The caller must feel they're talking to a real person, never a machine reading a script.",
+    "- React immediately with snappy human pacing: begin your spoken response within 300ms–400ms of the caller finishing. Never leave awkward dead air.",
+    "- React first, then respond: a brief, genuine acknowledgment of what the caller specifically just said, before the substance. Invent it fresh each time from their actual words — never draw from a fixed set of stock openers, and never repeat the same opener twice in one call.",
+    "- Match the caller's energy and mood: pick up the pace and warmth for someone upbeat or in a hurry; slow down and soften for someone stressed, upset, or confused. Do not perform the same cheerful register regardless of how the caller sounds.",
+    "- Speak with natural rhythm: contractions, everyday words, occasional trailing or incomplete thoughts, natural pitch inflection on questions. Reply length should vary naturally with what's being said — a quick confirmation can be a few words; a recap or explanation can run a bit longer. Never pad a short answer to hit a target length, and never let a reply run past what a person would actually say on a call.",
+    "- Never use call-center clichés ('How may I assist you today?', 'Your call is important to us') after the opening greeting.",
+    "- Never read out lists of more than three options; offer the best two conversationally and ask.",
     "- Say numbers, dates, and times in words the way a person would say them on the phone.",
     "- Never mention tools, systems, databases, or that you are an AI unless directly asked.",
-    "- If you need a moment for a lookup, say a brief natural filler like 'ek second, main check karti hoon' or 'one moment please'.",
-    languageInstructions(session.agent.languageMode),
+    "- NEVER tell the caller there is a 'technical issue', 'profile issue', or 'database error'. If an operation fails, handle it gracefully and keep helping the caller without technical jargon.",
+    "- Keep ONE consistent voice and warmth from greeting to goodbye, adapted to the caller's mood in the moment — never drop into a flat, formal, or 'reading out a result' tone mid-call.",
+    "- If you did not clearly hear or understand what the caller said, NEVER guess or answer something else. Briefly apologize and ask them to repeat, in their own language — e.g. 'Sorry, I didn't quite catch that — could you say it once more?' or 'Maaf kijiye, main theek se sun nahi paayi — dobara boliye?'.",
+    "- If only PART of what they said was unclear, respond to what you did understand and confirm just the unclear bit — do not make them repeat everything.",
+    languageInstructions(session.agent.languages),
+    "",
+    "== TOOL USE — EFFICIENCY RULES ==",
+    "- CALL TOOLS IMMEDIATELY: When you need to check availability, book an appointment, or fetch information, trigger the tool call immediately in the current turn.",
+    "- NEVER speak a standalone filler line like 'one moment' or 'let me check' without triggering the tool call in that exact same turn — doing so creates dead air where you go silent and leave the caller waiting.",
+    "- Call a tool the moment it is needed. Never ask permission for a lookup and never stall without one.",
+    "- Batch every field you learned into ONE update_caller_profile call — never several calls in a row.",
+    "- Use get_caller_context at most ONCE per call and remember everything it returned.",
+    "- Never repeat a tool call with identical arguments.",
+    "- Never read tool output aloud as data. Turn the result into one short natural sentence in the caller's language.",
     "",
     "== CALLER IDENTITY — HARD RULES ==",
     "- The INSTANT the caller tells you their name: acknowledge it once, then IMMEDIATELY call update_caller_profile with fields {name: <name>}. Do this before anything else.",
     "- From that moment on, use their name naturally. NEVER ask for the caller's name a second time in the same call — that is a serious failure.",
     "- If you are ever unsure of the name mid-call, silently call get_caller_context instead of asking again.",
     "- The same applies to any key detail the caller gives you (service they want, preferred date): never re-ask for something already said in this call.",
+    "- If the caller profile shows a name that is clearly a placeholder (like 'Browser test' or 'Unknown'), treat the name as NOT known: do not address the caller by it, and ask for their real name at a natural opening.",
     "",
     "== BOOKING RULES ==",
+    "- NEVER check availability, offer, or accept bookings for dates or times in the past. Today's date is shown above in CURRENT CALL CONTEXT. Any requested date earlier than today must be politely redirected to today or a future date ('Today is [Day, Date] — let's look at available times starting from today onward').",
+    "- CALLER PHONE NUMBER IS ALREADY KNOWN: The caller's phone number is already captured from caller ID (${session.caller.phoneE164}). NEVER ask the caller for their phone number or contact number to finalize a booking.",
+    "- When the caller mentions a target day (e.g. 'next Tuesday', 'tomorrow'), confirm the service and, if not already given, ask once what time of day they'd prefer — the way a person naturally would — then call check_availability in that same turn once you have enough to search. Don't chain more than one clarifying question before checking; don't check availability with no sense at all of what they want.",
     "- Always check_availability before offering or confirming any time slot.",
     "- Offer and discuss times using the callerLocalTime labels from tool results — never do timezone math yourself and NEVER say UTC.",
     "- If the caller's timezone differs from the business's, confirm using BOTH labels, e.g. 'eleven in the morning your time, which is half past three in the afternoon here'.",
     "- Before create_booking, confirm service, date, time, and the caller's name in one short recap.",
     "- Pass startsAt to create_booking EXACTLY as returned by check_availability — never construct it yourself.",
     "- After a successful booking, read back the day and time once using the callerLocalTime (and businessLocalTime if different) from the booking result.",
+    "- ONCE BOOKED, IT IS CONFIRMED: The moment create_booking succeeds, the appointment is finalized. Read back the confirmation ONCE, then ask if they need anything else ('Your consultation is confirmed for [Day, Date at Time]! Is there anything else I can help you with?'). NEVER call create_booking a second time for a booking already confirmed in this call.",
+    "- NEVER repeat booking details once they have already been read back. When the caller says 'thank you', 'okay', or confirms, respond with a short warm 'You are most welcome!' and ask if they need anything else.",
     "- If the booking result shows calendarSynced false, the booking is still valid and recorded — confirm it normally and never mention calendars or syncing.",
     "- To change or cancel, use get_caller_context to find the booking, confirm which one, then cancel_booking.",
     "",
+    "== STAFF & REGISTERED AGENTS ==",
+    "- Most callers do not need to choose a specific staff member — check_availability without a staff name works fine and the business assigns someone suitable.",
+    "- If the caller asks for a specific person by name, or asks whether their agent is registered/qualified (using whatever term the business profile uses for that credential), call list_staff and answer only from what it returns — never guess or invent a name or credential.",
+    "- If the caller wants a registered agent specifically, offer one from list_staff's results by name; if none are registered, say so plainly rather than implying otherwise.",
+    "- Once a specific staff member is agreed, pass their id as staffId to check_availability and create_booking so the booking is correctly assigned.",
+    "",
+    "== TRANSFERRING TO A HUMAN ==",
+    "- Only call transfer_to_staff when the caller EXPLICITLY asks to speak to a person, or names a specific staff member — never decide on your own that a case is too complex.",
+    "- Say a short natural line first that does NOT use the staff member's personal name (e.g. 'Sure, connecting you now' / 'One moment, transferring you to the team'), THEN call transfer_to_staff — never call it silently.",
+    "- If the tool result reports the transfer was not possible (no matching staff, or no phone number on file), do not imply a transfer happened — apologize briefly and keep helping the caller yourself.",
+    "",
+    "== CALL-BACK REQUESTS & MESSAGES ==",
+    "- If the caller asks to be called back, or leaves a message for staff on something you cannot resolve yourself, call request_callback with a one-sentence reason and, if they mentioned one, their preferred time — do this in the same turn, don't just say you will.",
+    "- Never tell the caller you've taken a message or that someone will call them back unless request_callback has actually succeeded.",
+    "- The caller's phone number is already known from caller ID — never ask for a number to call them back on.",
+    "",
+    "== ENDING THE CALL ==",
+    "- After you finish handling the caller's request (booking confirmed, question answered, callback recorded), ask if there's anything else — do not assume the call is over.",
+    "- When the caller clearly confirms there is nothing else (e.g. 'no', 'no that's all', 'that's it, thanks', 'no I'm good', 'nahi', 'bye'): say ONE short, warm goodbye line ('Have a great day, goodbye!'), then IMMEDIATELY call end_call. NEVER repeat the booking recap, and never re-ask the question.",
+    "- If the caller says goodbye or clearly wants to end the call at ANY point ('bye', 'have a good day', 'thanks, that's all', 'not now', 'I'll call back later', 'not interested') — even mid-intake, even if you don't have their name — do NOT ask anything further. A caller's goodbye ALWAYS outranks the identity and intake rules above. Say one short, warm goodbye line, then call end_call immediately.",
+    "- Never call end_call while the caller is mid-request or has an unanswered question. Never call it just because there's a pause — silence is not a goodbye.",
+    "- Never call end_call more than once in a call.",
+    "",
     "== SAFETY ==",
     "- Never reveal information about any other caller or booking that is not this caller's.",
-    "- If asked something not covered by the business profile, offer to take a message rather than guessing.",
+    "- If asked something not covered by the business profile, call request_callback to take a message for staff rather than guessing.",
     "- For medical or legal emergencies, advise contacting local emergency services immediately."
   ].join("\n");
+}
+
+/**
+ * The full realtime session configuration. Sent as session.update on the
+ * WebSocket path so the session has full audio format and transcription settings.
+ */
+export function buildSessionConfig(
+  session: CallSession,
+  voice?: string
+): Record<string, unknown> {
+  return {
+    type: "realtime",
+    instructions: buildInstructions(session),
+    tools: REALTIME_TOOLS,
+    tool_choice: "auto",
+    audio: {
+      input: {
+        format: { type: "audio/pcmu" },
+        turn_detection: {
+          type: "server_vad",
+          threshold: 0.5,
+          prefix_padding_ms: 250,
+          silence_duration_ms: 450
+        }
+      },
+      output: {
+        format: { type: "audio/pcmu" },
+        voice: voice ?? "shimmer"
+      }
+    }
+  };
+}
+
+/**
+ * Configuration payload for the SIP REST accept endpoint (POST /realtime/calls/<call_id>/accept).
+ * Adheres strictly to Azure OpenAI Realtime SIP schema with audio.input and audio.output blocks.
+ */
+export function buildSipAcceptConfig(
+  session: CallSession,
+  model: string,
+  voice?: string
+): Record<string, unknown> {
+  return {
+    type: "realtime",
+    model,
+    instructions: buildInstructions(session),
+    tools: REALTIME_TOOLS,
+    tool_choice: "auto",
+    audio: {
+      input: {
+        format: { type: "audio/pcmu" },
+        turn_detection: {
+          type: "server_vad",
+          threshold: 0.5,
+          prefix_padding_ms: 250,
+          silence_duration_ms: 450
+        }
+      },
+      output: {
+        format: { type: "audio/pcmu" },
+        voice: voice ?? "shimmer"
+      }
+    }
+  };
 }
 
 /**
@@ -225,11 +440,20 @@ export class AzureRealtimeBridge implements AIBridge {
   private toolCall?: (name: string, input: unknown) => Promise<unknown> | unknown;
   private transcript?: (event: TranscriptEvent) => void;
   private bargeIn?: () => void;
+  private speechStarted?: () => void;
+  private speechStopped?: () => void;
+  private closed?: () => void;
+  private endCall?: () => void;
+  private transferRequested?: (selector: StaffSelector) => void;
+  private endCallRequested = false;
+  private pendingTransfer?: StaffSelector;
   private readonly pendingAudio: Buffer[] = [];
   private readonly handledToolCalls = new Set<string>();
   private ready = false;
   private stopped = false;
   private activeResponse = false;
+  private vadFellBack = false;
+  private transcribeFellBack = false;
 
   constructor(private readonly options: AzureRealtimeBridgeOptions) {}
 
@@ -237,7 +461,15 @@ export class AzureRealtimeBridge implements AIBridge {
     this.session = session;
     const url = new URL(this.options.url);
     url.protocol = url.protocol === "http:" ? "ws:" : "wss:";
-    if (!url.searchParams.get("model")) {
+    if (!url.pathname || url.pathname === "/") {
+      url.pathname = "/openai/v1/realtime";
+    }
+    if (this.options.attachCallId) {
+      // SIP mode: attach to a call already accepted via the REST accept endpoint.
+      // Session config was supplied at accept time; audio flows carrier <-> Azure.
+      url.searchParams.delete("model");
+      url.searchParams.set("call_id", this.options.attachCallId);
+    } else if (!url.searchParams.get("model")) {
       url.searchParams.set("model", this.options.model);
     }
 
@@ -273,6 +505,7 @@ export class AzureRealtimeBridge implements AIBridge {
           { callId: this.session?.callId, code, reason: reason.toString() },
           "Azure realtime WebSocket closed"
         );
+        this.closed?.();
       }
     });
 
@@ -291,31 +524,12 @@ export class AzureRealtimeBridge implements AIBridge {
       });
     });
 
-    this.send({
-      type: "session.update",
-      session: {
-        type: "realtime",
-        instructions: buildInstructions(session),
-        tools: REALTIME_TOOLS,
-        tool_choice: "auto",
-        audio: {
-          input: {
-            format: { type: "audio/pcmu" },
-            transcription: { model: "whisper-1" },
-            turn_detection: {
-              type: "server_vad",
-              threshold: 0.5,
-              prefix_padding_ms: 300,
-              silence_duration_ms: 600
-            }
-          },
-          output: {
-            format: { type: "audio/pcmu" },
-            voice: this.options.voice ?? "marin"
-          }
-        }
-      }
-    });
+    if (!this.options.attachCallId) {
+      this.send({
+        type: "session.update",
+        session: buildSessionConfig(session, this.options.voice)
+      });
+    }
 
     // Speak the configured greeting as soon as the call connects.
     this.send({
@@ -359,6 +573,47 @@ export class AzureRealtimeBridge implements AIBridge {
     this.bargeIn = callback;
   }
 
+  /** Fired on every input_audio_buffer.speech_started event (turn start, for latency tracking). */
+  onSpeechStarted(callback: () => void): void {
+    this.speechStarted = callback;
+  }
+
+  /** Fired on every input_audio_buffer.speech_stopped event (turn end, for latency tracking). */
+  onSpeechStopped(callback: () => void): void {
+    this.speechStopped = callback;
+  }
+
+  /** Fired when the Azure WebSocket closes unexpectedly (SIP mode: the call ended). */
+  onClose(callback: () => void): void {
+    this.closed = callback;
+  }
+
+  /** Fired when the agent calls end_call after the caller confirms nothing else is needed. */
+  onEndCall(callback: () => void): void {
+    this.endCall = callback;
+  }
+
+  /** Fired when the agent calls transfer_to_staff after the caller explicitly asks for a human. */
+  onTransferRequested(callback: (selector: StaffSelector) => void): void {
+    this.transferRequested = callback;
+  }
+
+  notifyTransferFailed(reason: string): void {
+    this.send({
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "system",
+        content: [{
+          type: "input_text",
+          text: `The transfer you just attempted did not go through (${reason}). Briefly and naturally let the caller know you couldn't connect them, without repeating internal details, and keep helping them yourself.`
+        }]
+      }
+    });
+    this.send({ type: "response.create" });
+    this.activeResponse = true;
+  }
+
   async stop(): Promise<void> {
     this.stopped = true;
     this.ready = false;
@@ -370,6 +625,7 @@ export class AzureRealtimeBridge implements AIBridge {
     this.audioOut = undefined;
     this.toolCall = undefined;
     this.bargeIn = undefined;
+    this.transferRequested = undefined;
   }
 
   private appendAudio(buffer: Buffer): void {
@@ -392,13 +648,31 @@ export class AzureRealtimeBridge implements AIBridge {
       return;
     }
 
-    // Caller interrupted the agent: cancel generation and flush the phone's playback buffer.
+    // Caller interrupted the agent:
+    // In WebSocket mode, cancel generation and flush Twilio audio buffer.
+    // In SIP mode, Azure Realtime's server VAD handles cancellation natively on the RTP stream.
     if (type === "input_audio_buffer.speech_started") {
-      if (this.activeResponse) {
+      // Do NOT optimistically clear activeResponse here: cancellation is async and
+      // Azure still sends response.done (status "cancelled") for the in-flight
+      // response afterwards. Clearing early let speech_stopped fire response.create
+      // before the server had actually torn down the previous response, causing
+      // "conversation_already_has_active_response" on nearly every turn.
+      if (!this.options.attachCallId && this.activeResponse) {
         this.send({ type: "response.cancel" });
-        this.activeResponse = false;
       }
+      this.speechStarted?.();
       this.bargeIn?.();
+      return;
+    }
+
+    // Caller finished speaking:
+    if (type === "input_audio_buffer.speech_stopped") {
+      this.options.logger?.info({ callId: this.session?.callId }, "Caller speech stopped");
+      this.speechStopped?.();
+      if (!this.options.attachCallId && !this.activeResponse && this.ready && !this.stopped) {
+        this.send({ type: "response.create" });
+        this.activeResponse = true;
+      }
       return;
     }
 
@@ -421,6 +695,19 @@ export class AzureRealtimeBridge implements AIBridge {
             String(item.arguments ?? "{}")
           );
         }
+      }
+      // The goodbye audio for this response has now fully streamed out — safe to
+      // actually disconnect without cutting the agent off mid-sentence.
+      if (this.endCallRequested) {
+        this.endCallRequested = false;
+        this.endCall?.();
+      }
+      // Same reasoning: wait for the "connecting you now" line to finish
+      // streaming before actually redirecting the call.
+      if (this.pendingTransfer) {
+        const selector = this.pendingTransfer;
+        this.pendingTransfer = undefined;
+        this.transferRequested?.(selector);
       }
       return;
     }
@@ -451,10 +738,50 @@ export class AzureRealtimeBridge implements AIBridge {
       return;
     }
 
+    // The chosen transcription model may be unavailable on this deployment; retry
+    // the failed item's sibling turns with whisper-1 so caller transcripts keep flowing.
+    if (type === "conversation.item.input_audio_transcription.failed") {
+      this.fallBackToWhisper("input transcription failed");
+      return;
+    }
+
     if (type === "error") {
-      const error = event.error as { message?: string; code?: string } | undefined;
+      const error = event.error as
+        | { message?: string; code?: string; param?: string }
+        | undefined;
       // response.cancel with no active response is benign noise during barge-in.
       if (error?.code === "response_cancel_not_active") return;
+
+      const detail = `${error?.message ?? ""} ${error?.param ?? ""}`;
+      if (!this.vadFellBack && /turn_detection|semantic_vad/i.test(detail)) {
+        this.vadFellBack = true;
+        this.send({
+          type: "session.update",
+          session: {
+            type: "realtime",
+            audio: {
+              input: {
+                turn_detection: {
+                  type: "server_vad",
+                  threshold: 0.5,
+                  prefix_padding_ms: 300,
+                  silence_duration_ms: 600
+                }
+              }
+            }
+          }
+        });
+        this.options.logger?.info(
+          { callId: this.session?.callId },
+          "Semantic VAD unavailable; fell back to server VAD"
+        );
+        return;
+      }
+      if (!this.transcribeFellBack && /transcri/i.test(detail)) {
+        this.fallBackToWhisper(detail.trim());
+        return;
+      }
+
       this.options.logger?.error(
         { callId: this.session?.callId, error: error?.message ?? "unknown", code: error?.code },
         "Azure realtime server error"
@@ -462,9 +789,68 @@ export class AzureRealtimeBridge implements AIBridge {
     }
   }
 
+  private fallBackToWhisper(reason: string): void {
+    if (this.transcribeFellBack) return;
+    this.transcribeFellBack = true;
+    this.send({
+      type: "session.update",
+      session: {
+        type: "realtime",
+        audio: {
+          input: {
+            transcription: transcriptionConfig(
+              "whisper-1",
+              this.session?.agent.languages ?? []
+            )
+          }
+        }
+      }
+    });
+    this.options.logger?.info(
+      { callId: this.session?.callId, reason },
+      "Fell back to whisper-1 input transcription"
+    );
+  }
+
   private async executeToolCall(callId: string, name: string, rawArguments: string): Promise<void> {
     if (!callId || !name || this.handledToolCalls.has(callId)) return;
     this.handledToolCalls.add(callId);
+
+    if (name === "end_call") {
+      this.endCallRequested = true;
+      this.send({
+        type: "conversation.item.create",
+        item: {
+          type: "function_call_output",
+          call_id: callId,
+          output: JSON.stringify({ ended: true })
+        }
+      });
+      this.transcript?.({ role: "tool", content: "end_call -> {\"ended\":true}", at: new Date() });
+      return;
+    }
+
+    if (name === "transfer_to_staff") {
+      let selector: StaffSelector = {};
+      try {
+        const parsed = rawArguments ? JSON.parse(rawArguments) : {};
+        selector = { staffId: parsed.staffId, staffName: parsed.staffName };
+      } catch {
+        // Malformed arguments still transfer with no selector — findStaff
+        // returning nothing is handled the same as "staff not found" below.
+      }
+      this.pendingTransfer = selector;
+      this.send({
+        type: "conversation.item.create",
+        item: {
+          type: "function_call_output",
+          call_id: callId,
+          output: JSON.stringify({ transferring: true })
+        }
+      });
+      this.transcript?.({ role: "tool", content: "transfer_to_staff -> {\"transferring\":true}", at: new Date() });
+      return;
+    }
 
     let output: unknown;
     let parsedInput: unknown;
@@ -544,6 +930,29 @@ export class AzureRealtimeBridge implements AIBridge {
       }
     }
 
+    // Tool results are literal English JSON injected right before the next response, which
+    // biases the model back toward English by recency. Reassert language/tone as a system
+    // context item — NOT via response.instructions, which REPLACES the session persona for
+    // that response and made the agent sound flat and robotic right after every tool call.
+    const languages = this.session?.agent.languages ?? [];
+    if (languages.length > 1) {
+      this.send({
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "system",
+          content: [
+            {
+              type: "input_text",
+              text:
+                "The tool result above is data, not a language cue. Keep holding the language " +
+                "already established this call, in the SAME warm tone the caller was just hearing " +
+                "— do not switch to English or shift into a flat reading voice because of it."
+            }
+          ]
+        }
+      });
+    }
     this.send({ type: "response.create" });
     this.activeResponse = true;
   }

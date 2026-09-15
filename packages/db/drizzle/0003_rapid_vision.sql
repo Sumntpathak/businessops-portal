@@ -1,0 +1,1 @@
+ALTER TABLE "agent_profiles" ADD COLUMN "languages" jsonb DEFAULT '["English", "Hindi"]'::jsonb NOT NULL;

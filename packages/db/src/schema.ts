@@ -54,7 +54,8 @@ export const callStatusEnum = pgEnum("call_status", [
   "in_progress",
   "completed",
   "failed",
-  "abandoned"
+  "abandoned",
+  "transferred"
 ]);
 export const transcriptRoleEnum = pgEnum("transcript_role", [
   "caller",
@@ -62,11 +63,20 @@ export const transcriptRoleEnum = pgEnum("transcript_role", [
   "system",
   "tool"
 ]);
+export const availabilityOverrideKindEnum = pgEnum("availability_override_kind", [
+  "day_hours",
+  "block",
+  "add"
+]);
 export const bookingStatusEnum = pgEnum("booking_status", [
   "confirmed",
   "cancelled",
   "completed",
   "no_show"
+]);
+export const callbackRequestStatusEnum = pgEnum("callback_request_status", [
+  "pending",
+  "done"
 ]);
 export const googleConnectionStatusEnum = pgEnum("google_connection_status", [
   "active",
@@ -92,6 +102,17 @@ export const users = pgTable(
   (table) => [uniqueIndex("users_email_uidx").on(table.email)]
 );
 
+export const waitlistSignups = pgTable(
+  "waitlist_signups",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    email: citext("email").notNull(),
+    source: text("source").notNull().default("landing"),
+    ...auditColumns()
+  },
+  (table) => [uniqueIndex("waitlist_signups_email_uidx").on(table.email)]
+);
+
 export const tenants = pgTable(
   "tenants",
   {
@@ -102,6 +123,9 @@ export const tenants = pgTable(
     businessPhone: text("business_phone").notNull(),
     websiteUrl: text("website_url").notNull(),
     timezone: text("timezone").notNull().default("Asia/Kolkata"),
+    // Opt-in: Twilio places caller-consent/compliance responsibility on us, not
+    // them, so recording the transferred call segment defaults off per tenant.
+    transferRecordingEnabled: boolean("transfer_recording_enabled").notNull().default(false),
     deletedAt: timestamp("deleted_at", { withTimezone: true, mode: "date" }),
     ...auditColumns()
   },
@@ -138,6 +162,7 @@ export const agentProfiles = pgTable(
     agentMd: text("agent_md").notNull(),
     voiceGreeting: text("voice_greeting").notNull(),
     languageMode: languageModeEnum("language_mode").notNull().default("hinglish"),
+    languages: jsonb("languages").$type<string[]>().notNull().default(sql`'["English", "Hindi"]'::jsonb`),
     version: integer("version").notNull().default(1),
     source: agentProfileSourceEnum("source").notNull(),
     updatedBy: uuid("updated_by")
@@ -187,6 +212,23 @@ export const phoneNumbers = pgTable(
     uniqueIndex("phone_numbers_e164_uidx").on(table.e164),
     index("phone_numbers_tenant_id_idx").on(table.tenantId)
   ]
+);
+
+export const tenantTwilioCredentials = pgTable(
+  "tenant_twilio_credentials",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    accountSid: text("account_sid").notNull(),
+    // AES-256-GCM ciphertext (iv + tag + data, base64) — see lib/crypto/secret-box.
+    authTokenCiphertext: text("auth_token_ciphertext").notNull(),
+    phoneNumberSid: text("phone_number_sid").notNull(),
+    webhookConfiguredAt: timestamp("webhook_configured_at", { withTimezone: true, mode: "date" }),
+    ...auditColumns()
+  },
+  (table) => [uniqueIndex("tenant_twilio_credentials_tenant_id_uidx").on(table.tenantId)]
 );
 
 export const callers = pgTable(
@@ -250,13 +292,19 @@ export const calls = pgTable(
       .defaultNow(),
     endedAt: timestamp("ended_at", { withTimezone: true, mode: "date" }),
     durationSeconds: integer("duration_seconds"),
+    // Reused for the transferred segment's recording when a tenant has
+    // transferRecordingEnabled — nothing else populates this column today.
     recordingUrl: text("recording_url"),
+    transferredToStaffId: uuid("transferred_to_staff_id").references(() => staff.id, {
+      onDelete: "set null"
+    }),
     ...auditColumns()
   },
   (table) => [
     uniqueIndex("calls_provider_call_sid_uidx").on(table.providerCallSid),
     index("calls_tenant_id_idx").on(table.tenantId),
-    index("calls_caller_id_idx").on(table.callerId)
+    index("calls_caller_id_idx").on(table.callerId),
+    index("calls_transferred_to_staff_id_idx").on(table.transferredToStaffId)
   ]
 );
 
@@ -327,6 +375,30 @@ export const services = pgTable(
   ]
 );
 
+export const staff = pgTable(
+  "staff",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    // Nullable today; call transfer (a later phase) will require this to be set
+    // before a staff member can receive a live transferred call.
+    phoneE164: text("phone_e164"),
+    isRegisteredAgent: boolean("is_registered_agent").notNull().default(false),
+    // Free text so the credential this flag represents stays business-specific
+    // (e.g. "MARA registered") rather than hardcoding one industry's term.
+    credentialLabel: text("credential_label").notNull().default(""),
+    active: boolean("active").notNull().default(true),
+    ...auditColumns()
+  },
+  (table) => [
+    uniqueIndex("staff_tenant_name_uidx").on(table.tenantId, table.name),
+    index("staff_tenant_id_idx").on(table.tenantId)
+  ]
+);
+
 export const bookings = pgTable(
   "bookings",
   {
@@ -340,6 +412,9 @@ export const bookings = pgTable(
     serviceId: uuid("service_id")
       .notNull()
       .references(() => services.id, { onDelete: "restrict" }),
+    // Nullable: a booking may have no specific staff assigned (auto-assign
+    // mode, or tenants that never add staff) — must stay backward compatible.
+    staffId: uuid("staff_id").references(() => staff.id, { onDelete: "set null" }),
     startsAt: timestamp("starts_at", { withTimezone: true, mode: "date" }).notNull(),
     endsAt: timestamp("ends_at", { withTimezone: true, mode: "date" }).notNull(),
     status: bookingStatusEnum("status").notNull().default("confirmed"),
@@ -356,7 +431,40 @@ export const bookings = pgTable(
     index("bookings_tenant_id_idx").on(table.tenantId),
     index("bookings_caller_id_idx").on(table.callerId),
     index("bookings_service_id_idx").on(table.serviceId),
+    index("bookings_staff_id_idx").on(table.staffId),
     index("bookings_source_call_id_idx").on(table.sourceCallId)
+  ]
+);
+
+/**
+ * A "take a message" / call-back request the voice agent recorded during a
+ * call. Staff resolve these from the dashboard — there is no automatic
+ * notification channel yet, so this table is the only record that a caller
+ * asked to be called back.
+ */
+export const callbackRequests = pgTable(
+  "callback_requests",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    callerId: uuid("caller_id")
+      .notNull()
+      .references(() => callers.id, { onDelete: "restrict" }),
+    sourceCallId: uuid("source_call_id").references(() => calls.id, {
+      onDelete: "set null"
+    }),
+    reason: text("reason").notNull().default(""),
+    preferredTime: text("preferred_time").notNull().default(""),
+    status: callbackRequestStatusEnum("status").notNull().default("pending"),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true, mode: "date" }),
+    ...auditColumns()
+  },
+  (table) => [
+    index("callback_requests_tenant_status_idx").on(table.tenantId, table.status),
+    index("callback_requests_tenant_id_idx").on(table.tenantId),
+    index("callback_requests_caller_id_idx").on(table.callerId)
   ]
 );
 
@@ -377,6 +485,53 @@ export const businessHours = pgTable(
     uniqueIndex("business_hours_tenant_weekday_uidx").on(table.tenantId, table.weekday),
     index("business_hours_tenant_id_idx").on(table.tenantId),
     check("business_hours_weekday_check", sql`${table.weekday} between 0 and 6`)
+  ]
+);
+
+/**
+ * Explicit admin overrides layered on top of the weekly business_hours
+ * template. These always win over generated slots for the date/window they
+ * cover — the single source of truth the voice agent's availability lookup
+ * must respect ahead of the mechanically generated default.
+ *
+ * - day_hours: replaces business_hours for one specific date only (opens/closes/closed).
+ * - block: marks an exact window unavailable even though it falls inside normal hours.
+ * - add: opens an exact window that would not otherwise exist (outside normal hours).
+ */
+export const availabilityOverrides = pgTable(
+  "availability_overrides",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    kind: availabilityOverrideKindEnum("kind").notNull(),
+    // Business-local calendar date (YYYY-MM-DD) this override applies to,
+    // stored separately from startsAt/endsAt so day_hours rows (which have no
+    // absolute timestamp of their own) can still be looked up by date.
+    date: date("date", { mode: "string" }).notNull(),
+    // day_hours only:
+    opens: time("opens"),
+    closes: time("closes"),
+    closed: boolean("closed"),
+    // block / add only:
+    startsAt: timestamp("starts_at", { withTimezone: true, mode: "date" }),
+    endsAt: timestamp("ends_at", { withTimezone: true, mode: "date" }),
+    note: text("note").notNull().default(""),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    ...auditColumns()
+  },
+  (table) => [
+    index("availability_overrides_tenant_date_idx").on(table.tenantId, table.date),
+    index("availability_overrides_tenant_id_idx").on(table.tenantId),
+    check(
+      "availability_overrides_day_hours_check",
+      sql`${table.kind} <> 'day_hours' OR (${table.closed} IS NOT NULL AND (${table.closed} OR (${table.opens} IS NOT NULL AND ${table.closes} IS NOT NULL)))`
+    ),
+    check(
+      "availability_overrides_window_check",
+      sql`${table.kind} = 'day_hours' OR (${table.startsAt} IS NOT NULL AND ${table.endsAt} IS NOT NULL AND ${table.startsAt} < ${table.endsAt})`
+    )
   ]
 );
 

@@ -1,4 +1,4 @@
-import { hash, argon2id } from "argon2";
+import bcrypt from "bcryptjs";
 import { eq } from "drizzle-orm";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
@@ -6,26 +6,14 @@ import { schema } from "@recepto/db";
 import { apiError } from "@/lib/api";
 import { signupSchema } from "@/lib/auth-schemas";
 import { db } from "@/lib/db";
-import { checkAuthRateLimit, getClientIp } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 
+// Redis-backed rate limiting was removed here for the same reason it was
+// removed from the login route: a Redis outage made every signup fail with
+// a 503 instead of just skipping the rate-limit check. Signup must not
+// depend on Redis being up.
 export async function POST(request: NextRequest) {
-  try {
-    const limit = await checkAuthRateLimit(getClientIp(request));
-
-    if (!limit.allowed) {
-      return apiError(
-        "AUTH_RATE_LIMITED",
-        "Too many signup attempts. Please try again later.",
-        429
-      );
-    }
-  } catch (error) {
-    console.error("Signup rate limiter unavailable", error);
-    return apiError("AUTH_UNAVAILABLE", "Signup is temporarily unavailable.", 503);
-  }
-
   const body = await request.json().catch(() => null);
   const parsed = signupSchema.safeParse(body);
 
@@ -47,12 +35,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const passwordHash = await hash(parsed.data.password, {
-    type: argon2id,
-    memoryCost: 19_456,
-    timeCost: 2,
-    parallelism: 1
-  });
+  const passwordHash = await bcrypt.hash(parsed.data.password, 12);
 
   try {
     const [user] = await db

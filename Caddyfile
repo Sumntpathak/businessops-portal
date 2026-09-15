@@ -1,0 +1,7 @@
+{$WEB_DOMAIN} {
+	reverse_proxy web:3000
+}
+
+{$VOICE_DOMAIN} {
+	reverse_proxy voice:3001
+}

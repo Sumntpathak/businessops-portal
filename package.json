@@ -3,9 +3,9 @@
     "version":  "0.1.0",
     "private":  true,
     "packageManager":  "pnpm@10.33.0",
-    "engines":  {
-                    "node":  "\u003e=20 \u003c21"
-                },
+    "engines": {
+        "node": ">=20"
+    },
     "scripts":  {
                     "dev":  "docker compose up --build",
                     "build":  "pnpm --filter @recepto/shared build \u0026\u0026 pnpm --filter @recepto/db build \u0026\u0026 pnpm --filter @recepto/calendar build \u0026\u0026 pnpm --filter @recepto/web build \u0026\u0026 pnpm --filter @recepto/voice build",

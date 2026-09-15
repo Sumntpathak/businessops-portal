@@ -1,14 +1,14 @@
 import NextAuth from "next-auth";
 import Credentials from "next-auth/providers/credentials";
 import Google from "next-auth/providers/google";
-import { verify } from "argon2";
+import bcrypt from "bcryptjs";
 import { eq } from "drizzle-orm";
 import { schema } from "@recepto/db";
-import { validateEnv } from "@recepto/shared/env";
+import { validateCoreEnv } from "@recepto/shared/env";
 import { db } from "@/lib/db";
 import { loginSchema } from "@/lib/auth-schemas";
 
-const env = validateEnv(process.env);
+const env = validateCoreEnv(process.env);
 const secureCookies = process.env.NODE_ENV === "production";
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
@@ -68,7 +68,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           return null;
         }
 
-        const validPassword = await verify(user.passwordHash, parsed.data.password).catch(
+        const validPassword = await bcrypt.compare(parsed.data.password, user.passwordHash).catch(
           () => false
         );
 
