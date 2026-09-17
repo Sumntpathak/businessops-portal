@@ -109,7 +109,8 @@ describe("buildSessionConfig", () => {
           type: "server_vad",
           threshold: 0.5,
           prefix_padding_ms: 250,
-          silence_duration_ms: 450
+          silence_duration_ms: 450,
+          create_response: false
         }
       },
       output: {
@@ -119,6 +120,13 @@ describe("buildSessionConfig", () => {
     });
     assert.equal(config.tool_choice, "auto");
     assert.ok(Array.isArray(config.tools) && config.tools.length > 0);
+  });
+
+  it("disables Azure's auto-created response since this mode manually creates one on speech_stopped", () => {
+    const config = buildSessionConfig(session, "alloy") as {
+      audio: { input: { turn_detection: { create_response: boolean } } };
+    };
+    assert.equal(config.audio.input.turn_detection.create_response, false);
   });
 });
 

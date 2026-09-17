@@ -406,7 +406,15 @@ export function buildSessionConfig(
           type: "server_vad",
           threshold: 0.5,
           prefix_padding_ms: 250,
-          silence_duration_ms: 450
+          silence_duration_ms: 450,
+          // WebSocket/Twilio mode manually sends response.create on
+          // speech_stopped (see handleServerEvent). server_vad defaults
+          // create_response to true, so without this flag Azure ALSO
+          // auto-creates a response for the same speech_stopped event —
+          // both fire and one is rejected with
+          // conversation_already_has_active_response. SIP mode (below)
+          // relies on this auto-create instead and must keep the default.
+          create_response: false
         }
       },
       output: {
@@ -420,6 +428,8 @@ export function buildSessionConfig(
 /**
  * Configuration payload for the SIP REST accept endpoint (POST /realtime/calls/<call_id>/accept).
  * Adheres strictly to Azure OpenAI Realtime SIP schema with audio.input and audio.output blocks.
+ * Unlike buildSessionConfig, SIP mode never manually sends response.create — it
+ * depends on server_vad's default create_response:true to generate replies.
  */
 export function buildSipAcceptConfig(
   session: CallSession,
@@ -787,7 +797,12 @@ export class AzureRealtimeBridge implements AIBridge {
                   type: "server_vad",
                   threshold: 0.5,
                   prefix_padding_ms: 300,
-                  silence_duration_ms: 600
+                  silence_duration_ms: 600,
+                  // Preserve the same create_response setting as the initial
+                  // config — WebSocket mode must keep auto-create disabled
+                  // (it manually creates responses itself) or this fallback
+                  // would silently reintroduce the double-response race.
+                  ...(this.options.attachCallId ? {} : { create_response: false })
                 }
               }
             }
