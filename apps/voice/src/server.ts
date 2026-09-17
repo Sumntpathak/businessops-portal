@@ -891,13 +891,14 @@ async function handleAzureSipCall(
 
   await azureSip.accept(
     providerCallId,
-    buildSipAcceptConfig(session, env.AZURE_REALTIME_MODEL)
+    buildSipAcceptConfig(session, env.AZURE_REALTIME_MODEL, env.AZURE_REALTIME_VOICE)
   );
 
   const bridge = new AzureRealtimeBridge({
     url: env.AZURE_REALTIME_URL ?? "",
     apiKey: env.AZURE_REALTIME_KEY ?? "",
     model: env.AZURE_REALTIME_MODEL,
+    voice: env.AZURE_REALTIME_VOICE,
     attachCallId: providerCallId,
     logger: app.log
   });
@@ -1198,6 +1199,7 @@ mediaStreams.on("connection", (socket, request) => {
           url: env.AZURE_REALTIME_URL,
           apiKey: env.AZURE_REALTIME_KEY ?? "",
           model: env.AZURE_REALTIME_MODEL,
+          voice: env.AZURE_REALTIME_VOICE,
           logger: app.log
         });
   let session: CallSession | undefined;
@@ -1462,7 +1464,7 @@ browserTestStreams.on("connection", (socket, request) => {
             url: env.AZURE_REALTIME_URL,
             apiKey: env.AZURE_REALTIME_KEY ?? "",
             model: env.AZURE_REALTIME_MODEL,
-            voice: rawVoice || undefined,
+            voice: rawVoice || env.AZURE_REALTIME_VOICE,
             logger: app.log
           });
     let session: CallSession | undefined;

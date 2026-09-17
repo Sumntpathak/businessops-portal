@@ -31,6 +31,7 @@ export const voiceEnvSchema = z.object({
   AZURE_REALTIME_URL: z.string().url().optional(),
   AZURE_REALTIME_KEY: z.string().min(1).optional(),
   AZURE_REALTIME_MODEL: z.string().default("gpt-realtime-mini"),
+  AZURE_REALTIME_VOICE: z.string().default("shimmer"),
   // Present only once the Azure SIP connector is configured; the /azure/incoming
   // webhook route stays disabled until both are set.
   AZURE_WEBHOOK_SECRET: z.string().min(1).optional(),
