@@ -28,6 +28,11 @@ export interface CallSession {
     languageMode: "hinglish" | "english" | "hindi";
     languages: string[];
   };
+  services: Array<{
+    name: string;
+    durationMinutes: number;
+    price: string | null;
+  }>;
   memories: Array<{
     id: string;
     kind: "fact" | "preference" | "summary";

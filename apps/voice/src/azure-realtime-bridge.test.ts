@@ -22,6 +22,7 @@ const session: CallSession = {
     { id: "f2", key: "target_date", label: "Target date", type: "text", options: [], priority: "key", sort: 20, active: true }
   ],
   agent: { agentMd: "# Holistic", voiceGreeting: "Hello", languageMode: "english", languages: ["English"] },
+  services: [{ name: "Consultation", durationMinutes: 30, price: "110.00" }],
   memories: [],
   startedAt: "2026-07-06T04:00:00.000Z"
 };
@@ -41,14 +42,37 @@ describe("realtime caller profile instructions", () => {
     assert.doesNotMatch(instructions, /save_memory with kind 'fact'.*Caller name/);
   });
 
-  it("instructs holding the opening language until the caller clearly switches, then holding the new one", () => {
+  it("instructs greeting a returning caller by name before asking anything else", () => {
+    const instructions = buildInstructions(session);
+    assert.match(instructions, /RETURNING CALLER/);
+    assert.match(instructions, /Greet them by name warmly right after your opening greeting/);
+    assert.match(instructions, /NEVER ask a returning caller for their name/);
+  });
+
+  it("lists service prices upfront and requires stating them before booking tools", () => {
+    const instructions = buildInstructions(session);
+    assert.match(instructions, /SERVICES & PRICING/);
+    assert.match(instructions, /Consultation \(30 min\): 110\.00 dollars/);
+    assert.match(instructions, /ALWAYS mention the relevant service's price naturally, ONE time, before moving into checking availability or booking/);
+    assert.match(instructions, /Never call check_availability or create_booking before the caller has heard the price/);
+  });
+
+  it("tells the agent not to invent a price when a service has none set", () => {
+    const instructions = buildInstructions({
+      ...session,
+      services: [{ name: "Mystery Service", durationMinutes: 30, price: null }]
+    });
+    assert.match(instructions, /Mystery Service \(30 min\): price not set — do not guess a number/);
+  });
+
+  it("instructs asking the caller's language preference upfront, then holding it for the rest of the call", () => {
     const instructions = buildInstructions({
       ...session,
       agent: { ...session.agent, languages: ["English", "Hindi", "Spanish"] }
     });
     assert.match(instructions, /English, Hindi, Spanish/);
-    assert.match(instructions, /Do not switch languages preemptively/);
-    assert.match(instructions, /HOLD that language for the rest of the call/);
+    assert.match(instructions, /ask ONE short, natural question about which language they'd prefer/);
+    assert.match(instructions, /HOLD it for the rest of the call/);
   });
 
   it("locks to a single language when only one is configured", () => {

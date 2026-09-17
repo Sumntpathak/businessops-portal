@@ -19,6 +19,7 @@ const session: CallSession = {
   },
   intakeFields: [],
   agent: { agentMd: "# Clinic", voiceGreeting: "Hello", languageMode: "hinglish", languages: ["English", "Hindi"] },
+  services: [],
   memories: [],
   startedAt: "2026-07-06T04:00:00.000Z"
 };

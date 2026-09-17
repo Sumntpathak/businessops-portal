@@ -199,6 +199,11 @@ interface CachedTenantMeta {
     sort: number;
     active: boolean;
   }[];
+  services: {
+    name: string;
+    durationMinutes: number;
+    price: string | null;
+  }[];
 }
 
 const CACHE_TTL_MS = 60_000;
@@ -250,7 +255,7 @@ async function getCachedTenantMeta(tenantId: string): Promise<CachedTenantMeta> 
   }
 
   const scoped = withTenant(db, tenantId);
-  const [tenantRows, profileRows, intakeFields] = await Promise.all([
+  const [tenantRows, profileRows, intakeFields, services] = await Promise.all([
     db
       .select({ timezone: schema.tenants.timezone })
       .from(schema.tenants)
@@ -279,7 +284,16 @@ async function getCachedTenantMeta(tenantId: string): Promise<CachedTenantMeta> 
       })
       .from(schema.intakeFields)
       .where(scoped.where(schema.intakeFields, eq(schema.intakeFields.active, true)))
-      .orderBy(schema.intakeFields.sort)
+      .orderBy(schema.intakeFields.sort),
+    db
+      .select({
+        name: schema.services.name,
+        durationMinutes: schema.services.durationMinutes,
+        price: schema.services.price
+      })
+      .from(schema.services)
+      .where(scoped.where(schema.services, eq(schema.services.active, true)))
+      .orderBy(schema.services.name)
   ]);
 
   const tenant = tenantRows[0];
@@ -305,7 +319,8 @@ async function getCachedTenantMeta(tenantId: string): Promise<CachedTenantMeta> 
       priority: field.priority as "key" | "optional",
       sort: field.sort,
       active: field.active
-    }))
+    })),
+    services
   };
 
   tenantMetaCache.set(tenantId, { data, expiresAt: Date.now() + CACHE_TTL_MS });
@@ -869,6 +884,7 @@ async function handleAzureSipCall(
     caller,
     intakeFields: tenantMeta.intakeFields,
     agent: tenantMeta.agent,
+    services: tenantMeta.services,
     memories,
     startedAt: (call.startedAt ?? new Date()).toISOString()
   };
@@ -1117,6 +1133,7 @@ async function loadCallSession(callId: string): Promise<CallSession> {
       caller,
       intakeFields: tenantMeta.intakeFields,
       agent: tenantMeta.agent,
+      services: tenantMeta.services,
       memories,
       startedAt: call.startedAt.toISOString()
     };
@@ -1144,6 +1161,7 @@ async function loadCallSession(callId: string): Promise<CallSession> {
         languageMode: "hinglish",
         languages: ["English", "Hindi"]
       },
+      services: [],
       memories: [],
       startedAt: new Date().toISOString()
     };

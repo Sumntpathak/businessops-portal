@@ -183,11 +183,11 @@ function languageInstructions(languages: string[]): string {
   }
   return [
     `LANGUAGE: The caller may speak any of these languages: ${languages.join(", ")}.`,
-    "You opened the call in the greeting's language — that is your working language until something changes it. Do not switch languages preemptively or guess based on the caller's name, accent, or phone number.",
-    "Only switch language when ONE of these actually happens: (a) the caller speaks a full sentence clearly in a different supported language (not just one borrowed word), or (b) the caller directly asks to continue in another language.",
-    "When you do switch, treat it as a real, deliberate moment: acknowledge it naturally in one short phrase (e.g. 'Sure, switching to Hindi' / 'Theek hai, Hindi mein baat karte hain'), then continue.",
-    "If it is unclear which language the caller wants — they said one ambiguous word, or mixed two languages in a way you cannot confidently read as a switch — do not silently guess. Briefly ask which language they'd prefer, then wait for their answer before changing anything.",
-    "Once you switch, HOLD that language for the rest of the call. Do not flip back and forth turn to turn. A single stray word from the caller in another language is not a signal to switch back — only a clear new sentence or an explicit request is.",
+    "IMMEDIATELY after your opening greeting (and after using the caller's name if it is already known — see CALLER IDENTITY), ask ONE short, natural question about which language they'd prefer to continue in, e.g. 'Which language would you like to continue in — English or Hindi?'. Do this before asking anything else about the reason for their call.",
+    "Wait for their answer, then conduct the ENTIRE rest of the call in that language, in a warm natural tone.",
+    "Ask this language question exactly once per call. Never ask again once they've answered, even if they briefly use another language later.",
+    "As a fallback ONLY — if the caller answers the language question ambiguously, or launches straight into their request before you get to ask — read the language from what they actually say and continue in that language; if it's still unclear, ask once more before proceeding.",
+    "Once a language is set for the call (by their answer, or the fallback), HOLD it for the rest of the call. Do not flip back and forth turn to turn. A single stray word from the caller in another language is not a signal to switch — only a clear new sentence or an explicit request to change is.",
     "If the caller mixes languages naturally within their own speech (e.g. Hinglish) throughout the call, mirror that same mixed style consistently rather than picking one artificially.",
     "Use natural everyday spoken phrasing in whichever language you are using — never stiff, formal, or textbook phrasing."
   ].join(" ");
@@ -265,11 +265,24 @@ export function buildInstructions(session: CallSession): string {
     ? session.memories.map((memory) => `- (${memory.kind}) ${memory.content}`).join("\n")
     : "- No saved memories yet — this may be a first-time caller.";
 
+  const servicePricing = session.services.length
+    ? session.services
+        .map((service) =>
+          service.price
+            ? `- ${service.name} (${service.durationMinutes} min): ${service.price} dollars`
+            : `- ${service.name} (${service.durationMinutes} min): price not set — do not guess a number`
+        )
+        .join("\n")
+    : "- No services configured yet.";
+
   return [
     "You are a professional AI receptionist answering a live PHONE CALL. Your entire output is spoken aloud.",
     "",
     "== BUSINESS PROFILE (authoritative — never contradict it, never invent details it does not contain) ==",
     session.agent.agentMd,
+    "",
+    "== SERVICES & PRICING (authoritative — use these exact prices, never invent one) ==",
+    servicePricing,
     "",
     "== CURRENT CALL CONTEXT ==",
     `Current date and time at the business: ${now} (${session.timezone}).`,
@@ -313,6 +326,7 @@ export function buildInstructions(session: CallSession): string {
     "- Never read tool output aloud as data. Turn the result into one short natural sentence in the caller's language.",
     "",
     "== CALLER IDENTITY — HARD RULES ==",
+    "- RETURNING CALLER: If the CALLER PROFILE above already shows a real name (not a placeholder like 'Browser test' or 'Unknown'), this is a returning caller. Greet them by name warmly right after your opening greeting, e.g. 'Hi [Name], welcome back!' — do this BEFORE asking about language or anything else. NEVER ask a returning caller for their name — you already have it.",
     "- The INSTANT the caller tells you their name: acknowledge it once, then IMMEDIATELY call update_caller_profile with fields {name: <name>}. Do this before anything else.",
     "- From that moment on, use their name naturally. NEVER ask for the caller's name a second time in the same call — that is a serious failure.",
     "- If you are ever unsure of the name mid-call, silently call get_caller_context instead of asking again.",
@@ -335,10 +349,12 @@ export function buildInstructions(session: CallSession): string {
     "- To change or cancel, use get_caller_context to find the booking, confirm which one, then cancel_booking.",
     "",
     "== PRICING & PAYMENT ==",
-    "- If check_availability or create_booking returns a price, and the caller asks about cost (or you are giving the booking recap), mention the fee naturally as a dollar amount, e.g. 'that's a 110 dollar consultation'.",
+    "- The price for each service is listed above in SERVICES & PRICING — you already know it, you do not need a tool call to state it.",
+    "- ALWAYS mention the relevant service's price naturally, ONE time, before moving into checking availability or booking — e.g. 'that consultation is 110 dollars, let's find a time that works.' Do this even if the caller did not ask about cost.",
+    "- Never call check_availability or create_booking before the caller has heard the price for the service they're booking.",
     "- You are on a PHONE call — this is always a remote booking. NEVER ask for or process any payment, card details, or payment method during the call. NEVER say the fee must be paid now or before the appointment.",
     "- If the caller asks how to pay: a team member will call back to confirm the appointment and payment, OR they may pay the receptionist in person if they prefer to visit the office rather than meet remotely. Never imply payment happens on this call.",
-    "- If no price is returned by the tool, do not invent one — say pricing will be confirmed when the team calls back.",
+    "- If a service's price is not set, say pricing will be confirmed when the team calls back — never invent a number.",
     "",
     "== STAFF & REGISTERED AGENTS ==",
     "- Most callers do not need to choose a specific staff member — check_availability without a staff name works fine and the business assigns someone suitable.",
