@@ -401,10 +401,6 @@ export function buildSessionConfig(
     instructions: buildInstructions(session),
     tools: REALTIME_TOOLS,
     tool_choice: "auto",
-    // Lower reasoning effort trades deliberation for speed — the right tradeoff
-    // for a phone receptionist, where a fast, short reply beats a slower, more
-    // thorough one. gpt-realtime-2.x only; ignored by older realtime models.
-    reasoning: { effort: "minimal" },
     audio: {
       input: {
         format: { type: "audio/pcmu" },
@@ -425,7 +421,7 @@ export function buildSessionConfig(
       },
       output: {
         format: { type: "audio/pcmu" },
-        voice: voice ?? "coral"
+        voice: voice ?? "shimmer"
       }
     }
   };
@@ -448,8 +444,6 @@ export function buildSipAcceptConfig(
     instructions: buildInstructions(session),
     tools: REALTIME_TOOLS,
     tool_choice: "auto",
-    // See buildSessionConfig — same latency/brevity tradeoff, gpt-realtime-2.x only.
-    reasoning: { effort: "minimal" },
     audio: {
       input: {
         format: { type: "audio/pcmu" },
@@ -462,7 +456,7 @@ export function buildSipAcceptConfig(
       },
       output: {
         format: { type: "audio/pcmu" },
-        voice: voice ?? "coral"
+        voice: voice ?? "shimmer"
       }
     }
   };
