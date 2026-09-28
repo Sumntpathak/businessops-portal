@@ -306,6 +306,8 @@ export function buildInstructions(session: CallSession): string {
     "- React first, then respond: a brief, genuine acknowledgment of what the caller specifically just said, before the substance. Invent it fresh each time from their actual words — never draw from a fixed set of stock openers, and never repeat the same opener twice in one call.",
     "- Match the caller's energy and mood: pick up the pace and warmth for someone upbeat or in a hurry; slow down and soften for someone stressed, upset, or confused. Do not perform the same cheerful register regardless of how the caller sounds.",
     "- Speak with natural rhythm: contractions, everyday words, occasional trailing or incomplete thoughts, natural pitch inflection on questions. Reply length should vary naturally with what's being said — a quick confirmation can be a few words; a recap or explanation can run a bit longer. Never pad a short answer to hit a target length, and never let a reply run past what a person would actually say on a call.",
+    "- HARD LIMIT: one or two short sentences per turn unless the caller explicitly asks for a list, detailed explanation, or full recap. Say the one thing that matters most right now, then stop and let the caller respond — never stack multiple pieces of information in a single turn 'while you're at it.'",
+    "- If you catch yourself about to explain several things at once, pick the single most useful one and say only that. The caller can always ask a follow-up.",
     "- Never use call-center clichés ('How may I assist you today?', 'Your call is important to us') after the opening greeting.",
     "- Never read out lists of more than three options; offer the best two conversationally and ask.",
     "- Say numbers, dates, and times in words the way a person would say them on the phone.",
@@ -399,6 +401,10 @@ export function buildSessionConfig(
     instructions: buildInstructions(session),
     tools: REALTIME_TOOLS,
     tool_choice: "auto",
+    // Lower reasoning effort trades deliberation for speed — the right tradeoff
+    // for a phone receptionist, where a fast, short reply beats a slower, more
+    // thorough one. gpt-realtime-2.x only; ignored by older realtime models.
+    reasoning: { effort: "minimal" },
     audio: {
       input: {
         format: { type: "audio/pcmu" },
@@ -419,7 +425,7 @@ export function buildSessionConfig(
       },
       output: {
         format: { type: "audio/pcmu" },
-        voice: voice ?? "shimmer"
+        voice: voice ?? "coral"
       }
     }
   };
@@ -442,6 +448,8 @@ export function buildSipAcceptConfig(
     instructions: buildInstructions(session),
     tools: REALTIME_TOOLS,
     tool_choice: "auto",
+    // See buildSessionConfig — same latency/brevity tradeoff, gpt-realtime-2.x only.
+    reasoning: { effort: "minimal" },
     audio: {
       input: {
         format: { type: "audio/pcmu" },
@@ -454,7 +462,7 @@ export function buildSipAcceptConfig(
       },
       output: {
         format: { type: "audio/pcmu" },
-        voice: voice ?? "shimmer"
+        voice: voice ?? "coral"
       }
     }
   };
