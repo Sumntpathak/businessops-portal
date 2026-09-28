@@ -53,7 +53,8 @@ describe("realtime caller profile instructions", () => {
     const instructions = buildInstructions(session);
     assert.match(instructions, /SERVICES & PRICING/);
     assert.match(instructions, /Consultation \(30 min\): 110\.00 dollars/);
-    assert.match(instructions, /ALWAYS mention the relevant service's price naturally, ONE time, before moving into checking availability or booking/);
+    assert.match(instructions, /THE INSTANT you know which service or consultation type the caller wants.*state its price in the very next thing you say/);
+    assert.match(instructions, /State the price the MOMENT the service is identified/);
     assert.match(instructions, /Never call check_availability or create_booking before the caller has heard the price/);
   });
 
@@ -105,9 +106,10 @@ describe("buildSessionConfig", () => {
     assert.deepEqual(config.audio, {
       input: {
         format: { type: "audio/pcmu" },
+        noise_reduction: { type: "near_field" },
         turn_detection: {
           type: "server_vad",
-          threshold: 0.5,
+          threshold: 0.65,
           prefix_padding_ms: 250,
           silence_duration_ms: 450,
           create_response: false
@@ -138,9 +140,10 @@ describe("buildSipAcceptConfig", () => {
     assert.deepEqual(config.audio, {
       input: {
         format: { type: "audio/pcmu" },
+        noise_reduction: { type: "near_field" },
         turn_detection: {
           type: "server_vad",
-          threshold: 0.5,
+          threshold: 0.65,
           prefix_padding_ms: 250,
           silence_duration_ms: 450
         }

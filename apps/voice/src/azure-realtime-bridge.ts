@@ -338,6 +338,7 @@ export function buildInstructions(session: CallSession): string {
     "== BOOKING RULES ==",
     "- NEVER check availability, offer, or accept bookings for dates or times in the past. Today's date is shown above in CURRENT CALL CONTEXT. Any requested date earlier than today must be politely redirected to today or a future date ('Today is [Day, Date] — let's look at available times starting from today onward').",
     "- CALLER PHONE NUMBER IS ALREADY KNOWN: The caller's phone number is already captured from caller ID (${session.caller.phoneE164}). NEVER ask the caller for their phone number or contact number to finalize a booking.",
+    "- THE INSTANT you know which service or consultation type the caller wants — even before asking their name, office, or date — state its price in the very next thing you say. E.g. caller says 'I want to book a consultation for a student visa' → your next line names the service AND the price together: 'The student services consultation is 110 dollars — which office works for you, or would you prefer remote?' Do not ask two more questions before mentioning price.",
     "- When the caller mentions a target day (e.g. 'next Tuesday', 'tomorrow'), confirm the service and, if not already given, ask once what time of day they'd prefer — the way a person naturally would — then call check_availability in that same turn once you have enough to search. Don't chain more than one clarifying question before checking; don't check availability with no sense at all of what they want.",
     "- Always check_availability before offering or confirming any time slot.",
     "- Offer and discuss times using the callerLocalTime labels from tool results — never do timezone math yourself and NEVER say UTC.",
@@ -352,7 +353,7 @@ export function buildInstructions(session: CallSession): string {
     "",
     "== PRICING & PAYMENT ==",
     "- The price for each service is listed above in SERVICES & PRICING — you already know it, you do not need a tool call to state it.",
-    "- ALWAYS mention the relevant service's price naturally, ONE time, before moving into checking availability or booking — e.g. 'that consultation is 110 dollars, let's find a time that works.' Do this even if the caller did not ask about cost.",
+    "- State the price the MOMENT the service is identified (see BOOKING RULES) — not later, not only if asked, not after other logistics questions. This is a hard requirement, not a nice-to-have.",
     "- Never call check_availability or create_booking before the caller has heard the price for the service they're booking.",
     "- You are on a PHONE call — this is always a remote booking. NEVER ask for or process any payment, card details, or payment method during the call. NEVER say the fee must be paid now or before the appointment.",
     "- If the caller asks how to pay: a team member will call back to confirm the appointment and payment, OR they may pay the receptionist in person if they prefer to visit the office rather than meet remotely. Never imply payment happens on this call.",
@@ -404,9 +405,11 @@ export function buildSessionConfig(
     audio: {
       input: {
         format: { type: "audio/pcmu" },
+        // See buildSipAcceptConfig — same noise-robustness reasoning.
+        noise_reduction: { type: "near_field" },
         turn_detection: {
           type: "server_vad",
-          threshold: 0.5,
+          threshold: 0.65,
           prefix_padding_ms: 250,
           silence_duration_ms: 450,
           // WebSocket/Twilio mode manually sends response.create on
@@ -447,9 +450,17 @@ export function buildSipAcceptConfig(
     audio: {
       input: {
         format: { type: "audio/pcmu" },
+        // Filters audio before VAD/the model sees it — reduces false barge-ins from
+        // background noise. "near_field" fits a caller speaking into their own phone,
+        // as opposed to a room/laptop mic picking up the caller from a distance.
+        noise_reduction: { type: "near_field" },
         turn_detection: {
           type: "server_vad",
-          threshold: 0.5,
+          // Raised from 0.5: background noise (traffic, other voices) was crossing
+          // the old threshold and triggering Azure's own barge-in cancellation
+          // mid-sentence (SIP mode has no client-side override for this — Azure's
+          // VAD alone decides). 0.65 needs a clearer, more deliberate interruption.
+          threshold: 0.65,
           prefix_padding_ms: 250,
           silence_duration_ms: 450
         }
