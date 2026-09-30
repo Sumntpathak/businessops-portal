@@ -649,14 +649,27 @@ export class DrizzleToolRepository implements ToolRepository {
     let phones = this.getCached(this.staffPhoneCache, tenantId);
     if (!phones) {
       const scoped = withTenant(this.db, tenantId);
-      phones = await this.db
-        .select({
-          id: schema.staff.id,
-          name: schema.staff.name,
-          phoneE164: schema.staff.phoneE164
-        })
-        .from(schema.staff)
-        .where(scoped.where(schema.staff, eq(schema.staff.active, true)));
+      const [staffRows, ownLines] = await Promise.all([
+        this.db
+          .select({
+            id: schema.staff.id,
+            name: schema.staff.name,
+            phoneE164: schema.staff.phoneE164
+          })
+          .from(schema.staff)
+          .where(scoped.where(schema.staff, eq(schema.staff.active, true))),
+        this.db
+          .select({ e164: schema.phoneNumbers.e164 })
+          .from(schema.phoneNumbers)
+          .where(scoped.where(schema.phoneNumbers))
+      ]);
+      // Never transfer to one of this business's own AI lines: the "transfer"
+      // would just dial the receptionist again and loop the caller back to it.
+      const ownNumbers = new Set(ownLines.map((line) => line.e164));
+      phones = staffRows.map((row) => ({
+        ...row,
+        phoneE164: row.phoneE164 && ownNumbers.has(row.phoneE164) ? null : row.phoneE164
+      }));
       this.setCached(this.staffPhoneCache, tenantId, phones);
     }
 

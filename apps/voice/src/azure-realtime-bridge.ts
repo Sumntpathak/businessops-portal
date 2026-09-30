@@ -234,8 +234,14 @@ const PCMU_BYTES_PER_MS = 8;
 /** Extra wait after the computed playback end, to cover carrier/network jitter. */
 const PLAYBACK_DRAIN_PAD_MS = 600;
 
-/** Matches the spoken transfer hold message ("...please stay on the line..."). */
-const HOLD_MESSAGE_PATTERN = /stay on the line/i;
+/**
+ * Matches the agent announcing a transfer in its own words: "stay on the line",
+ * "it may ring", "transferring you", "while I transfer you", "put you through",
+ * "connecting you". Deliberately excludes a bare "hold on", which the agent
+ * also says while looking up availability. Handles curly apostrophes.
+ */
+const HOLD_MESSAGE_PATTERN =
+  /stay on the line|(may|might|will) ring|transferring you|I[’']m transferring|(while|now) I[’']?(ll|m)? ?transfer|transfer you (now|to)|put you through|connecting you (now|to|with)/i;
 
 /** Max times per call the bridge will remind the agent to actually transfer. */
 const MAX_TRANSFER_NUDGES = 2;
@@ -816,7 +822,11 @@ export class AzureRealtimeBridge implements AIBridge {
         ]
       }
     });
-    this.send({ type: "response.create" });
+    // Force the tool call rather than hoping the model obeys the reminder.
+    this.send({
+      type: "response.create",
+      response: { tool_choice: { type: "function", name: "transfer_to_staff" } }
+    });
     this.activeResponse = true;
   }
 

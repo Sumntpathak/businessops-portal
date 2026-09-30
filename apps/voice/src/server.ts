@@ -258,7 +258,7 @@ async function getCachedTenantMeta(tenantId: string): Promise<CachedTenantMeta> 
   }
 
   const scoped = withTenant(db, tenantId);
-  const [tenantRows, profileRows, intakeFields, services, businessHours, transferTargets] = await Promise.all([
+  const [tenantRows, profileRows, intakeFields, services, businessHours, transferStaff, ownLines] = await Promise.all([
     db
       .select({ timezone: schema.tenants.timezone })
       .from(schema.tenants)
@@ -307,15 +307,18 @@ async function getCachedTenantMeta(tenantId: string): Promise<CachedTenantMeta> 
       .from(schema.businessHours)
       .where(scoped.where(schema.businessHours)),
     db
-      .select({ id: schema.staff.id })
+      .select({ phoneE164: schema.staff.phoneE164 })
       .from(schema.staff)
       .where(
         scoped.where(
           schema.staff,
           and(eq(schema.staff.active, true), isNotNull(schema.staff.phoneE164))
         )
-      )
-      .limit(1)
+      ),
+    db
+      .select({ e164: schema.phoneNumbers.e164 })
+      .from(schema.phoneNumbers)
+      .where(scoped.where(schema.phoneNumbers))
   ]);
 
   const tenant = tenantRows[0];
@@ -344,7 +347,11 @@ async function getCachedTenantMeta(tenantId: string): Promise<CachedTenantMeta> 
     })),
     services,
     businessHours,
-    transferAvailable: transferTargets.length > 0
+    // A staff phone that is one of the business's own AI lines would only loop
+    // the caller back to the receptionist, so it doesn't count as a transfer target.
+    transferAvailable: transferStaff.some(
+      (member) => member.phoneE164 !== null && !ownLines.some((line) => line.e164 === member.phoneE164)
+    )
   };
 
   tenantMetaCache.set(tenantId, { data, expiresAt: Date.now() + CACHE_TTL_MS });

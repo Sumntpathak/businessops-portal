@@ -249,6 +249,35 @@ describe("transfer nudge", () => {
     assert.ok(sent.some((e) => e.type === "response.create"));
     const nudge = JSON.stringify(sent.find((e) => e.type === "conversation.item.create"));
     assert.match(nudge, /did not call transfer_to_staff/);
+    const forced = sent.find((e) => e.type === "response.create") as { response?: { tool_choice?: unknown } };
+    assert.deepEqual(forced.response?.tool_choice, { type: "function", name: "transfer_to_staff" });
+  });
+
+  it("catches the transfer promise however the agent words it", () => {
+    for (const line of [
+      "Sure, I’ll connect you to someone who can assist with that. Please hold on while I transfer you. It might ring for a few seconds.",
+      "Understood, I’m starting the transfer now. Please hold on, and it’ll ring shortly. I’m transferring you to Lara now.",
+      "Sure, I'll put you through to one of our consultants now."
+    ]) {
+      const { sent, handle } = bridgeWithFakeSocket();
+      handle({
+        type: "response.done",
+        response: { status: "completed", output: [{ type: "message", content: [{ transcript: line }] }] }
+      });
+      assert.ok(sent.some((e) => e.type === "response.create"), `should nudge for: ${line}`);
+    }
+  });
+
+  it("does not nudge for a plain hold-on while checking availability", () => {
+    const { sent, handle } = bridgeWithFakeSocket();
+    handle({
+      type: "response.done",
+      response: {
+        status: "completed",
+        output: [{ type: "message", content: [{ transcript: "Sure, hold on a second while I check the calendar." }] }]
+      }
+    });
+    assert.equal(sent.length, 0);
   });
 
   it("does not nudge when the transfer tool was called, transfer is unavailable, or after two nudges", () => {

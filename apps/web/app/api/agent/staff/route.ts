@@ -33,6 +33,25 @@ async function saveStaff(request: NextRequest) {
   }
 
   const scoped = withTenant(db, auth.context.tenantId);
+
+  // A staff phone that is one of this business's own receptionist lines would make
+  // every "transfer" dial the AI again and loop the caller back to it.
+  const ownLines = await db
+    .select({ e164: schema.phoneNumbers.e164 })
+    .from(schema.phoneNumbers)
+    .where(scoped.where(schema.phoneNumbers));
+  const ownNumbers = new Set(ownLines.map((line) => line.e164));
+  const loopingMember = parsed.data.staff.find(
+    (member) => member.active && member.phoneE164 && ownNumbers.has(member.phoneE164)
+  );
+  if (loopingMember) {
+    return apiError(
+      "PHONE_IS_AGENT_LINE",
+      `${loopingMember.name}'s number is your AI receptionist's own line. Use a person's direct number, otherwise transfers loop back to the AI.`,
+      400
+    );
+  }
+
   await db.transaction(async (tx) => {
     const transactionScope = withTenant(tx, auth.context!.tenantId);
 
