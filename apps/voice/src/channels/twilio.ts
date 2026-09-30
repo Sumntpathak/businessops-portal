@@ -111,7 +111,13 @@ export class TwilioAdapter implements VoiceChannelAdapter {
    */
   transferInstructions(
     staffPhoneE164: string,
-    options: { record: boolean; actionUrl: string; recordingStatusCallbackUrl?: string }
+    options: {
+      record: boolean;
+      actionUrl: string;
+      recordingStatusCallbackUrl?: string;
+      /** Short ringback tone played before dialing so the caller hears "connecting". */
+      ringbackUrl?: string;
+    }
   ): string {
     const response = new twilio.twiml.VoiceResponse();
     if (options.record) {
@@ -120,10 +126,18 @@ export class TwilioAdapter implements VoiceChannelAdapter {
         "This call may be recorded for quality and compliance purposes."
       );
     }
+    if (options.ringbackUrl) {
+      response.play(options.ringbackUrl);
+    }
     response
       .dial({
         action: options.actionUrl,
         method: "POST",
+        // Ring the caller until the staff phone answers, with an Australian tone,
+        // instead of leaving dead air while the other phone rings.
+        answerOnBridge: true,
+        ringTone: "au",
+        timeout: 25,
         record: options.record ? "record-from-answer-dual" : "do-not-record",
         recordingStatusCallback: options.recordingStatusCallbackUrl,
         recordingStatusCallbackMethod: options.recordingStatusCallbackUrl ? "POST" : undefined

@@ -25,6 +25,7 @@ import {
   sipHeader,
   verifyWebhookSignature
 } from "./channels/azure-sip.js";
+import { buildRingbackWav } from "./audio/ringback.js";
 import { TwilioAdapter } from "./channels/twilio.js";
 import { startOnboardingWorker } from "./onboarding/worker.js";
 import {
@@ -356,6 +357,16 @@ function requestHeaders(
   return headers;
 }
 
+const ringbackWav = buildRingbackWav();
+
+// Fetched by Twilio (<Play>) while a call is being transferred to a person.
+app.get("/twilio/ringback.wav", async (_request, reply) =>
+  reply
+    .header("Cache-Control", "public, max-age=86400")
+    .type("audio/wav")
+    .send(ringbackWav)
+);
+
 app.get("/health", async () => ({
   ok: true as const,
   uptime: process.uptime()
@@ -593,6 +604,7 @@ app.post("/twilio/transfer/:callId", async (request, reply) => {
       twilioHttp.transferInstructions(staffMember.phoneE164, {
         record: tenant.transferRecordingEnabled,
         actionUrl: publicHttpUrl(`twilio/transfer-complete/${callId.data}`),
+        ringbackUrl: publicHttpUrl("twilio/ringback.wav"),
         recordingStatusCallbackUrl: tenant.transferRecordingEnabled
           ? publicHttpUrl(`twilio/recording-status/${callId.data}`)
           : undefined

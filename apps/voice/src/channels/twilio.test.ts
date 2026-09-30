@@ -42,6 +42,19 @@ describe("TwilioAdapter", () => {
     assert.match(xml, /<Number>\+15558675309<\/Number>/);
     assert.match(xml, /record="do-not-record"/);
     assert.doesNotMatch(xml, /<Say>/);
+    assert.match(xml, /answerOnBridge="true"/);
+    assert.match(xml, /ringTone="au"/);
+    assert.doesNotMatch(xml, /<Play>/);
+  });
+
+  it("plays the ringback tone before dialing when a ringback URL is given", () => {
+    const xml = new TwilioAdapter(options).transferInstructions("+15558675309", {
+      record: false,
+      actionUrl: "https://voice.example.com/twilio/transfer-complete/call-1",
+      ringbackUrl: "https://voice.example.com/twilio/ringback.wav"
+    });
+    assert.match(xml, /<Play>https:\/\/voice\.example\.com\/twilio\/ringback\.wav<\/Play>/);
+    assert.ok(xml.indexOf("<Play>") < xml.indexOf("<Dial"), "tone plays before the dial");
   });
 
   it("says a consent line and records dual-channel when recording is enabled", () => {

@@ -228,6 +228,15 @@ const VAD_THRESHOLD = 0.75;
 /** How long caller speech must last before it counts as an interruption (WebSocket mode). */
 const BARGE_IN_CONFIRM_MS = 300;
 
+/** G.711 mu-law at 8 kHz: 8 bytes of audio per millisecond. */
+const PCMU_BYTES_PER_MS = 8;
+
+/** Extra wait after the computed playback end, to cover carrier/network jitter. */
+const PLAYBACK_DRAIN_PAD_MS = 600;
+
+/** Upper bound so a bad estimate can never leave a call hanging. */
+const MAX_PLAYBACK_DRAIN_MS = 10_000;
+
 export function transcriptionConfig(
   model: string,
   languages: string[]
@@ -407,7 +416,9 @@ export function buildInstructions(session: CallSession): string {
         ]
       : []),
     "- Only call transfer_to_staff when the caller EXPLICITLY asks to speak to a person, or names a specific staff member — never decide on your own that a case is too complex.",
-    "- Say a short natural line first that does NOT use the staff member's personal name (e.g. 'Sure, connecting you now' / 'One moment, transferring you to the team'), THEN call transfer_to_staff — never call it silently.",
+    "- If the caller has not said who they want or what it is about, ask ONE short question first, like a support desk would: 'Of course — may I ask what it's regarding, so I can put you through to the right person?' Skip this only when they already named a person or a reason, or said 'anyone' / 'any consultant'. Never ask more than once.",
+    "- Then, in the SAME turn, give a brief before transferring, without using the staff member's personal name: acknowledge, say who you're putting them through to, and set expectations — e.g. 'Sure, I'll put you through to one of our consultants now. Please stay on the line — it may ring for a few seconds, and if nobody picks up I'll be right here to help.' Two short sentences, then call transfer_to_staff — never call it silently, and never transfer without this brief.",
+    "- The call is handed over automatically once your brief has finished playing, and the caller hears ringing while it connects — do not add anything after the brief.",
     "- If the tool result reports the transfer was not possible (no matching staff, or no phone number on file), do not imply a transfer happened — apologize briefly and keep helping the caller yourself.",
     "",
     "== CALL-BACK REQUESTS & MESSAGES ==",
@@ -555,6 +566,8 @@ export class AzureRealtimeBridge implements AIBridge {
   private vadFellBack = false;
   private transcribeFellBack = false;
   private bargeInTimer?: ReturnType<typeof setTimeout>;
+  private responseAudioBytes = 0;
+  private responseAudioStartedAt = 0;
 
   constructor(private readonly options: AzureRealtimeBridgeOptions) {}
 
@@ -730,6 +743,24 @@ export class AzureRealtimeBridge implements AIBridge {
     this.transferRequested = undefined;
   }
 
+  /**
+   * Runs `action` once the current response's audio has finished playing on the
+   * phone leg. Playback time is the audio's duration minus what has already
+   * elapsed since its first chunk. In SIP mode audio never passes through here,
+   * so there is nothing to wait for and the action runs immediately.
+   */
+  private afterPlayback(action: () => void): void {
+    const audioMs = this.responseAudioBytes / PCMU_BYTES_PER_MS;
+    const elapsedMs = this.responseAudioStartedAt ? Date.now() - this.responseAudioStartedAt : 0;
+    const remainingMs = Math.min(
+      MAX_PLAYBACK_DRAIN_MS,
+      audioMs > 0 ? Math.max(0, audioMs - elapsedMs) + PLAYBACK_DRAIN_PAD_MS : 0
+    );
+    setTimeout(() => {
+      if (!this.stopped) action();
+    }, remainingMs);
+  }
+
   private clearBargeInTimer(): void {
     if (this.bargeInTimer) {
       clearTimeout(this.bargeInTimer);
@@ -753,7 +784,12 @@ export class AzureRealtimeBridge implements AIBridge {
     // Agent audio (GA and legacy event names).
     if (type === "response.output_audio.delta" || type === "response.audio.delta") {
       const delta = typeof event.delta === "string" ? event.delta : undefined;
-      if (delta) this.audioOut?.(Buffer.from(delta, "base64"));
+      if (delta) {
+        const audio = Buffer.from(delta, "base64");
+        if (this.responseAudioStartedAt === 0) this.responseAudioStartedAt = Date.now();
+        this.responseAudioBytes += audio.length;
+        this.audioOut?.(audio);
+      }
       return;
     }
 
@@ -798,6 +834,8 @@ export class AzureRealtimeBridge implements AIBridge {
 
     if (type === "response.created") {
       this.activeResponse = true;
+      this.responseAudioBytes = 0;
+      this.responseAudioStartedAt = 0;
       return;
     }
 
@@ -816,18 +854,18 @@ export class AzureRealtimeBridge implements AIBridge {
           );
         }
       }
-      // The goodbye audio for this response has now fully streamed out — safe to
-      // actually disconnect without cutting the agent off mid-sentence.
+      // Azure finishes generating audio far faster than Twilio plays it, so at
+      // response.done the goodbye / "connecting you now" line is still queued on
+      // the phone leg. Hang up or redirect only once it has actually played,
+      // otherwise the caller hears the sentence chopped off mid-word.
       if (this.endCallRequested) {
         this.endCallRequested = false;
-        this.endCall?.();
+        this.afterPlayback(() => this.endCall?.());
       }
-      // Same reasoning: wait for the "connecting you now" line to finish
-      // streaming before actually redirecting the call.
       if (this.pendingTransfer) {
         const selector = this.pendingTransfer;
         this.pendingTransfer = undefined;
-        this.transferRequested?.(selector);
+        this.afterPlayback(() => this.transferRequested?.(selector));
       }
       return;
     }
