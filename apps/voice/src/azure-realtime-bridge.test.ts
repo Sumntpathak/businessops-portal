@@ -68,6 +68,14 @@ describe("realtime caller profile instructions", () => {
     assert.match(instructions, /ONE consistent gender for the whole call/);
   });
 
+  it("tells the agent not to promise a transfer when no staff phone exists", () => {
+    const unavailable = buildInstructions({ ...session, transferAvailable: false });
+    assert.match(unavailable, /LIVE TRANSFER IS NOT AVAILABLE/);
+    assert.match(unavailable, /NEVER call transfer_to_staff/);
+    assert.doesNotMatch(buildInstructions({ ...session, transferAvailable: true }), /LIVE TRANSFER IS NOT AVAILABLE/);
+    assert.doesNotMatch(buildInstructions(session), /LIVE TRANSFER IS NOT AVAILABLE/);
+  });
+
   it("offers a consultation at most once and never re-pitches after a decline", () => {
     const instructions = buildInstructions(session);
     assert.match(instructions, /Offer a consultation at most ONCE per call/);

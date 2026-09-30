@@ -3,7 +3,7 @@ import formbody from "@fastify/formbody";
 import Fastify from "fastify";
 import { Redis } from "ioredis";
 import { WebSocket, WebSocketServer } from "ws";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, isNotNull, isNull } from "drizzle-orm";
 import { z } from "zod";
 import {
   AvailabilityService,
@@ -205,6 +205,7 @@ interface CachedTenantMeta {
     price: string | null;
   }[];
   businessHours: BusinessHour[];
+  transferAvailable: boolean;
 }
 
 const CACHE_TTL_MS = 60_000;
@@ -256,7 +257,7 @@ async function getCachedTenantMeta(tenantId: string): Promise<CachedTenantMeta> 
   }
 
   const scoped = withTenant(db, tenantId);
-  const [tenantRows, profileRows, intakeFields, services, businessHours] = await Promise.all([
+  const [tenantRows, profileRows, intakeFields, services, businessHours, transferTargets] = await Promise.all([
     db
       .select({ timezone: schema.tenants.timezone })
       .from(schema.tenants)
@@ -303,7 +304,17 @@ async function getCachedTenantMeta(tenantId: string): Promise<CachedTenantMeta> 
         closed: schema.businessHours.closed
       })
       .from(schema.businessHours)
-      .where(scoped.where(schema.businessHours))
+      .where(scoped.where(schema.businessHours)),
+    db
+      .select({ id: schema.staff.id })
+      .from(schema.staff)
+      .where(
+        scoped.where(
+          schema.staff,
+          and(eq(schema.staff.active, true), isNotNull(schema.staff.phoneE164))
+        )
+      )
+      .limit(1)
   ]);
 
   const tenant = tenantRows[0];
@@ -331,7 +342,8 @@ async function getCachedTenantMeta(tenantId: string): Promise<CachedTenantMeta> 
       active: field.active
     })),
     services,
-    businessHours
+    businessHours,
+    transferAvailable: transferTargets.length > 0
   };
 
   tenantMetaCache.set(tenantId, { data, expiresAt: Date.now() + CACHE_TTL_MS });
@@ -897,6 +909,7 @@ async function handleAzureSipCall(
     agent: tenantMeta.agent,
     services: tenantMeta.services,
     businessHours: tenantMeta.businessHours,
+    transferAvailable: tenantMeta.transferAvailable,
     memories,
     startedAt: (call.startedAt ?? new Date()).toISOString()
   };
@@ -1148,6 +1161,7 @@ async function loadCallSession(callId: string): Promise<CallSession> {
       agent: tenantMeta.agent,
       services: tenantMeta.services,
       businessHours: tenantMeta.businessHours,
+      transferAvailable: tenantMeta.transferAvailable,
       memories,
       startedAt: call.startedAt.toISOString()
     };

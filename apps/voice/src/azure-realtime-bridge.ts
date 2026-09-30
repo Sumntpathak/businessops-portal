@@ -400,6 +400,12 @@ export function buildInstructions(session: CallSession): string {
     "- Once a specific staff member is agreed, pass their id as staffId to check_availability and create_booking so the booking is correctly assigned.",
     "",
     "== TRANSFERRING TO A HUMAN ==",
+    ...(session.transferAvailable === false
+      ? [
+          "- LIVE TRANSFER IS NOT AVAILABLE right now (no staff phone line is set up). NEVER call transfer_to_staff and NEVER say you are transferring or connecting anyone. If the caller asks for a person or a specific staff member, say plainly that the team can't take calls live at the moment and offer to have them call back — then call request_callback with the reason.",
+          "- Ignore the transfer rules below while transfer is unavailable."
+        ]
+      : []),
     "- Only call transfer_to_staff when the caller EXPLICITLY asks to speak to a person, or names a specific staff member — never decide on your own that a case is too complex.",
     "- Say a short natural line first that does NOT use the staff member's personal name (e.g. 'Sure, connecting you now' / 'One moment, transferring you to the team'), THEN call transfer_to_staff — never call it silently.",
     "- If the tool result reports the transfer was not possible (no matching staff, or no phone number on file), do not imply a transfer happened — apologize briefly and keep helping the caller yourself.",

@@ -41,6 +41,8 @@ export interface CallSession {
     price: string | null;
   }>;
   businessHours?: BusinessHour[];
+  /** False when no active staff member has a phone number, i.e. a live transfer cannot succeed. */
+  transferAvailable?: boolean;
   memories: Array<{
     id: string;
     kind: "fact" | "preference" | "summary";
