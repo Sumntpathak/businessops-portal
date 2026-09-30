@@ -234,6 +234,12 @@ const PCMU_BYTES_PER_MS = 8;
 /** Extra wait after the computed playback end, to cover carrier/network jitter. */
 const PLAYBACK_DRAIN_PAD_MS = 600;
 
+/** Matches the spoken transfer hold message ("...please stay on the line..."). */
+const HOLD_MESSAGE_PATTERN = /stay on the line/i;
+
+/** Max times per call the bridge will remind the agent to actually transfer. */
+const MAX_TRANSFER_NUDGES = 2;
+
 /** Upper bound so a bad estimate can never leave a call hanging. */
 const MAX_PLAYBACK_DRAIN_MS = 10_000;
 
@@ -416,9 +422,10 @@ export function buildInstructions(session: CallSession): string {
         ]
       : []),
     "- Only call transfer_to_staff when the caller EXPLICITLY asks to speak to a person, or names a specific staff member — never decide on your own that a case is too complex.",
-    "- If the caller has not said who they want or what it is about, ask ONE short question first, like a support desk would: 'Of course — may I ask what it's regarding, so I can put you through to the right person?' Skip this only when they already named a person or a reason, or said 'anyone' / 'any consultant'. Never ask more than once.",
-    "- Then, in the SAME turn, give a brief before transferring, without using the staff member's personal name: acknowledge, say who you're putting them through to, and set expectations — e.g. 'Sure, I'll put you through to one of our consultants now. Please stay on the line — it may ring for a few seconds, and if nobody picks up I'll be right here to help.' Two short sentences, then call transfer_to_staff — never call it silently, and never transfer without this brief.",
-    "- The call is handed over automatically once your brief has finished playing, and the caller hears ringing while it connects — do not add anything after the brief.",
+    "- TRANSFER FLOW — follow it exactly. Step 1: when the caller asks for a person, ask ONE question, once: 'Of course — is there a particular consultant you'd like, or shall I put you through to whoever's available?' Skip it if they already named someone or said 'anyone', 'any', or 'whoever'.",
+    "- Step 2: the moment they answer — however vague — STOP asking. Never ask what it is about, never ask for appointment details, never ask a second question. Go straight to step 3.",
+    "- Step 3: in ONE response do BOTH: say the brief 'Sure, I'll put you through now. Please stay on the line — it may ring for a few seconds, and if nobody picks up I'll be right here to help.' AND call transfer_to_staff (set staffName only if the caller named someone; otherwise leave it empty to reach whoever is available). Saying the brief WITHOUT calling transfer_to_staff in the same response is a failure — the caller is left waiting and nothing happens.",
+    "- Do not invent a consultant's name. If asked who they'll speak to, say 'one of our consultants — I'll connect you with whoever's available'. The call is handed over automatically once your brief has finished playing and the caller hears ringing while it connects — add nothing after the brief.",
     "- If the tool result reports the transfer was not possible (no matching staff, or no phone number on file), do not imply a transfer happened — apologize briefly and keep helping the caller yourself.",
     "",
     "== CALL-BACK REQUESTS & MESSAGES ==",
@@ -566,8 +573,9 @@ export class AzureRealtimeBridge implements AIBridge {
   private vadFellBack = false;
   private transcribeFellBack = false;
   private bargeInTimer?: ReturnType<typeof setTimeout>;
-  private responseAudioBytes = 0;
-  private responseAudioStartedAt = 0;
+  /** Epoch ms at which everything sent to the phone leg so far will have finished playing. */
+  private playbackEndsAt = 0;
+  private transferNudges = 0;
 
   constructor(private readonly options: AzureRealtimeBridgeOptions) {}
 
@@ -744,21 +752,72 @@ export class AzureRealtimeBridge implements AIBridge {
   }
 
   /**
-   * Runs `action` once the current response's audio has finished playing on the
-   * phone leg. Playback time is the audio's duration minus what has already
-   * elapsed since its first chunk. In SIP mode audio never passes through here,
-   * so there is nothing to wait for and the action runs immediately.
+   * Runs `action` once all audio sent so far has finished playing on the phone
+   * leg (it plays back at real time, so the queue drains at 8 bytes per ms).
+   * In SIP mode audio never passes through here, so nothing is waited for.
    */
   private afterPlayback(action: () => void): void {
-    const audioMs = this.responseAudioBytes / PCMU_BYTES_PER_MS;
-    const elapsedMs = this.responseAudioStartedAt ? Date.now() - this.responseAudioStartedAt : 0;
     const remainingMs = Math.min(
       MAX_PLAYBACK_DRAIN_MS,
-      audioMs > 0 ? Math.max(0, audioMs - elapsedMs) + PLAYBACK_DRAIN_PAD_MS : 0
+      this.playbackEndsAt > 0
+        ? Math.max(0, this.playbackEndsAt - Date.now()) + PLAYBACK_DRAIN_PAD_MS
+        : 0
     );
     setTimeout(() => {
       if (!this.stopped) action();
     }, remainingMs);
+  }
+
+  /**
+   * The small realtime model sometimes speaks the "please stay on the line"
+   * hold message and then never calls transfer_to_staff, leaving the caller
+   * waiting on a transfer that never starts. If that happens, tell it to make
+   * the call — at most twice per call so it can never loop.
+   */
+  private nudgeMissingTransfer(
+    response: { status?: string; output?: Array<Record<string, unknown>> } | undefined
+  ): void {
+    if (
+      this.options.attachCallId ||
+      this.stopped ||
+      this.pendingTransfer ||
+      this.transferNudges >= MAX_TRANSFER_NUDGES ||
+      this.session?.transferAvailable === false ||
+      response?.status !== "completed"
+    ) {
+      return;
+    }
+    const output = response.output ?? [];
+    const calledTransfer = output.some(
+      (item) => item.type === "function_call" && item.name === "transfer_to_staff"
+    );
+    const spokeHoldMessage = output.some((item) =>
+      HOLD_MESSAGE_PATTERN.test(JSON.stringify(item.content ?? ""))
+    );
+    if (calledTransfer || !spokeHoldMessage) return;
+
+    this.transferNudges += 1;
+    this.options.logger?.info(
+      { callId: this.session?.callId },
+      "Agent said the transfer hold message without calling transfer_to_staff — nudging"
+    );
+    this.send({
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "system",
+        content: [
+          {
+            type: "input_text",
+            text:
+              "You just told the caller you are putting them through but did not call transfer_to_staff. " +
+              "Call transfer_to_staff NOW (set staffName only if the caller named someone). Do not say anything else first."
+          }
+        ]
+      }
+    });
+    this.send({ type: "response.create" });
+    this.activeResponse = true;
   }
 
   private clearBargeInTimer(): void {
@@ -786,8 +845,7 @@ export class AzureRealtimeBridge implements AIBridge {
       const delta = typeof event.delta === "string" ? event.delta : undefined;
       if (delta) {
         const audio = Buffer.from(delta, "base64");
-        if (this.responseAudioStartedAt === 0) this.responseAudioStartedAt = Date.now();
-        this.responseAudioBytes += audio.length;
+        this.playbackEndsAt = Math.max(this.playbackEndsAt, Date.now()) + audio.length / PCMU_BYTES_PER_MS;
         this.audioOut?.(audio);
       }
       return;
@@ -815,6 +873,7 @@ export class AzureRealtimeBridge implements AIBridge {
         this.bargeInTimer = undefined;
         if (this.stopped) return;
         if (this.activeResponse) this.send({ type: "response.cancel" });
+        this.playbackEndsAt = 0; // the caller's queued playback is flushed
         this.bargeIn?.();
       }, BARGE_IN_CONFIRM_MS);
       return;
@@ -834,15 +893,13 @@ export class AzureRealtimeBridge implements AIBridge {
 
     if (type === "response.created") {
       this.activeResponse = true;
-      this.responseAudioBytes = 0;
-      this.responseAudioStartedAt = 0;
       return;
     }
 
     if (type === "response.done") {
       this.activeResponse = false;
       const response = event.response as
-        | { output?: Array<Record<string, unknown>> }
+        | { status?: string; output?: Array<Record<string, unknown>> }
         | undefined;
       // Fallback: catch any function calls that did not surface via arguments.done.
       for (const item of response?.output ?? []) {
@@ -854,6 +911,7 @@ export class AzureRealtimeBridge implements AIBridge {
           );
         }
       }
+      this.nudgeMissingTransfer(response);
       // Azure finishes generating audio far faster than Twilio plays it, so at
       // response.done the goodbye / "connecting you now" line is still queued on
       // the phone leg. Hang up or redirect only once it has actually played,

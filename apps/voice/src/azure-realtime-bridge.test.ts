@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import { buildInstructions, buildSessionConfig, buildSipAcceptConfig } from "./azure-realtime-bridge.js";
+import { describe, it, mock } from "node:test";
+import {
+  AzureRealtimeBridge,
+  buildInstructions,
+  buildSessionConfig,
+  buildSipAcceptConfig
+} from "./azure-realtime-bridge.js";
 import type { CallSession } from "./call-session.js";
 
 const session: CallSession = {
@@ -70,11 +75,12 @@ describe("realtime caller profile instructions", () => {
 
   it("briefs the caller (and asks who/why once) before transferring", () => {
     const instructions = buildInstructions(session);
-    assert.match(instructions, /ask ONE short question first/);
-    assert.match(instructions, /any consultant/);
-    assert.match(instructions, /give a brief before transferring/);
+    assert.match(instructions, /TRANSFER FLOW/);
+    assert.match(instructions, /is there a particular consultant you'd like, or shall I put you through to whoever's available/);
+    assert.match(instructions, /never ask for appointment details, never ask a second question/);
     assert.match(instructions, /Please stay on the line/);
-    assert.match(instructions, /never transfer without this brief/);
+    assert.match(instructions, /WITHOUT calling transfer_to_staff in the same response is a failure/);
+    assert.match(instructions, /Do not invent a consultant's name/);
   });
 
   it("tells the agent not to promise a transfer when no staff phone exists", () => {
@@ -208,5 +214,78 @@ describe("buildSipAcceptConfig", () => {
     });
     assert.equal(config.tool_choice, "auto");
     assert.ok(Array.isArray(config.tools) && config.tools.length > 0);
+  });
+});
+
+function bridgeWithFakeSocket(sessionOverride: Partial<CallSession> = {}) {
+  const sent: Array<Record<string, unknown>> = [];
+  const bridge = new AzureRealtimeBridge({ url: "https://x.openai.azure.com/openai/v1/realtime", apiKey: "k", model: "m" });
+  const internals = bridge as unknown as Record<string, unknown>;
+  internals.socket = { readyState: 1, send: (raw: string) => sent.push(JSON.parse(raw)) };
+  internals.session = { ...session, ...sessionOverride };
+  const handle = (event: Record<string, unknown>) =>
+    (internals.handleServerEvent as (e: unknown) => void).call(bridge, event);
+  return { bridge, internals, sent, handle };
+}
+
+const holdMessageResponse = (extra: Array<Record<string, unknown>> = []) => ({
+  type: "response.done",
+  response: {
+    status: "completed",
+    output: [
+      {
+        type: "message",
+        content: [{ transcript: "Sure, I'll put you through now. Please stay on the line." }]
+      },
+      ...extra
+    ]
+  }
+});
+
+describe("transfer nudge", () => {
+  it("reminds the agent to call transfer_to_staff when it only spoke the hold message", () => {
+    const { sent, handle } = bridgeWithFakeSocket();
+    handle(holdMessageResponse());
+    assert.ok(sent.some((e) => e.type === "response.create"));
+    const nudge = JSON.stringify(sent.find((e) => e.type === "conversation.item.create"));
+    assert.match(nudge, /did not call transfer_to_staff/);
+  });
+
+  it("does not nudge when the transfer tool was called, transfer is unavailable, or after two nudges", () => {
+    const called = bridgeWithFakeSocket();
+    called.handle(holdMessageResponse([{ type: "function_call", name: "transfer_to_staff", call_id: "c1", arguments: "{}" }]));
+    assert.equal(called.sent.filter((e) => e.type === "response.create").length, 0);
+
+    const unavailable = bridgeWithFakeSocket({ transferAvailable: false });
+    unavailable.handle(holdMessageResponse());
+    assert.equal(unavailable.sent.length, 0);
+
+    const capped = bridgeWithFakeSocket();
+    for (let i = 0; i < 4; i += 1) capped.handle(holdMessageResponse());
+    assert.equal(capped.sent.filter((e) => e.type === "response.create").length, 2);
+  });
+});
+
+describe("transfer waits for the agent line to finish playing", () => {
+  it("redirects only after the queued audio has played out", () => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    try {
+      const { bridge, internals, handle } = bridgeWithFakeSocket();
+      let transferred = false;
+      bridge.onTransferRequested(() => {
+        transferred = true;
+      });
+      // 8000 bytes of mu-law at 8 kHz = exactly 1000 ms of speech.
+      handle({ type: "response.output_audio.delta", delta: Buffer.alloc(8000).toString("base64") });
+      internals.pendingTransfer = {};
+      handle({ type: "response.done", response: { status: "completed", output: [] } });
+
+      mock.timers.tick(1000);
+      assert.equal(transferred, false, "still playing the last 600 ms of padding");
+      mock.timers.tick(600);
+      assert.equal(transferred, true);
+    } finally {
+      mock.timers.reset();
+    }
   });
 });
