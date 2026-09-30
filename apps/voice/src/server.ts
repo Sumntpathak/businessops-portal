@@ -14,7 +14,7 @@ import { validateEnv } from "@recepto/shared/env";
 import type { AIBridge, TranscriptEvent } from "./ai-bridge.js";
 import { AzureRealtimeBridge, buildSessionConfig, buildSipAcceptConfig } from "./azure-realtime-bridge.js";
 import { GeminiLiveBridge } from "./gemini-live-bridge.js";
-import type { CallSession } from "./call-session.js";
+import type { BusinessHour, CallSession } from "./call-session.js";
 import { deriveCallerGeo } from "./caller-profile.js";
 import { createCallSummarizer } from "./call-summary-worker.js";
 import { VoiceLatencyTracker } from "./latency-tracker.js";
@@ -204,6 +204,7 @@ interface CachedTenantMeta {
     durationMinutes: number;
     price: string | null;
   }[];
+  businessHours: BusinessHour[];
 }
 
 const CACHE_TTL_MS = 60_000;
@@ -255,7 +256,7 @@ async function getCachedTenantMeta(tenantId: string): Promise<CachedTenantMeta> 
   }
 
   const scoped = withTenant(db, tenantId);
-  const [tenantRows, profileRows, intakeFields, services] = await Promise.all([
+  const [tenantRows, profileRows, intakeFields, services, businessHours] = await Promise.all([
     db
       .select({ timezone: schema.tenants.timezone })
       .from(schema.tenants)
@@ -293,7 +294,16 @@ async function getCachedTenantMeta(tenantId: string): Promise<CachedTenantMeta> 
       })
       .from(schema.services)
       .where(scoped.where(schema.services, eq(schema.services.active, true)))
-      .orderBy(schema.services.name)
+      .orderBy(schema.services.name),
+    db
+      .select({
+        weekday: schema.businessHours.weekday,
+        opens: schema.businessHours.opens,
+        closes: schema.businessHours.closes,
+        closed: schema.businessHours.closed
+      })
+      .from(schema.businessHours)
+      .where(scoped.where(schema.businessHours))
   ]);
 
   const tenant = tenantRows[0];
@@ -320,7 +330,8 @@ async function getCachedTenantMeta(tenantId: string): Promise<CachedTenantMeta> 
       sort: field.sort,
       active: field.active
     })),
-    services
+    services,
+    businessHours
   };
 
   tenantMetaCache.set(tenantId, { data, expiresAt: Date.now() + CACHE_TTL_MS });
@@ -885,6 +896,7 @@ async function handleAzureSipCall(
     intakeFields: tenantMeta.intakeFields,
     agent: tenantMeta.agent,
     services: tenantMeta.services,
+    businessHours: tenantMeta.businessHours,
     memories,
     startedAt: (call.startedAt ?? new Date()).toISOString()
   };
@@ -1135,6 +1147,7 @@ async function loadCallSession(callId: string): Promise<CallSession> {
       intakeFields: tenantMeta.intakeFields,
       agent: tenantMeta.agent,
       services: tenantMeta.services,
+      businessHours: tenantMeta.businessHours,
       memories,
       startedAt: call.startedAt.toISOString()
     };

@@ -10,6 +10,7 @@ import {
   sql
 } from "drizzle-orm";
 import { z } from "zod";
+import { explainNoSlots } from "./office-hours.js";
 import {
   CalendarConnectionRevokedError,
   type AvailabilityService,
@@ -307,12 +308,21 @@ export class ToolExecutor {
         all.findIndex((other) => other.startsAt.getTime() === slot.startsAt.getTime()) === index
       )
       .filter((slot) => localDateInTimezone(slot.startsAt, callerTimezone) === input.date);
+    const noSlots = slots.length === 0
+      ? explainNoSlots(
+          this.session.businessHours ?? [],
+          this.session.timezone,
+          input.date,
+          service.durationMinutes
+        )
+      : null;
     return {
       serviceId,
       serviceName: service.name,
       price: service.price,
       staffId: staffId ?? null,
       callerTimezone,
+      ...(noSlots ? { noSlotsReason: noSlots.reason, noSlotsExplanation: noSlots.explanation } : {}),
       slots: slots.map((slot) => ({
         startsAt: slot.startsAt.toISOString(),
         endsAt: slot.endsAt.toISOString(),

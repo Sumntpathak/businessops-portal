@@ -53,9 +53,42 @@ describe("realtime caller profile instructions", () => {
     const instructions = buildInstructions(session);
     assert.match(instructions, /SERVICES & PRICING/);
     assert.match(instructions, /Consultation \(30 min\): 110\.00 dollars/);
-    assert.match(instructions, /THE INSTANT you know which service or consultation type the caller wants.*state its price in the very next thing you say/);
-    assert.match(instructions, /State the price the MOMENT the service is identified/);
+    assert.match(instructions, /Once the caller wants to book a specific service, mention its price before checking times/);
+    assert.match(instructions, /If the caller asks what something costs, answer straight away/);
     assert.match(instructions, /Never call check_availability or create_booking before the caller has heard the price/);
+  });
+
+  it("forbids claiming a booking without create_booking, inventing facts, and answering noise", () => {
+    const instructions = buildInstructions(session);
+    assert.match(instructions, /NEVER say a booking is booked, confirmed, locked in, or done unless create_booking has returned success/);
+    assert.match(instructions, /exact service passed to create_booking/);
+    assert.match(instructions, /Never state a fact the BUSINESS PROFILE or SERVICES above does not contain/);
+    assert.match(instructions, /Background noise, coughs, or a few unintelligible syllables are NOT a request/);
+    assert.match(instructions, /save it only after they confirm/);
+    assert.match(instructions, /ONE consistent gender for the whole call/);
+  });
+
+  it("offers a consultation at most once and never re-pitches after a decline", () => {
+    const instructions = buildInstructions(session);
+    assert.match(instructions, /Offer a consultation at most ONCE per call/);
+    assert.match(instructions, /Never ask again, never re-pitch the price/);
+  });
+
+  it("gives office hours and the live open/closed status so the agent can explain after-hours", () => {
+    const instructions = buildInstructions({
+      ...session,
+      businessHours: [0, 1, 2, 3, 4, 5, 6].map((weekday) => ({
+        weekday,
+        opens: "09:00:00",
+        closes: "17:00:00",
+        closed: weekday === 0
+      }))
+    });
+    assert.match(instructions, /== OFFICE HOURS/);
+    assert.match(instructions, /Monday: 9 AM to 5 PM/);
+    assert.match(instructions, /Sunday: closed/);
+    assert.match(instructions, /RIGHT NOW: The office/);
+    assert.match(instructions, /Never just say 'nothing's available' without the reason/);
   });
 
   it("tells the agent not to invent a price when a service has none set", () => {
@@ -107,11 +140,13 @@ describe("buildSessionConfig", () => {
       input: {
         format: { type: "audio/pcmu" },
         noise_reduction: { type: "near_field" },
+        transcription: { model: "whisper-1", language: "en" },
         turn_detection: {
           type: "server_vad",
-          threshold: 0.65,
+          threshold: 0.75,
           prefix_padding_ms: 250,
           silence_duration_ms: 450,
+          interrupt_response: false,
           create_response: false
         }
       },
@@ -141,9 +176,10 @@ describe("buildSipAcceptConfig", () => {
       input: {
         format: { type: "audio/pcmu" },
         noise_reduction: { type: "near_field" },
+        transcription: { model: "whisper-1", language: "en" },
         turn_detection: {
           type: "server_vad",
-          threshold: 0.65,
+          threshold: 0.75,
           prefix_padding_ms: 250,
           silence_duration_ms: 450
         }

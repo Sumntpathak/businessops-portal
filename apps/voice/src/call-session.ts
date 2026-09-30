@@ -1,3 +1,10 @@
+export interface BusinessHour {
+  weekday: number;
+  opens: string;
+  closes: string;
+  closed: boolean;
+}
+
 export interface CallSession {
   callId: string;
   providerCallSid: string;
@@ -33,6 +40,7 @@ export interface CallSession {
     durationMinutes: number;
     price: string | null;
   }>;
+  businessHours?: BusinessHour[];
   memories: Array<{
     id: string;
     kind: "fact" | "preference" | "summary";
