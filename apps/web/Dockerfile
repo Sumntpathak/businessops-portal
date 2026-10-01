@@ -35,6 +35,7 @@ COPY --from=build --chown=nextjs:nodejs /workspace/packages/db/dist ./node_modul
 COPY --from=build --chown=nextjs:nodejs /workspace/packages/calendar/dist ./node_modules/@recepto/calendar/dist
 USER nextjs
 EXPOSE 3000
-CMD ["pnpm", "start"]
+# Run Next directly: this stage is plain node:alpine, so pnpm isn't installed here.
+CMD ["node", "node_modules/next/dist/bin/next", "start", "--hostname", "0.0.0.0", "--port", "3000"]
 
 

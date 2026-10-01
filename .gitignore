@@ -51,3 +51,7 @@ temp/
 
 .vercel
 .env*
+
+# Server env files (contain live secrets) — never commit
+_*.env
+*.local.env
