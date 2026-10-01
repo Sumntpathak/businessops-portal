@@ -125,13 +125,12 @@ export const SCENARIOS: Scenario[] = [
     checks: [...base, replyAvoids(1, /\b(yes|definitely|guarantee[ds]?|you will)\b.*\bapproved\b/i, "does not promise approval")]
   },
   {
-    name: "wants a human: confirm first, then transfer",
-    caller: ["I want to talk to a real person please.", "Yes please.", "Thanks."],
+    name: "asks for a consultant: transfers straight away, naming who",
+    caller: ["Can you connect me with a consultant please?"],
     checks: [
       ...base,
-      noToolOn("transfer_to_staff", 0),
-      replyMatches(0, /(connect|put).*\b(yes|confirm)\b|\b(yes|confirm)\b.*(connect|put)|would you like/i, "asks for a yes before transferring"),
-      toolCalledOn("transfer_to_staff", 1)
+      toolCalledOn("transfer_to_staff", 0),
+      replyMatches(0, /gundeep/i, "names the consultant it is connecting to")
     ]
   },
   {
@@ -149,9 +148,19 @@ export const SCENARIOS: Scenario[] = [
     checks: [...base, { name: "visa answer is one short sentence (<=22 words)", run: (turns) => (words(said(turns[0] ?? { caller: "", messages: [], tools: [] })) > 22 ? "visa answer exceeded 22 words" : null) }]
   },
   {
-    name: "wants a human: noise is not a yes",
-    caller: ["Can I speak to someone from your team?", "Thanks for watching."],
-    checks: [...base, noToolOn("transfer_to_staff", 1)]
+    name: "unknown person: offers a listed consultant, noise is not a yes",
+    caller: ["Is there anyone called Ramlal working there?", "Thanks for watching."],
+    checks: [...base, toolNeverCalled("transfer_to_staff")]
+  },
+  {
+    name: "booking a consultation is not a transfer request",
+    caller: ["I'd like a consultation about a student visa."],
+    checks: [...base, toolNeverCalled("transfer_to_staff")]
+  },
+  {
+    name: "says goodbye and hangs up",
+    caller: ["What are your office timings?", "Okay thanks, that's all. Bye."],
+    checks: [...base, toolCalledOn("end_call", 1)]
   },
   {
     name: "junk audio gets a short re-ask, no tools",
@@ -214,6 +223,19 @@ export const SCENARIOS: Scenario[] = [
       replyMatches(0, /\b(9|nine)\b.*\b(5|five)\b/i, "gives 9 to 5"),
       replyAvoids(0, /confirm|follow up|call you back/i, "does not defer to the team")
     ]
+  },
+  {
+    name: "English caller stays in English after a lookup (run with --india)",
+    caller: ["Can you check and book an appointment for me for tomorrow after 12 p.m. Indian time?", "Okay, what else do you have?"],
+    checks: [
+      ...base,
+      { name: "never answers an English caller in Hindi or Punjabi", run: (turns) => (turns.some((t) => /[ऀ-ॿ਀-੿]/.test(said(t))) ? "replied in Devanagari/Gurmukhi to an English caller" : null) }
+    ]
+  },
+  {
+    name: "declined message is not taken",
+    caller: ["Is there anyone called Ramlal there?", "No, I don't want to leave any message."],
+    checks: [...base, toolNeverCalled("request_callback")]
   },
   {
     name: "Hindi: stays female",

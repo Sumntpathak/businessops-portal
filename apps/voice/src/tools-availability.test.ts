@@ -104,5 +104,8 @@ describe("check_availability: 'after' and office hours in caller time", () => {
     assert.equal(result.slots.length, 0);
     assert.match(result.officeHoursCallerTime ?? "", /to 11:30 AM caller's time/);
     assert.match(result.noSlotsExplanation ?? "", /Nothing is free after the requested time/);
+    const earlier = (result as unknown as { latestEarlierSlots: Slot[] }).latestEarlierSlots;
+    assert.equal(earlier.length, 2, "real earlier slots are offered instead of invented ones");
+    assert.match(earlier[1]!.callerLocalTime, /11:00 AM/);
   });
 });

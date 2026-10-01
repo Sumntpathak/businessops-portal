@@ -11,6 +11,7 @@ import { WebSocket } from "ws";
 import { parseBusinessInfo } from "@recepto/shared";
 import { buildInstructions, greetingInstruction, REALTIME_TOOLS, replyBudgetWords } from "../azure-realtime-bridge.js";
 import type { CallSession } from "../call-session.js";
+import { CallerLanguage } from "../caller-language.js";
 import { SCENARIOS, type Scenario, type TurnResult } from "./scenarios.js";
 
 function loadEnvFile(file: string | undefined): void {
@@ -34,6 +35,10 @@ const VERBOSE = process.argv.includes("--verbose");
 // Mirrors the live bridge, which gives every reply a word budget sized to how the caller spoke.
 const BUDGET = !process.argv.includes("--no-budget");
 const GREETING_RUNS = Number(arg("--greeting") ?? 0);
+// Caller on an Indian number (the bridge then sees an India-based English speaker).
+const INDIA = process.argv.includes("--india");
+// Reproduces the pre-fix note sent after tool results, to compare against the current one.
+const OLD_LANGUAGE_NOTE = process.argv.includes("--old-language-note");
 
 const url = new URL(process.env.AZURE_REALTIME_URL ?? "");
 url.protocol = "wss:";
@@ -50,7 +55,9 @@ const session: CallSession = {
   providerCallSid: "CAeval",
   tenantId: "eval-tenant",
   timezone: "Australia/Melbourne",
-  caller: { id: "eval-caller", phoneE164: "+61400000002", displayName: null, country: "Australia", timezone: "Australia/Melbourne", profile: {}, stage: "new" },
+  caller: INDIA
+    ? { id: "eval-caller", phoneE164: "+919876543210", displayName: null, country: "India", timezone: "Asia/Kolkata", profile: {}, stage: "new" }
+    : { id: "eval-caller", phoneE164: "+61400000002", displayName: null, country: "Australia", timezone: "Australia/Melbourne", profile: {}, stage: "new" },
   intakeFields: [],
   agent: {
     agentMd,
@@ -110,6 +117,8 @@ function runScenario(scenario: Scenario): Promise<TurnResult[]> {
     const ws = new WebSocket(url.toString(), { headers: { "api-key": apiKey, authorization: `Bearer ${apiKey}` } });
     const turns: TurnResult[] = [];
     const gate = { turnsSinceAvailability: 0 }; // mirrors the bridge: caller turns since the last availability check
+    const language = new CallerLanguage(session.agent.languages); // mirrors the bridge's language tracking
+    const multilingual = session.agent.languages.length > 1;
     let turnIndex = 0;
     let current: TurnResult = { caller: "", messages: [], tools: [] };
     let rounds = 0;
@@ -122,10 +131,14 @@ function runScenario(scenario: Scenario): Promise<TurnResult[]> {
       current = { caller: scenario.caller[turnIndex++]!, messages: [], tools: [], toolArgs: [] };
       gate.turnsSinceAvailability += 1;
       rounds = 0;
+      language.observe(current.caller);
       send({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: current.caller }] } });
       if (BUDGET) {
         const words = replyBudgetWords(0, current.caller);
-        send({ type: "conversation.item.create", item: { type: "message", role: "system", content: [{ type: "input_text", text: `REPLY BUDGET for your next reply: at most ${words} words, one sentence if you can. Answer only what the caller just said and add nothing extra.` }] } });
+        const languageLine = multilingual && !OLD_LANGUAGE_NOTE
+          ? ` The caller has been speaking ${language.language}: reply in ${language.language} unless their latest words are a full sentence in another of your languages.`
+          : "";
+        send({ type: "conversation.item.create", item: { type: "message", role: "system", content: [{ type: "input_text", text: `REPLY BUDGET for your next reply: at most ${words} words, one sentence if you can. Answer only what the caller just said and add nothing extra.${languageLine}` }] } });
       }
       send({ type: "response.create" });
     };
@@ -177,6 +190,12 @@ function runScenario(scenario: Scenario): Promise<TurnResult[]> {
         }
         for (const { call, result } of results) {
           send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: call.call_id, output: JSON.stringify(result) } });
+        }
+        if (multilingual) {
+          const note = OLD_LANGUAGE_NOTE
+            ? "The tool result above is data, not a language cue. Keep holding the language already established this call, in the SAME warm tone the caller was just hearing — do not switch to English or shift into a flat reading voice because of it."
+            : language.replyNote();
+          send({ type: "conversation.item.create", item: { type: "message", role: "system", content: [{ type: "input_text", text: note }] } });
         }
         send({ type: "response.create" });
       }

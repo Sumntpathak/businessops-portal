@@ -95,18 +95,15 @@ function transferRules(session: CallSession): string[] {
       "- If the caller asks for a person, say plainly that the team can't take calls live at the moment, and offer a callback with request_callback."
     ];
   }
+  const roster = session.transferRoster ?? [];
+  const defaultName = roster[0] ?? "a team member";
   return [
-    ...(session.transferRoster?.length
-      ? [`- Team members who can take a transfer: ${session.transferRoster.join(", ")}. Nobody else can.`]
-      : []),
-    "- Only when the caller asks to speak to a person or names a staff member. If they name someone who is NOT on that list, say in one sentence that you don't have anyone by that name, then offer a listed team member or a message for the team. Do not ask them to confirm a transfer to someone who is not listed.",
-    "- Follow these steps exactly:",
-    "  1. Ask once: 'Would you like me to connect you to a team member? Please say yes to confirm.' If they named a listed person, use that name instead of 'a team member'. Do not use the words transfer, ring, or stay on the line in this question.",
-    "  2. Wait for a clear spoken yes (yes, yeah, sure, go ahead, haan, ji). Silence, noise, 'thank you' or unrelated words are NOT a yes. If unsure, ask once more: 'Sorry, did you want me to connect you — yes or no?'",
-    "  3. After a clear yes, in ONE response say: 'Great — I'll put you through now. Please stay on the line, it may ring for a few seconds, and if nobody picks up I'll be right here to help.' and call transfer_to_staff. Set staffName only if the caller named someone.",
-    "  4. If they say no, or don't confirm after two asks, do not transfer. Carry on helping or offer a callback.",
-    "- Do not ask which consultant they want, and never invent a name. If asked who they'll speak to, give a listed name or say 'whoever is available'.",
-    "- If transfer_to_staff comes back with transferring false, do not say you are connecting anyone: follow its instruction and offer one of the people it lists, or a message.",
+    ...(roster.length ? [`- Team members who can take a transfer: ${roster.join(", ")}. Nobody else can.`] : []),
+    `- The caller clearly asks to speak to a consultant, a person, the team, or a listed team member: transfer straight away, with no confirmation question. In ONE response say: 'I'll connect you with [name] now. Please stay on the line, it may ring for a few seconds, and if nobody picks up I'll be right here to help.' and call transfer_to_staff with staffName set to that same [name]. [name] is the listed person they asked for, otherwise ${defaultName}.`,
+    "- Asking to book a consultation is NOT asking to speak to someone. Noise, a single unclear word or 'thank you' is never a request to transfer.",
+    "- They name someone who is NOT on that list: say in one sentence that you don't have anyone by that name, then ask once: 'Would you like me to connect you with " + defaultName + " instead?' Transfer only after a clear yes (yes, yeah, sure, haan, ji).",
+    "- If YOU suggest a transfer (the caller did not ask), ask once and transfer only after a clear yes. On a no, do not ask about connecting again unless the caller asks for a person. Carry on helping.",
+    "- Never invent a name. If transfer_to_staff comes back with transferring false, do not say you are connecting anyone: follow its instruction and offer one of the people it lists, or a message.",
     "- If the transfer is not possible, apologise in one short line and offer a callback."
   ];
 }
@@ -237,6 +234,7 @@ export function buildInstructions(session: CallSession): string {
     "- Flow: service, price, check_availability, offer one or two slots, short recap (service, day, time, name), then on a clear yes call create_booking in that same turn, then confirm once.",
     "- As soon as you have the service and a day (even 'morning'), call check_availability right away. If the caller has no particular day, call it with days set to 5.",
     "- For a caller in another timezone the tool only returns times inside their 9 AM to 6 PM. If it says onlyOutsideCallerHours, say so in one sentence and offer the earliest time only if they agree, or a callback.",
+    "- Only offer times listed in the latest check_availability result (slots or latestEarlierSlots). Never make up a time.",
     "- Always call check_availability before offering or accepting a time. Speak only callerLocalTime; give the business time only if the caller asks. Never convert times yourself and never say UTC. Pass startsAt to create_booking exactly as returned.",
     "- Caller wants a later or earlier time ('after 1 PM'): call check_availability again with after set. If nothing fits, say why using officeHoursCallerTime ('we close at twelve thirty your time') and offer the latest slot or another day once. Do not offer the same slot again.",
     "- Say a booking is confirmed only after create_booking succeeded in this call. The service you recap is the service you book. If calendarSynced is false, confirm normally.",
@@ -244,18 +242,18 @@ export function buildInstructions(session: CallSession): string {
     "",
     "# TOOLS",
     "- Read-only tools (check_availability, get_caller_context, list_staff): call as soon as you have what you need. get_caller_context at most once per call. list_staff only when asked who works here.",
-    "- Actions (create_booking, cancel_booking, request_callback, transfer_to_staff, end_call): only what the caller clearly asked for and confirmed.",
+    "- Actions (create_booking, cancel_booking, request_callback): only what the caller clearly asked for and confirmed. transfer_to_staff and end_call: follow TRANSFER TO A PERSON and ENDING THE CALL.",
     "- Never repeat a failed call with the same arguments: carry on without mentioning the error, or offer a callback. Never mention tools or systems.",
     "",
     "# TRANSFER TO A PERSON",
     ...transferRules(session),
     "",
     "# CALLBACKS",
-    "- If the caller asks for a call back, or leaves a message you can't resolve, call request_callback in that same turn with a one-sentence reason. Never say a message was taken unless it succeeded.",
+    "- Call request_callback only when the caller asks for a call back or says yes to leaving a message, in that same turn, with a one-sentence reason. If they say no ('nahi', 'no need'), never take one. Never say a message was taken unless it succeeded.",
     "",
     "# ENDING THE CALL",
     "- After you finish a request, ask once whether there is anything else.",
-    "- When the caller says goodbye or that there is nothing else, say one short goodbye and call end_call. A goodbye outranks everything else.",
+    "- When the conversation is over (the caller says bye, thanks that's all, or nothing else), say one short goodbye AND call end_call in that same response. A goodbye outranks everything else. Never say goodbye without calling end_call.",
     "- Never end the call mid-request or because of a pause. Never call end_call twice."
   ].join("\n");
 }

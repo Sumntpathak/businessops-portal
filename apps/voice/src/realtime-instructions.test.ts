@@ -143,6 +143,7 @@ describe("realtime instructions: facts, names and booking", () => {
     assert.match(text, /Never convert times yourself/);
     assert.match(text, /call check_availability again with after set/);
     assert.match(text, /Do not offer the same slot again/);
+    assert.match(text, /Only offer times listed in the latest check_availability result/);
   });
 
   it("searches availability as soon as a day is known, and only says booked after create_booking succeeded", () => {
@@ -158,26 +159,36 @@ describe("realtime instructions: facts, names and booking", () => {
   });
 
   it("ends the call on goodbye and never mid-request", () => {
-    assert.match(text, /say one short goodbye and call end_call/);
+    assert.match(text, /say one short goodbye AND call end_call in that same response/);
+    assert.match(text, /Never say goodbye without calling end_call/);
     assert.match(text, /A goodbye outranks everything else/);
     assert.match(text, /Never end the call mid-request or because of a pause/);
   });
 });
 
 describe("realtime instructions: transfer", () => {
-  it("requires a clear yes before transferring, with the hold message in the same response", () => {
-    const text = buildInstructions(session);
-    assert.match(text, /Would you like me to connect you to a team member\? Please say yes to confirm/);
-    assert.match(text, /Silence, noise, 'thank you' or unrelated words are NOT a yes/);
-    assert.match(text, /Please stay on the line, it may ring for a few seconds/);
-    assert.match(text, /Do not ask which consultant they want/);
+  it("transfers straight away when the caller asks for a consultant, naming who it dials", () => {
+    const text = buildInstructions({ ...session, transferRoster: ["Gundeep Malhotra"] });
+    assert.match(text, /clearly asks to speak to a consultant, a person, the team, or a listed team member: transfer straight away, with no confirmation question/);
+    assert.match(text, /'I'll connect you with \[name\] now\. Please stay on the line, it may ring for a few seconds/);
+    assert.match(text, /call transfer_to_staff with staffName set to that same \[name\]/);
+    assert.match(text, /otherwise Gundeep Malhotra\./);
+    assert.match(text, /Asking to book a consultation is NOT asking to speak to someone/);
   });
 
-  it("lists who can take a transfer and says what to do with a name that is not listed", () => {
+  it("needs a clear yes only when the agent suggests it or the named person is not on the team", () => {
     const text = buildInstructions({ ...session, transferRoster: ["Gundeep Malhotra"] });
     assert.match(text, /Team members who can take a transfer: Gundeep Malhotra\. Nobody else can\./);
-    assert.match(text, /NOT on that list, say in one sentence that you don't have anyone by that name/);
+    assert.match(text, /NOT on that list: say in one sentence that you don't have anyone by that name, then ask once: 'Would you like me to connect you with Gundeep Malhotra instead\?'/);
+    assert.match(text, /If YOU suggest a transfer \(the caller did not ask\), ask once and transfer only after a clear yes/);
     assert.match(text, /If transfer_to_staff comes back with transferring false/);
+  });
+
+  it("takes a message only with consent and never re-asks about connecting after a no", () => {
+    const text = buildInstructions(session);
+    assert.match(text, /Call request_callback only when the caller asks for a call back or says yes to leaving a message/);
+    assert.match(text, /If they say no \('nahi', 'no need'\), never take one/);
+    assert.match(text, /On a no, do not ask about connecting again unless the caller asks for a person/);
   });
 
   it("budgets every reply", () => {

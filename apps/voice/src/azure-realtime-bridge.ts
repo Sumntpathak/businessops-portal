@@ -2,6 +2,7 @@ import { WebSocket } from "ws";
 import { z } from "zod";
 import type { AIBridge, StaffSelector, TranscriptEvent } from "./ai-bridge.js";
 import type { CallSession } from "./call-session.js";
+import { CallerLanguage } from "./caller-language.js";
 import { buildInstructions } from "./realtime-instructions.js";
 
 export { buildInstructions };
@@ -274,16 +275,19 @@ const PLAYBACK_DRAIN_PAD_MS = 600;
  * also says while looking up availability. Handles curly apostrophes.
  */
 const HOLD_MESSAGE_PATTERN =
-  /stay on the line|(may|might|will) ring|transferring you|I[’']m transferring|(while|now) I[’']?(ll|m)? ?transfer|transfer you (now|to)|put you through|connecting you (now|to|with)/i;
+  /stay on the line|(may|might|will) ring|transferring you|I[’']ll connect you|I[’']m transferring|(while|now) I[’']?(ll|m)? ?transfer|transfer you (now|to)|put you through|connecting you (now|to|with)/i;
 
 /** Max times per call the bridge will remind the agent to actually transfer. */
 const MAX_TRANSFER_NUDGES = 2;
 
 /** "I'll check that now", "one moment": a promise to look something up. */
-const CHECK_PROMISE_PATTERN = /(I[’']ll|I will|let me) (check|look|see|confirm)|one moment|just a moment|hold on|please hold/i;
+const CHECK_PROMISE_PATTERN = /\b(I[’']ll|I will|let me) (check|look|see|confirm)\b|one moment|just a moment|hold on|please hold/i;
 
 /** Max times per call the bridge will make the agent run the lookup it promised. */
 const MAX_TOOL_NUDGES = 2;
+
+/** The agent saying goodbye (English, Hindi, Punjabi). */
+const GOODBYE_PATTERN = /\b(good ?bye|bye[- ]?bye|take care|have a (great|good|nice|lovely) (day|evening|night|one))\b|अलविदा|ध्यान रख|ਅਲਵਿਦਾ|ਧਿਆਨ ਰੱਖ/i;
 
 /** Upper bound so a bad estimate can never leave a call hanging. */
 const MAX_PLAYBACK_DRAIN_MS = 10_000;
@@ -523,6 +527,8 @@ export class AzureRealtimeBridge implements AIBridge {
   private playbackEndsAt = 0;
   private transferNudges = 0;
   private toolNudges = 0;
+  private endCallNudged = false;
+  private languageTracker?: CallerLanguage;
   /** Tool calls currently executing (their result is not back yet). */
   private toolsInFlight = 0;
   /** Consecutive rate-limit failures since the last successful response. */
@@ -826,6 +832,36 @@ export class AzureRealtimeBridge implements AIBridge {
     this.activeResponse = true;
   }
 
+  /**
+   * The agent says "Goodbye, take care!" but almost never calls end_call (0 of 6 calls
+   * on 2026-10-01), so the caller is left on an open line. After a spoken goodbye with
+   * no tool call, make it hang up. Once per call.
+   */
+  private nudgeMissingEndCall(
+    response: { status?: string; output?: Array<Record<string, unknown>> } | undefined
+  ): void {
+    if (
+      this.options.attachCallId ||
+      this.stopped ||
+      this.activeResponse ||
+      this.endCallNudged ||
+      this.endCallRequested ||
+      this.pendingTransfer ||
+      this.pendingReplyBudget !== undefined ||
+      response?.status !== "completed"
+    ) {
+      return;
+    }
+    const output = response.output ?? [];
+    if (output.some((item) => item.type === "function_call")) return;
+    if (!GOODBYE_PATTERN.test(JSON.stringify(output.map((item) => item.content ?? "")))) return;
+
+    this.endCallNudged = true;
+    this.options.logger?.info({ callId: this.session?.callId }, "Agent said goodbye without end_call — ending the call");
+    this.send({ type: "response.create", response: { tool_choice: { type: "function", name: "end_call" } } });
+    this.activeResponse = true;
+  }
+
   /** Remembers which agent audio item is playing and when it started/how long it is. */
   private trackPlayedItem(event: ServerEvent, startsPlayingAt: number, addedMs: number): void {
     const id = typeof event.item_id === "string" ? event.item_id : undefined;
@@ -896,6 +932,12 @@ export class AzureRealtimeBridge implements AIBridge {
     this.activeResponse = true;
   }
 
+  /** The caller's current language, created lazily from the session's configured languages. */
+  private callerLanguage(): CallerLanguage {
+    this.languageTracker ??= new CallerLanguage(this.session?.agent.languages ?? ["English"]);
+    return this.languageTracker;
+  }
+
   /** One short spoken hold line while a slow tool runs, only when nothing else is being said. */
   private sayStillChecking(): void {
     if (this.stopped || this.activeResponse || this.options.attachCallId) return;
@@ -904,7 +946,7 @@ export class AzureRealtimeBridge implements AIBridge {
       response: {
         tool_choice: "none",
         instructions:
-          "Say only this, in the language you are using with the caller, in the same warm voice: " +
+          `Say only this, in ${this.callerLanguage().language}, in the same warm voice: ` +
           "'Still checking, one moment please.' Nothing else."
       }
     });
@@ -964,7 +1006,9 @@ export class AzureRealtimeBridge implements AIBridge {
         content: [
           {
             type: "input_text",
-            text: `REPLY BUDGET for your next reply: at most ${words} words, one sentence if you can. Answer only what the caller just said and add nothing extra.`
+            text:
+              `REPLY BUDGET for your next reply: at most ${words} words, one sentence if you can. Answer only what the caller just said and add nothing extra.` +
+              ((this.session?.agent.languages.length ?? 0) > 1 ? ` The caller has been speaking ${this.callerLanguage().language}: reply in ${this.callerLanguage().language} unless their latest words are a full sentence in another of your languages.` : "")
           }
         ]
       }
@@ -1124,6 +1168,7 @@ export class AzureRealtimeBridge implements AIBridge {
       }
       this.nudgeMissingTransfer(response);
       this.nudgeMissingTool(response);
+      this.nudgeMissingEndCall(response);
       this.flushPendingReply(response?.output ?? []);
       // Azure finishes generating audio far faster than Twilio plays it, so at
       // response.done the goodbye / "connecting you now" line is still queued on
@@ -1157,6 +1202,7 @@ export class AzureRealtimeBridge implements AIBridge {
         this.transcript?.({ role: "caller", content: text, at: new Date() });
       }
       this.turnTranscript = text;
+      if (text && !isJunkTurn(text)) this.callerLanguage().observe(text);
       // A very short utterance was waiting on its transcript to decide whether it
       // was speech or noise.
       if (this.awaitingShortTurn) {
@@ -1430,10 +1476,7 @@ export class AzureRealtimeBridge implements AIBridge {
           content: [
             {
               type: "input_text",
-              text:
-                "The tool result above is data, not a language cue. Keep holding the language " +
-                "already established this call, in the SAME warm tone the caller was just hearing " +
-                "— do not switch to English or shift into a flat reading voice because of it."
+              text: this.callerLanguage().replyNote()
             }
           ]
         }

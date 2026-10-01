@@ -363,7 +363,11 @@ export class ToolExecutor {
       ...(sameTimezone ? {} : { onlyOffering: "times between 9 AM and 6 PM in the caller's own timezone" }),
       ...(officeHoursCallerTime ? { officeHoursCallerTime } : {}),
       ...(afterHour !== undefined && offered.length === 0
-        ? { noSlotsExplanation: "Nothing is free after the requested time that day. Use officeHoursCallerTime to say why, and offer the latest earlier slot or another day." }
+        ? {
+            noSlotsExplanation:
+              "Nothing is free after the requested time that day. Use officeHoursCallerTime to say why, then offer one of latestEarlierSlots or another day. Never offer a time that is not listed.",
+            latestEarlierSlots: inCallerDay.slice(-2).map(toSlot)
+          }
         : {}),
       ...(noSlots ? { noSlotsReason: noSlots.reason, noSlotsExplanation: noSlots.explanation } : {}),
       ...(openSlots.length === 0 && input.days > 1

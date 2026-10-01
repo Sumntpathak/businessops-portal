@@ -296,3 +296,67 @@ describe("a promised lookup that never happened", () => {
     assert.equal(sent.filter((e) => JSON.stringify(e).includes('"required"')).length, 2);
   });
 });
+
+describe("reply language after a tool call (English caller from India answered in Hindi)", () => {
+  it("pins the caller's actual language in the note after the tool result", async () => {
+    const { bridge, internals, sent, handle } = fakeBridge();
+    internals.session = { ...session, agent: { ...session.agent, languages: ["English", "Hindi", "Punjabi"] } };
+    bridge.onToolCall(() => ({ slots: [] }));
+    handle({ type: "conversation.item.input_audio_transcription.completed", transcript: "Can you check and book an appointment for me for tomorrow after 12 p.m. Indian time?" });
+    handle({ type: "response.function_call_arguments.done", call_id: "l1", name: "check_availability", arguments: "{}" });
+    await flush();
+    const notes = JSON.stringify(sent.filter((e) => e.type === "conversation.item.create"));
+    assert.match(notes, /The caller is speaking English: reply in English only/);
+    assert.doesNotMatch(notes, /do not switch to English/);
+  });
+
+  it("follows a caller who really switches to Hindi", async () => {
+    const { bridge, internals, sent, handle } = fakeBridge();
+    internals.session = { ...session, agent: { ...session.agent, languages: ["English", "Hindi"] } };
+    bridge.onToolCall(() => ({ slots: [] }));
+    handle({ type: "conversation.item.input_audio_transcription.completed", transcript: "मुझे कल का अपॉइंटमेंट चाहिए" });
+    handle({ type: "response.function_call_arguments.done", call_id: "l2", name: "check_availability", arguments: "{}" });
+    await flush();
+    assert.match(JSON.stringify(sent), /The caller is speaking Hindi/);
+  });
+});
+
+describe("ending the call", () => {
+  const spoke = (text: string, extra: Array<Record<string, unknown>> = []) => ({
+    type: "response.done",
+    response: { status: "completed", output: [{ type: "message", content: [{ type: "output_audio", transcript: text }] }, ...extra] }
+  });
+
+  it("hangs up after a spoken goodbye that forgot end_call (English and Hindi)", () => {
+    for (const goodbye of ["Goodbye, take care!", "ठीक है, धन्यवाद, ध्यान रखें।"]) {
+      const { sent, handle } = fakeBridge();
+      handle(spoke(goodbye));
+      const forced = sent.filter((e) => e.type === "response.create");
+      assert.equal(forced.length, 1, goodbye);
+      assert.match(JSON.stringify(forced[0]), /"name":"end_call"/);
+    }
+  });
+
+  it("does not hang up on ordinary replies, after end_call was called, or twice", () => {
+    const plain = fakeBridge();
+    plain.handle(spoke("Sure, take your time."));
+    plain.handle(spoke("We're open nine to five."));
+    assert.equal(plain.sent.filter((e) => e.type === "response.create").length, 0);
+
+    const called = fakeBridge();
+    called.handle(spoke("Goodbye!", [{ type: "function_call", name: "end_call", call_id: "e1", arguments: "{}" }]));
+    assert.doesNotMatch(JSON.stringify(called.sent.filter((e) => e.type === "response.create")), /"name":"end_call"/);
+
+    const twice = fakeBridge();
+    twice.handle(spoke("Bye-bye!"));
+    twice.handle(done);
+    twice.handle(spoke("Bye-bye!"));
+    assert.equal(twice.sent.filter((e) => JSON.stringify(e).includes('"name":"end_call"')).length, 1);
+  });
+
+  it("treats 'I'll connect you with Gundeep now' without the tool as a missed transfer", () => {
+    const { sent, handle } = fakeBridge();
+    handle(spoke("I'll connect you with Gundeep Malhotra now. Please stay on the line."));
+    assert.match(JSON.stringify(sent), /"name":"transfer_to_staff"/);
+  });
+});
