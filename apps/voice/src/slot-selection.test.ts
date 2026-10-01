@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { isWithinCallerDay, localHour, pickAcrossDays, spreadPick, type SlotLike } from "./slot-selection.js";
+import { isWithinCallerDay, localHour, officeHoursForCaller, pickAcrossDays, spreadPick, zonedTimeToUtc, type SlotLike } from "./slot-selection.js";
 
 const slot = (iso: string, minutes = 30): SlotLike => {
   const startsAt = new Date(iso);
@@ -49,5 +49,26 @@ describe("pickAcrossDays", () => {
       picked.map((s) => s.startsAt.toISOString().slice(0, 16)),
       ["2026-10-05T03:30", "2026-10-05T04:30", "2026-10-06T04:00", "2026-10-07T04:00"]
     );
+  });
+});
+
+describe("office hours in the caller's time", () => {
+  const weekdays = [0, 1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, opens: "09:00:00", closes: "17:00:00", closed: weekday === 0 || weekday === 6 }));
+
+  it("converts across DST: Melbourne is +10 on Oct 2 and +11 on Oct 5", () => {
+    assert.equal(zonedTimeToUtc("2026-10-02", "09:00", "Australia/Melbourne").toISOString(), "2026-10-01T23:00:00.000Z");
+    assert.equal(zonedTimeToUtc("2026-10-05", "09:00", "Australia/Melbourne").toISOString(), "2026-10-04T22:00:00.000Z");
+  });
+
+  it("tells an Indian caller the office closes at 12:30 PM their time and the last 45 min start", () => {
+    const text = officeHoursForCaller(weekdays, "Australia/Melbourne", "Asia/Kolkata", "2026-10-02", 45) ?? "";
+    assert.match(text, /open 4:30 AM to 12:30 PM caller's time/);
+    assert.match(text, /\(9:00 AM to 5:00 PM business time\)/);
+    assert.match(text, /latest appointment start is 11:45 AM caller's time/);
+  });
+
+  it("says closed on a weekend and nothing when hours are not set up", () => {
+    assert.match(officeHoursForCaller(weekdays, "Australia/Melbourne", "Asia/Kolkata", "2026-10-03", 30) ?? "", /closed/);
+    assert.equal(officeHoursForCaller([], "Australia/Melbourne", "Asia/Kolkata", "2026-10-02", 30), undefined);
   });
 });

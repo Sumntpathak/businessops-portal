@@ -11,7 +11,7 @@ import {
 } from "drizzle-orm";
 import { z } from "zod";
 import { explainNoSlots } from "./office-hours.js";
-import { addDaysIso, isWithinCallerDay, pickAcrossDays, spreadPick } from "./slot-selection.js";
+import { addDaysIso, isWithinCallerDay, localHour, officeHoursForCaller, pickAcrossDays, spreadPick } from "./slot-selection.js";
 import {
   CalendarConnectionRevokedError,
   type AvailabilityService,
@@ -146,7 +146,8 @@ const availabilityInput = z
     staffName: z.string().trim().min(1).max(160).nullable().optional(),
     staff: z.string().trim().min(1).max(160).nullable().optional(),
     date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
-    days: z.number().int().nullable().optional()
+    days: z.number().int().nullable().optional(),
+    after: z.string().regex(/^([01]?\d|2[0-3]):[0-5]\d$/).nullable().optional()
   })
   .transform((val) => ({
     serviceId: val.serviceId ?? undefined,
@@ -155,7 +156,9 @@ const availabilityInput = z
     staffName: val.staffName ?? val.staff ?? undefined,
     date: val.date ?? new Date().toISOString().split("T")[0]!,
     // How many days to search from `date`; "any day this week" callers get several.
-    days: Math.min(MAX_SEARCH_DAYS, Math.max(1, val.days ?? 1))
+    days: Math.min(MAX_SEARCH_DAYS, Math.max(1, val.days ?? 1)),
+    // Caller-local "HH:MM": only slots starting at or after it ("anything after 12?").
+    afterHour: val.after ? Number(val.after.split(":")[0]) + Number(val.after.split(":")[1]) / 60 : undefined
   }));
 
 const createBookingInput = z
@@ -321,7 +324,11 @@ export class ToolExecutor {
       .sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime());
 
     // A caller in another timezone is only offered times inside their own 9 AM to 6 PM.
-    const suitable = sameTimezone ? openSlots : openSlots.filter((slot) => isWithinCallerDay(slot, callerTimezone));
+    const inCallerDay = sameTimezone ? openSlots : openSlots.filter((slot) => isWithinCallerDay(slot, callerTimezone));
+    const afterHour = input.afterHour;
+    const suitable = afterHour === undefined
+      ? inCallerDay
+      : inCallerDay.filter((slot) => localHour(slot.startsAt, callerTimezone) >= afterHour);
     const byDay = new Map<string, typeof suitable>();
     for (const slot of suitable) {
       const day = localDateInTimezone(slot.startsAt, callerTimezone);
@@ -332,7 +339,10 @@ export class ToolExecutor {
         ? pickAcrossDays([...byDay].map(([date, slots]) => ({ date, slots })), 2)
         : spreadPick(suitable, 4);
 
-    const onlyOutsideCallerHours = offered.length === 0 && openSlots.length > 0;
+    const onlyOutsideCallerHours = offered.length === 0 && openSlots.length > 0 && afterHour === undefined;
+    const officeHoursCallerTime = sameTimezone
+      ? undefined
+      : officeHoursForCaller(this.session.businessHours ?? [], this.session.timezone, callerTimezone, input.date, service.durationMinutes);
     const noSlots =
       openSlots.length === 0 && input.days === 1
         ? explainNoSlots(this.session.businessHours ?? [], this.session.timezone, input.date, service.durationMinutes)
@@ -351,6 +361,10 @@ export class ToolExecutor {
       callerTimezone,
       ...(input.days > 1 ? { searchedDays: input.days } : {}),
       ...(sameTimezone ? {} : { onlyOffering: "times between 9 AM and 6 PM in the caller's own timezone" }),
+      ...(officeHoursCallerTime ? { officeHoursCallerTime } : {}),
+      ...(afterHour !== undefined && offered.length === 0
+        ? { noSlotsExplanation: "Nothing is free after the requested time that day. Use officeHoursCallerTime to say why, and offer the latest earlier slot or another day." }
+        : {}),
       ...(noSlots ? { noSlotsReason: noSlots.reason, noSlotsExplanation: noSlots.explanation } : {}),
       ...(openSlots.length === 0 && input.days > 1
         ? { noSlotsExplanation: `There are no openings in the next ${input.days} days.` }

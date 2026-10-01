@@ -207,6 +207,15 @@ export const SCENARIOS: Scenario[] = [
     ]
   },
   {
+    name: "office timings are answered, not deferred",
+    caller: ["What are your office timings?"],
+    checks: [
+      ...base,
+      replyMatches(0, /\b(9|nine)\b.*\b(5|five)\b/i, "gives 9 to 5"),
+      replyAvoids(0, /confirm|follow up|call you back/i, "does not defer to the team")
+    ]
+  },
+  {
     name: "Hindi: stays female",
     caller: ["नमस्ते, मुझे आपके ऑफिस का पता चाहिए, आप बता सकती हैं?"],
     checks: [...base, replyAvoids(0, /सकता|बताता|देखता|करता हूँ/, "uses female verb forms")]

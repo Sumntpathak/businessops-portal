@@ -84,6 +84,10 @@ export const REALTIME_TOOLS = [
         days: {
           type: "integer",
           description: "How many days to search starting at date (1 to 7). Use 5 when the caller says 'any date' or 'the next few days'. Default 1."
+        },
+        after: {
+          type: "string",
+          description: "Optional HH:MM (24h) in the caller's local time: only return slots starting at or after it, e.g. '13:00' for 'after 1 PM'."
         }
       },
       required: ["date"]
@@ -238,6 +242,10 @@ const VAD_THRESHOLD = 0.75;
 
 /** How long caller speech must last before it counts as an interruption (WebSocket mode). */
 const BARGE_IN_CONFIRM_MS = 300;
+/** Tools that hit the calendar or database and can take seconds. */
+const SLOW_TOOLS = new Set(["check_availability", "create_booking", "cancel_booking", "get_caller_context"]);
+/** Silence before the caller is told the lookup is still running. */
+const TOOL_HOLD_MS = 2_500;
 
 /** Caller utterances shorter than this wait for their transcript before getting an answer. */
 const SHORT_TURN_MS = 900;
@@ -270,6 +278,12 @@ const HOLD_MESSAGE_PATTERN =
 
 /** Max times per call the bridge will remind the agent to actually transfer. */
 const MAX_TRANSFER_NUDGES = 2;
+
+/** "I'll check that now", "one moment": a promise to look something up. */
+const CHECK_PROMISE_PATTERN = /(I[’']ll|I will|let me) (check|look|see|confirm)|one moment|just a moment|hold on|please hold/i;
+
+/** Max times per call the bridge will make the agent run the lookup it promised. */
+const MAX_TOOL_NUDGES = 2;
 
 /** Upper bound so a bad estimate can never leave a call hanging. */
 const MAX_PLAYBACK_DRAIN_MS = 10_000;
@@ -326,8 +340,13 @@ const TRANSCRIPTION_ARTIFACTS: readonly RegExp[] = [
 ];
 
 /** The 2.x model can speak a greeting twice (a preamble plus the answer); this wording prevents it. */
-export function greetingInstruction(greeting: string): string {
-  return `Say this greeting once, exactly as written, with nothing before or after it, and do not repeat it: ${JSON.stringify(greeting)}`;
+export function greetingInstruction(greeting: string, knownName?: string | null): string {
+  const base = `Say this greeting once, exactly as written, and do not repeat it: ${JSON.stringify(greeting)}`;
+  // A returning caller is recognised from caller ID before the call is answered, so the
+  // agent can confirm who it is talking to instead of guessing or using the name unasked.
+  return knownName
+    ? `${base} Then add only this question: ${JSON.stringify(`Am I speaking with ${knownName}?`)}`
+    : `${base} Say nothing before or after it.`;
 }
 
 /**
@@ -503,6 +522,9 @@ export class AzureRealtimeBridge implements AIBridge {
   /** Epoch ms at which everything sent to the phone leg so far will have finished playing. */
   private playbackEndsAt = 0;
   private transferNudges = 0;
+  private toolNudges = 0;
+  /** Tool calls currently executing (their result is not back yet). */
+  private toolsInFlight = 0;
   /** Consecutive rate-limit failures since the last successful response. */
   private rateLimitStreak = 0;
   /** The agent audio item currently being played to the caller, for truncating on interruption. */
@@ -600,7 +622,7 @@ export class AzureRealtimeBridge implements AIBridge {
     // Speak the configured greeting as soon as the call connects.
     this.send({
       type: "response.create",
-      response: { instructions: greetingInstruction(session.agent.voiceGreeting) }
+      response: { instructions: greetingInstruction(session.agent.voiceGreeting, session.caller.displayName) }
     });
     this.activeResponse = true;
     this.ready = true;
@@ -765,6 +787,45 @@ export class AzureRealtimeBridge implements AIBridge {
     this.activeResponse = true;
   }
 
+  /**
+   * The non-reasoning mini model sometimes says "I'll check that now, one moment" and
+   * then ends its turn without calling any tool, so the caller waits in silence. Make it
+   * run the lookup it promised. Not after the bridge's own "Still checking" line (a tool
+   * is already running then), and at most twice per call so it can never loop.
+   */
+  private nudgeMissingTool(
+    response: { status?: string; output?: Array<Record<string, unknown>> } | undefined
+  ): void {
+    if (
+      this.options.attachCallId ||
+      this.stopped ||
+      this.activeResponse ||
+      this.toolsInFlight > 0 ||
+      this.pendingReplyBudget !== undefined ||
+      this.toolNudges >= MAX_TOOL_NUDGES ||
+      response?.status !== "completed"
+    ) {
+      return;
+    }
+    const output = response.output ?? [];
+    if (output.some((item) => item.type === "function_call")) return;
+    const spoken = JSON.stringify(output.map((item) => item.content ?? ""));
+    if (!CHECK_PROMISE_PATTERN.test(spoken) || HOLD_MESSAGE_PATTERN.test(spoken)) return;
+
+    this.toolNudges += 1;
+    this.options.logger?.info({ callId: this.session?.callId }, "Agent promised a lookup without calling a tool — nudging");
+    this.send({
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "system",
+        content: [{ type: "input_text", text: "You told the caller you would check but did not call a tool. Call the right tool NOW. Do not say anything first." }]
+      }
+    });
+    this.send({ type: "response.create", response: { tool_choice: "required" } });
+    this.activeResponse = true;
+  }
+
   /** Remembers which agent audio item is playing and when it started/how long it is. */
   private trackPlayedItem(event: ServerEvent, startsPlayingAt: number, addedMs: number): void {
     const id = typeof event.item_id === "string" ? event.item_id : undefined;
@@ -832,6 +893,21 @@ export class AzureRealtimeBridge implements AIBridge {
   private createReply(budgetWords: number): void {
     this.sendReplyBudget(budgetWords);
     this.send({ type: "response.create" });
+    this.activeResponse = true;
+  }
+
+  /** One short spoken hold line while a slow tool runs, only when nothing else is being said. */
+  private sayStillChecking(): void {
+    if (this.stopped || this.activeResponse || this.options.attachCallId) return;
+    this.send({
+      type: "response.create",
+      response: {
+        tool_choice: "none",
+        instructions:
+          "Say only this, in the language you are using with the caller, in the same warm voice: " +
+          "'Still checking, one moment please.' Nothing else."
+      }
+    });
     this.activeResponse = true;
   }
 
@@ -1047,6 +1123,7 @@ export class AzureRealtimeBridge implements AIBridge {
         }
       }
       this.nudgeMissingTransfer(response);
+      this.nudgeMissingTool(response);
       this.flushPendingReply(response?.output ?? []);
       // Azure finishes generating audio far faster than Twilio plays it, so at
       // response.done the goodbye / "connecting you now" line is still queued on
@@ -1254,7 +1331,16 @@ export class AzureRealtimeBridge implements AIBridge {
             "Do not say anything is booked. In one short sentence recap the service, day and time (and ask their name if you don't have it), then wait for a clear yes before calling create_booking again."
         };
       } else {
-        output = await this.toolCall?.(name, parsedInput);
+        // If a lookup is slow, tell the caller once that we're still on it instead of
+        // leaving dead air; the answer itself waits for that line (requestToolFollowUp).
+        const holdTimer = SLOW_TOOLS.has(name) ? setTimeout(() => this.sayStillChecking(), TOOL_HOLD_MS) : undefined;
+        this.toolsInFlight += 1;
+        try {
+          output = await this.toolCall?.(name, parsedInput);
+        } finally {
+          this.toolsInFlight -= 1;
+          clearTimeout(holdTimer);
+        }
         if (name === "check_availability") this.callerTurnsSinceAvailability = 0;
       }
       this.transcript?.({

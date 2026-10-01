@@ -88,3 +88,21 @@ describe("check_availability for a caller in another timezone", () => {
     assert.equal(result.onlyOutsideCallerHours, undefined);
   });
 });
+
+describe("check_availability: 'after' and office hours in caller time", () => {
+  it("only returns slots at or after the caller's requested time", async () => {
+    const result = (await executorFor("Asia/Kolkata").execute("check_availability", { serviceName: "Consultation", date: "2026-10-05", after: "10:00" })) as Result;
+    assert.ok(result.slots.length > 0);
+    for (const slot of result.slots) assert.doesNotMatch(slot.callerLocalTime, / 9:\d\d AM/);
+  });
+
+  it("explains why nothing is free after the office has closed for the caller", async () => {
+    const executor = executorFor("Asia/Kolkata");
+    (executor as unknown as { session: CallSession }).session.businessHours =
+      [0, 1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, opens: "09:00:00", closes: "17:00:00", closed: weekday === 0 || weekday === 6 }));
+    const result = (await executor.execute("check_availability", { serviceName: "Consultation", date: "2026-10-05", after: "13:00" })) as Result & { officeHoursCallerTime?: string };
+    assert.equal(result.slots.length, 0);
+    assert.match(result.officeHoursCallerTime ?? "", /to 11:30 AM caller's time/);
+    assert.match(result.noSlotsExplanation ?? "", /Nothing is free after the requested time/);
+  });
+});

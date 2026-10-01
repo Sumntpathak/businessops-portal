@@ -132,9 +132,17 @@ describe("realtime instructions: facts, names and booking", () => {
     assert.match(text, /For medical or health talk give no advice/);
   });
 
-  it("captures names carefully: spelled by the caller is saved, otherwise read back first", () => {
-    assert.match(text, /If they spell it themselves, call update_caller_profile with it straight away/);
-    assert.match(text, /read your spelling back and save it after they say yes/);
+  it("confirms names letter by letter before saving, and never uses a saved name unconfirmed", () => {
+    assert.match(text, /read it back letter by letter/);
+    assert.match(text, /Save it with update_caller_profile only after a clear yes/);
+    assert.match(text, /Never use a saved name before the caller has confirmed it/);
+  });
+
+  it("speaks caller-local times only and explains closing time instead of repeating a slot", () => {
+    assert.match(text, /Speak only callerLocalTime/);
+    assert.match(text, /Never convert times yourself/);
+    assert.match(text, /call check_availability again with after set/);
+    assert.match(text, /Do not offer the same slot again/);
   });
 
   it("searches availability as soon as a day is known, and only says booked after create_booking succeeded", () => {

@@ -195,7 +195,8 @@ describe("transfer nudge", () => {
         output: [{ type: "message", content: [{ transcript: "Sure, hold on a second while I check the calendar." }] }]
       }
     });
-    assert.equal(sent.length, 0);
+    // No transfer is forced (the lookup nudge may force a tool call, but never transfer_to_staff).
+    assert.doesNotMatch(JSON.stringify(sent), /transfer_to_staff/);
   });
 
   it("does not nudge when the transfer tool was called, transfer is unavailable, or after two nudges", () => {

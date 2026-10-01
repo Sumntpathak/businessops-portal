@@ -232,3 +232,67 @@ describe("transcription vocabulary", () => {
     assert.deepEqual(transcriptionConfig("m", ["English"]), { model: "m", language: "en" });
   });
 });
+
+describe("returning caller greeting", () => {
+  it("asks a known caller to confirm their name, and says nothing extra to a new caller", async () => {
+    const { greetingInstruction } = await import("./azure-realtime-bridge.js");
+    assert.match(greetingInstruction("Thanks for calling.", "Sumant"), /Am I speaking with Sumant\?/);
+    assert.doesNotMatch(greetingInstruction("Thanks for calling.", null), /Am I speaking/);
+  });
+});
+
+describe("slow tool calls", () => {
+  it("says a short hold line once when a lookup takes more than 2.5 seconds, then answers after it", async () => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    try {
+      const { bridge, sent, handle } = fakeBridge();
+      let finish: (value: unknown) => void = () => {};
+      bridge.onToolCall(() => new Promise((resolve) => { finish = resolve; }));
+      handle({ type: "response.function_call_arguments.done", call_id: "s1", name: "check_availability", arguments: "{}" });
+      handle({ type: "response.done", response: { status: "completed", output: [{ type: "function_call", call_id: "s1", name: "check_availability" }] } });
+      mock.timers.tick(2_600);
+      const hold = sent.filter((e) => e.type === "response.create");
+      assert.equal(hold.length, 1);
+      assert.match(JSON.stringify(hold[0]), /Still checking/);
+      finish({ slots: [] });
+      await flush();
+      assert.equal(sent.filter((e) => e.type === "response.create").length, 1, "the answer waits for the hold line to finish");
+      handle(done);
+      assert.equal(sent.filter((e) => e.type === "response.create").length, 2, "then the tool answer is spoken");
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it("stays quiet for a fast lookup", async () => {
+    const { bridge, sent, handle } = fakeBridge();
+    bridge.onToolCall(() => ({ slots: [] }));
+    handle({ type: "response.function_call_arguments.done", call_id: "f1", name: "check_availability", arguments: "{}" });
+    await flush();
+    assert.doesNotMatch(JSON.stringify(sent), /Still checking/);
+  });
+});
+
+describe("a promised lookup that never happened", () => {
+  const promised = (text: string) => ({
+    type: "response.done",
+    response: { status: "completed", output: [{ type: "message", content: [{ type: "output_audio", transcript: text }] }] }
+  });
+
+  it("forces the tool call when the agent said it would check but did not", () => {
+    const { sent, handle } = fakeBridge();
+    handle(promised("I'll check availability now — please hold on."));
+    const forced = sent.filter((e) => e.type === "response.create");
+    assert.equal(forced.length, 1);
+    assert.match(JSON.stringify(forced[0]), /"tool_choice":"required"/);
+  });
+
+  it("leaves ordinary answers and the transfer hold message alone, and stops after two nudges", () => {
+    const { sent, handle } = fakeBridge();
+    handle(promised("We're open nine to five."));
+    handle(promised("Great — I'll put you through now. Please stay on the line."));
+    assert.equal(sent.filter((e) => JSON.stringify(e).includes('"required"')).length, 0);
+    for (let i = 0; i < 4; i += 1) handle(promised("Let me check that, one moment."));
+    assert.equal(sent.filter((e) => JSON.stringify(e).includes('"required"')).length, 2);
+  });
+});
