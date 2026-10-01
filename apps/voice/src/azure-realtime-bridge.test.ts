@@ -353,15 +353,32 @@ describe("rate-limited responses", () => {
     response: { status: "failed", status_details: { type: "failed", error: { code: "inference_rate_limit_exceeded" } }, output: [] }
   };
 
-  it("retries a response that Azure failed with a rate limit, at most three times", () => {
+  it("retries a rate-limited response with a growing pause, up to six in a row", () => {
     mock.timers.enable({ apis: ["setTimeout", "Date"] });
     try {
       const { sent, handle } = bridgeWithFakeSocket();
-      for (let i = 0; i < 5; i += 1) {
+      for (let i = 0; i < 9; i += 1) {
         handle(rateLimited);
-        mock.timers.tick(1500);
+        mock.timers.tick(6000);
       }
-      assert.equal(sent.filter((e) => e.type === "response.create").length, 3);
+      assert.equal(sent.filter((e) => e.type === "response.create").length, 6);
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it("resets the streak after any success, so a long call never runs out of retries", () => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    try {
+      const { sent, handle } = bridgeWithFakeSocket();
+      for (let round = 0; round < 3; round += 1) {
+        for (let i = 0; i < 4; i += 1) {
+          handle(rateLimited);
+          mock.timers.tick(6000);
+        }
+        handle({ type: "response.done", response: { status: "completed", output: [] } });
+      }
+      assert.equal(sent.filter((e) => e.type === "response.create").length, 12, "all 12 failures were retried");
     } finally {
       mock.timers.reset();
     }

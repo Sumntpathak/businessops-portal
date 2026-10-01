@@ -110,7 +110,7 @@ function runScenario(scenario: Scenario): Promise<TurnResult[]> {
     const send = (event: Record<string, unknown>) => ws.send(JSON.stringify(event));
     const nextCallerTurn = () => {
       if (turnIndex >= scenario.caller.length) { clearTimeout(timer); ws.close(); resolve(turns); return; }
-      current = { caller: scenario.caller[turnIndex++]!, messages: [], tools: [] };
+      current = { caller: scenario.caller[turnIndex++]!, messages: [], tools: [], toolArgs: [] };
       gate.turnsSinceAvailability += 1;
       rounds = 0;
       send({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: current.caller }] } });
@@ -128,7 +128,7 @@ function runScenario(scenario: Scenario): Promise<TurnResult[]> {
       if (e.type === "session.created") {
         send({
           type: "session.update",
-          session: { type: "realtime", output_modalities: ["text"], instructions: buildInstructions(session), tools: REALTIME_TOOLS, tool_choice: "auto", reasoning: { effort: EFFORT } }
+          session: { type: "realtime", output_modalities: ["text"], instructions: buildInstructions(session), tools: REALTIME_TOOLS, tool_choice: "auto", ...(EFFORT === "none" ? {} : { reasoning: { effort: EFFORT } }) }
         });
       } else if (e.type === "session.updated") {
         send({ type: "conversation.item.create", item: { type: "message", role: "assistant", content: [{ type: "output_text", text: session.agent.voiceGreeting }] } });
@@ -157,7 +157,10 @@ function runScenario(scenario: Scenario): Promise<TurnResult[]> {
         if (calls.length === 0 || ++rounds > 6) { turns.push(current); nextCallerTurn(); return; }
         // The live bridge sends no follow-up response after a transfer or end_call, so the call is over here too.
         const results = calls.map((call) => ({ call, name: String(call.name), result: toolResult(String(call.name), String(call.arguments ?? "{}"), gate) }));
-        for (const { name } of results) current.tools.push(name);
+        for (const { name, call } of results) {
+          current.tools.push(name);
+          current.toolArgs?.push((() => { try { return JSON.parse(String(call.arguments ?? "{}")) as Record<string, unknown>; } catch { return {}; } })());
+        }
         if (results.some(({ name, result }) => name === "end_call" || (name === "transfer_to_staff" && (result as { transferring?: boolean }).transferring))) {
           turns.push(current);
           clearTimeout(timer); ws.close(); resolve(turns);
@@ -182,7 +185,7 @@ function runGreeting(): Promise<string[]> {
     ws.on("message", (raw) => {
       const e = JSON.parse(raw.toString()) as { type: string; response?: { status_details?: unknown; output?: Item[] }; error?: { message?: string } };
       if (e.type === "session.created") {
-        ws.send(JSON.stringify({ type: "session.update", session: { type: "realtime", output_modalities: ["text"], instructions: buildInstructions(session), tools: REALTIME_TOOLS, tool_choice: "auto", reasoning: { effort: EFFORT } } }));
+        ws.send(JSON.stringify({ type: "session.update", session: { type: "realtime", output_modalities: ["text"], instructions: buildInstructions(session), tools: REALTIME_TOOLS, tool_choice: "auto", ...(EFFORT === "none" ? {} : { reasoning: { effort: EFFORT } }) } }));
       } else if (e.type === "session.updated") {
         ws.send(JSON.stringify({ type: "response.create", response: { instructions: greetingInstruction(session.agent.voiceGreeting) } }));
       } else if (e.type === "response.done") {
@@ -255,5 +258,6 @@ for (const { scenario, turns, error } of results) {
   }
   console.log("");
 }
-console.log(`RESULT: ${passed}/${total} checks passed | avg ${turnsTotal ? (wordsTotal / turnsTotal).toFixed(1) : 0} words per agent turn`);
+const msgTotal = results.reduce((acc, r) => acc + r.turns.reduce((x, t) => x + t.messages.length, 0), 0);
+console.log(`RESULT: ${passed}/${total} checks passed | avg ${turnsTotal ? (wordsTotal / turnsTotal).toFixed(1) : 0} words per agent turn | ${turnsTotal ? (msgTotal / turnsTotal).toFixed(2) : 0} spoken messages per turn`);
 process.exit(passed === total ? 0 : 1);

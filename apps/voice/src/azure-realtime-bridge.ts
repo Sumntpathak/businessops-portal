@@ -57,7 +57,7 @@ export const REALTIME_TOOLS = [
     type: "function",
     name: "check_availability",
     description:
-      "Look up open appointment slots for a service on a given date. Always call this before promising or booking any time. Returns ISO timestamps for each free slot.",
+      "Look up open appointment slots for a service starting on a date. Always call this before promising or booking any time. Returns a few well-spread slots; for a caller in another timezone it only returns times in their own 9 AM to 6 PM. Set days (up to 7) when the caller has no particular date, so you get the best slots across several days.",
     parameters: {
       type: "object",
       properties: {
@@ -79,7 +79,11 @@ export const REALTIME_TOOLS = [
         },
         date: {
           type: "string",
-          description: "Requested date in YYYY-MM-DD, in the caller's local timezone shown in instructions."
+          description: "First date to search, YYYY-MM-DD, in the caller's local timezone shown in instructions."
+        },
+        days: {
+          type: "integer",
+          description: "How many days to search starting at date (1 to 7). Use 5 when the caller says 'any date' or 'the next few days'. Default 1."
         }
       },
       required: ["date"]
@@ -245,8 +249,9 @@ const SHORT_TURN_TRANSCRIPT_WAIT_MS = 800;
 const MIN_TURNS_BEFORE_BOOKING = 2;
 
 /** Azure rate-limit failures (tokens per minute): retries per call, and the pause before each. */
-const MAX_RATE_LIMIT_RETRIES = 3;
+const MAX_RATE_LIMIT_STREAK = 6;
 const RATE_LIMIT_RETRY_MS = 1500;
+const MAX_RATE_LIMIT_WAIT_MS = 6000;
 
 /** G.711 mu-law at 8 kHz: 8 bytes of audio per millisecond. */
 const PCMU_BYTES_PER_MS = 8;
@@ -481,7 +486,8 @@ export class AzureRealtimeBridge implements AIBridge {
   /** Epoch ms at which everything sent to the phone leg so far will have finished playing. */
   private playbackEndsAt = 0;
   private transferNudges = 0;
-  private rateLimitRetries = 0;
+  /** Consecutive rate-limit failures since the last successful response. */
+  private rateLimitStreak = 0;
   /** The agent audio item currently being played to the caller, for truncating on interruption. */
   private playItem?: { id: string; contentIndex: number; startedAt: number; totalMs: number };
   private speechStartedAt?: number;
@@ -937,22 +943,25 @@ export class AzureRealtimeBridge implements AIBridge {
           }
         | undefined;
       // Azure can fail a response with a tokens-per-minute rate limit. Left alone the
-      // caller just hears silence, so retry it shortly (a few times per call).
+      // caller just hears silence, so retry with a growing pause. The streak resets
+      // after any success, so a long call can't permanently run out of retries.
+      if (response?.status === "completed") this.rateLimitStreak = 0;
       if (
         response?.status === "failed" &&
         /rate_limit/i.test(response.status_details?.error?.code ?? "") &&
         !this.stopped &&
-        this.rateLimitRetries < MAX_RATE_LIMIT_RETRIES
+        this.rateLimitStreak < MAX_RATE_LIMIT_STREAK
       ) {
-        this.rateLimitRetries += 1;
+        this.rateLimitStreak += 1;
+        const waitMs = Math.min(MAX_RATE_LIMIT_WAIT_MS, RATE_LIMIT_RETRY_MS * this.rateLimitStreak);
         this.options.logger?.error(
-          { callId: this.session?.callId, attempt: this.rateLimitRetries },
+          { callId: this.session?.callId, attempt: this.rateLimitStreak, waitMs },
           "Azure realtime rate limit hit; retrying the response"
         );
         this.activeResponse = true;
         setTimeout(() => {
           if (!this.stopped) this.send({ type: "response.create" });
-        }, RATE_LIMIT_RETRY_MS);
+        }, waitMs);
         return;
       }
       // Fallback: catch any function calls that did not surface via arguments.done.

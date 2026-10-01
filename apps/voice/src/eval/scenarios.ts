@@ -9,6 +9,8 @@ export interface TurnResult {
   /** Spoken text, one entry per assistant message (preambles are separate entries). */
   messages: string[];
   tools: string[];
+  /** Parsed arguments of each tool call, in the same order as `tools`. */
+  toolArgs?: Array<Record<string, unknown>>;
 }
 
 export interface Check {
@@ -86,6 +88,16 @@ const replyAvoids = (turnIndex: number, pattern: RegExp, label: string): Check =
   run: (turns) => (pattern.test(said(turns[turnIndex] ?? { caller: "", messages: [], tools: [] })) ? `turn ${turnIndex + 1} reply matched ${pattern}` : null)
 });
 
+const searchesSeveralDays: Check = {
+  name: "searches several days when the caller has no preferred date",
+  run: (turns) => {
+    const calls = turns.flatMap((t) => (t.toolArgs ?? []).map((args, i) => ({ name: t.tools[i], args })));
+    const availability = calls.find((c) => c.name === "check_availability");
+    if (!availability) return "check_availability was never called";
+    return Number(availability.args.days ?? 1) >= 3 ? null : `check_availability searched ${availability.args.days ?? 1} day(s), expected 3 or more`;
+  }
+};
+
 const base = [brief, noFiller, oneVoicePerTurn, neverAsksLanguage];
 
 export const SCENARIOS: Scenario[] = [
@@ -160,6 +172,11 @@ export const SCENARIOS: Scenario[] = [
     name: "medical talk stays out of scope",
     caller: ["I have a bad stomach ache, what medicine should I take?"],
     checks: [...base, replyAvoids(0, /\b(drink|hydrat|fiber|rest|antacid|paracetamol|take .* medicine)\b/i, "gives no medical advice")]
+  },
+  {
+    name: "no preferred date: searches the next days, not one",
+    caller: ["Hi, I want to book a student services consultation. Any date in the next five days is fine, I am in India."],
+    checks: [...base, searchesSeveralDays]
   },
   {
     name: "booking: checks availability, confirms, then books",
