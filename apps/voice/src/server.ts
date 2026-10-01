@@ -11,12 +11,13 @@ import {
 } from "@recepto/calendar";
 import { createDatabase, decryptTwilioAuthToken, schema, withTenant } from "@recepto/db";
 import { validateEnv } from "@recepto/shared/env";
-import type { AIBridge, TranscriptEvent } from "./ai-bridge.js";
+import type { AIBridge, StaffSelector, TranscriptEvent } from "./ai-bridge.js";
 import {
   AzureRealtimeBridge,
   buildSessionConfig,
   buildSipAcceptConfig,
-  type RealtimeTuning
+  type RealtimeTuning,
+  type TransferCheck
 } from "./azure-realtime-bridge.js";
 import { GeminiLiveBridge } from "./gemini-live-bridge.js";
 import type { BusinessHour, CallSession } from "./call-session.js";
@@ -95,6 +96,33 @@ const calendarService = new CalendarService({
 });
 const availabilityService = new AvailabilityService(db, calendarService);
 const toolRepository = new DrizzleToolRepository(db);
+
+/**
+ * Checks a transfer request BEFORE the agent tells the caller "connecting you now".
+ * Unknown names, nobody with a phone, or the caller's own number all come back as a
+ * refusal the model can explain, instead of being discovered after the hold message.
+ */
+function makeTransferResolver(getSession: () => CallSession | undefined) {
+  return async (selector: StaffSelector): Promise<TransferCheck> => {
+    const callSession = getSession();
+    if (!callSession) return { ok: true };
+    const meta = await getCachedTenantMeta(callSession.tenantId);
+    const available = meta.transferRoster;
+    const named = Boolean(selector.staffId || selector.staffName?.trim());
+    const match = await toolRepository.findStaffPhoneForTransfer(callSession.tenantId, selector);
+
+    if (!match?.phoneE164) {
+      const reason = named
+        ? `there is no team member matching "${selector.staffName ?? "that person"}" who can take a call`
+        : "no team member is available to take a call right now";
+      return { ok: false, reason, available };
+    }
+    if (match.phoneE164 === callSession.caller.phoneE164) {
+      return { ok: false, reason: "that team member's number is the phone the caller is calling from", available };
+    }
+    return { ok: true };
+  };
+}
 
 const app = Fastify({
   logger: true,
@@ -219,6 +247,7 @@ interface CachedTenantMeta {
   }[];
   businessHours: BusinessHour[];
   transferAvailable: boolean;
+  transferRoster: string[];
 }
 
 const CACHE_TTL_MS = 60_000;
@@ -319,7 +348,7 @@ async function getCachedTenantMeta(tenantId: string): Promise<CachedTenantMeta> 
       .from(schema.businessHours)
       .where(scoped.where(schema.businessHours)),
     db
-      .select({ phoneE164: schema.staff.phoneE164 })
+      .select({ name: schema.staff.name, phoneE164: schema.staff.phoneE164 })
       .from(schema.staff)
       .where(
         scoped.where(
@@ -338,6 +367,10 @@ async function getCachedTenantMeta(tenantId: string): Promise<CachedTenantMeta> 
   if (!tenant || !agent) {
     throw new Error(`Tenant context incomplete for ${tenantId}`);
   }
+
+  const transferRoster = transferStaff
+    .filter((member) => member.phoneE164 !== null && !ownLines.some((line) => line.e164 === member.phoneE164))
+    .map((member) => member.name);
 
   const data: CachedTenantMeta = {
     timezone: tenant.timezone,
@@ -361,9 +394,8 @@ async function getCachedTenantMeta(tenantId: string): Promise<CachedTenantMeta> 
     businessHours,
     // A staff phone that is one of the business's own AI lines would only loop
     // the caller back to the receptionist, so it doesn't count as a transfer target.
-    transferAvailable: transferStaff.some(
-      (member) => member.phoneE164 !== null && !ownLines.some((line) => line.e164 === member.phoneE164)
-    )
+    transferAvailable: transferRoster.length > 0,
+    transferRoster
   };
 
   tenantMetaCache.set(tenantId, { data, expiresAt: Date.now() + CACHE_TTL_MS });
@@ -941,6 +973,7 @@ async function handleAzureSipCall(
     services: tenantMeta.services,
     businessHours: tenantMeta.businessHours,
     transferAvailable: tenantMeta.transferAvailable,
+    transferRoster: tenantMeta.transferRoster,
     memories,
     startedAt: (call.startedAt ?? new Date()).toISOString()
   };
@@ -956,6 +989,7 @@ async function handleAzureSipCall(
     model: env.AZURE_REALTIME_MODEL,
     voice: env.AZURE_REALTIME_VOICE,
     tuning: realtimeTuning,
+    resolveTransfer: makeTransferResolver(() => session),
     attachCallId: providerCallId,
     logger: app.log
   });
@@ -1194,6 +1228,7 @@ async function loadCallSession(callId: string): Promise<CallSession> {
       services: tenantMeta.services,
       businessHours: tenantMeta.businessHours,
       transferAvailable: tenantMeta.transferAvailable,
+      transferRoster: tenantMeta.transferRoster,
       memories,
       startedAt: call.startedAt.toISOString()
     };
@@ -1260,6 +1295,7 @@ mediaStreams.on("connection", (socket, request) => {
           model: env.AZURE_REALTIME_MODEL,
           voice: env.AZURE_REALTIME_VOICE,
           tuning: realtimeTuning,
+          resolveTransfer: makeTransferResolver(() => session),
           logger: app.log
         });
   let session: CallSession | undefined;
@@ -1526,6 +1562,7 @@ browserTestStreams.on("connection", (socket, request) => {
             model: env.AZURE_REALTIME_MODEL,
             voice: rawVoice || env.AZURE_REALTIME_VOICE,
             tuning: realtimeTuning,
+            resolveTransfer: makeTransferResolver(() => session),
             logger: app.log
           });
     let session: CallSession | undefined;

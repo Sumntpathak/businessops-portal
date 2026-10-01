@@ -163,6 +163,19 @@ describe("realtime instructions: transfer", () => {
     assert.match(text, /Do not ask which consultant they want/);
   });
 
+  it("lists who can take a transfer and says what to do with a name that is not listed", () => {
+    const text = buildInstructions({ ...session, transferRoster: ["Gundeep Malhotra"] });
+    assert.match(text, /Team members who can take a transfer: Gundeep Malhotra\. Nobody else can\./);
+    assert.match(text, /NOT on that list, say in one sentence that you don't have anyone by that name/);
+    assert.match(text, /If transfer_to_staff comes back with transferring false/);
+  });
+
+  it("budgets every reply and keeps visa answers to one sentence", () => {
+    const text = buildInstructions(session);
+    assert.match(text, /REPLY BUDGET in words\. Never go over it/);
+    assert.match(text, /Do not explain visa types, eligibility or processes/);
+  });
+
   it("tells the agent not to promise a transfer when no staff phone exists", () => {
     const unavailable = buildInstructions({ ...session, transferAvailable: false });
     assert.match(unavailable, /LIVE TRANSFER IS NOT AVAILABLE/);

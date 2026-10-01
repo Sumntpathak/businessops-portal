@@ -43,6 +43,8 @@ export interface CallSession {
   businessHours?: BusinessHour[];
   /** False when no active staff member has a phone number, i.e. a live transfer cannot succeed. */
   transferAvailable?: boolean;
+  /** Names of active staff who can actually receive a transfer (have a phone, not a business line). */
+  transferRoster?: string[];
   memories: Array<{
     id: string;
     kind: "fact" | "preference" | "summary";

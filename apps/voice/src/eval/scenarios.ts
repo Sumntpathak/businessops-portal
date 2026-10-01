@@ -123,6 +123,20 @@ export const SCENARIOS: Scenario[] = [
     ]
   },
   {
+    name: "asks for a person who is not on the team",
+    caller: ["Can you transfer my call to Ramlal?"],
+    checks: [
+      ...base,
+      replyAvoids(0, /stay on the line|connect(ing)? you now|put you through now/i, "does not promise a transfer to a stranger"),
+      replyMatches(0, /(don.t|do not|no one|nobody|can.t|cannot).*(ramlal|ram lal|by that name|anyone)|gundeep|message/i, "says there is no such person and offers an alternative")
+    ]
+  },
+  {
+    name: "visa question gets one short sentence",
+    caller: ["Actually, I want to understand about child visa."],
+    checks: [...base, { name: "visa answer is one short sentence (<=22 words)", run: (turns) => (words(said(turns[0] ?? { caller: "", messages: [], tools: [] })) > 22 ? "visa answer exceeded 22 words" : null) }]
+  },
+  {
     name: "wants a human: noise is not a yes",
     caller: ["Can I speak to someone from your team?", "Thanks for watching."],
     checks: [...base, noToolOn("transfer_to_staff", 1)]

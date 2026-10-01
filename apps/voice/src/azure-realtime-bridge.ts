@@ -18,6 +18,9 @@ export interface RealtimeTuning {
   transcribeModel?: string;
 }
 
+/** Result of validating a transfer request before the agent promises it. */
+export type TransferCheck = { ok: true } | { ok: false; reason: string; available: string[] };
+
 export interface AzureRealtimeBridgeOptions {
   /** Azure OpenAI v1 realtime endpoint, e.g. https://<resource>.cognitiveservices.azure.com/openai/v1/realtime */
   url: string;
@@ -25,6 +28,12 @@ export interface AzureRealtimeBridgeOptions {
   model: string;
   voice?: string;
   tuning?: RealtimeTuning;
+  /**
+   * Called before a transfer is announced. When it refuses (unknown name, nobody
+   * available, the caller's own number), the model gets the reason and the list of
+   * people it can offer, instead of saying "connecting you now" and failing after.
+   */
+  resolveTransfer?: (selector: StaffSelector) => Promise<TransferCheck>;
   /**
    * SIP mode: attach to a call already accepted via the REST accept endpoint
    * instead of opening a fresh model session. Audio flows carrier <-> Azure;
@@ -232,6 +241,9 @@ const SHORT_TURN_MS = 900;
 /** How long to wait for that transcript before answering anyway. */
 const SHORT_TURN_TRANSCRIPT_WAIT_MS = 800;
 
+/** A booking is refused until the caller has had this many turns since the slots were offered (pick, then confirm). */
+const MIN_TURNS_BEFORE_BOOKING = 2;
+
 /** Azure rate-limit failures (tokens per minute): retries per call, and the pause before each. */
 const MAX_RATE_LIMIT_RETRIES = 3;
 const RATE_LIMIT_RETRY_MS = 1500;
@@ -292,6 +304,30 @@ const TRANSCRIPTION_ARTIFACTS: readonly RegExp[] = [
   /standard script/i,
   /^\s*(subtitles? by|amara\.org)/i
 ];
+
+/** The 2.x model can speak a greeting twice (a preamble plus the answer); this wording prevents it. */
+export function greetingInstruction(greeting: string): string {
+  return `Say this greeting once, exactly as written, with nothing before or after it, and do not repeat it: ${JSON.stringify(greeting)}`;
+}
+
+/**
+ * Word budget for the agent's next reply, sized to how the caller spoke: a one-word
+ * question gets a very short answer, a long explanation can get a fuller one. Uses
+ * the transcript when there is one, otherwise how long the caller spoke.
+ */
+export function replyBudgetWords(spokeMs: number, transcript?: string): number {
+  const callerWords = transcript?.trim() ? transcript.trim().split(/\s+/).length : undefined;
+  if (callerWords !== undefined) {
+    if (callerWords <= 3) return 10;
+    if (callerWords <= 8) return 16;
+    if (callerWords <= 16) return 22;
+    return 30;
+  }
+  if (spokeMs < 1500) return 10;
+  if (spokeMs < 3000) return 16;
+  if (spokeMs < 6000) return 22;
+  return 30;
+}
 
 export function isTranscriptionArtifact(text: string): boolean {
   return TRANSCRIPTION_ARTIFACTS.some((pattern) => pattern.test(text));
@@ -453,6 +489,10 @@ export class AzureRealtimeBridge implements AIBridge {
   private turnTranscript?: string;
   private awaitingShortTurn = false;
   private shortTurnTimer?: ReturnType<typeof setTimeout>;
+  private budgetSeq = 0;
+  private budgetItemId?: string;
+  /** Real caller turns since the last check_availability: a booking needs the pick and then a confirmation. */
+  private callerTurnsSinceAvailability = 0;
 
   constructor(private readonly options: AzureRealtimeBridgeOptions) {}
 
@@ -533,11 +573,7 @@ export class AzureRealtimeBridge implements AIBridge {
     // Speak the configured greeting as soon as the call connects.
     this.send({
       type: "response.create",
-      response: {
-        instructions:
-          "Greet the caller now with exactly this greeting, spoken naturally: " +
-          JSON.stringify(session.agent.voiceGreeting)
-      }
+      response: { instructions: greetingInstruction(session.agent.voiceGreeting) }
     });
     this.activeResponse = true;
     this.ready = true;
@@ -731,14 +767,14 @@ export class AzureRealtimeBridge implements AIBridge {
     const spokeMs = this.speechStartedAt === undefined ? Number.POSITIVE_INFINITY : Date.now() - this.speechStartedAt;
     this.speechStartedAt = undefined;
     if (spokeMs >= SHORT_TURN_MS) {
-      this.respondToCaller();
+      this.respondToCaller(replyBudgetWords(spokeMs, this.turnTranscript));
       return;
     }
     if (this.turnTranscript !== undefined) {
       if (isJunkTurn(this.turnTranscript)) {
         this.options.logger?.info({ callId: this.session?.callId, text: this.turnTranscript }, "Ignored a short noise-like turn");
       } else {
-        this.respondToCaller();
+        this.respondToCaller(replyBudgetWords(spokeMs, this.turnTranscript));
       }
       return;
     }
@@ -747,15 +783,43 @@ export class AzureRealtimeBridge implements AIBridge {
     this.shortTurnTimer = setTimeout(() => {
       this.awaitingShortTurn = false;
       this.shortTurnTimer = undefined;
-      this.respondToCaller();
+      this.respondToCaller(replyBudgetWords(spokeMs));
     }, SHORT_TURN_TRANSCRIPT_WAIT_MS);
   }
 
-  private respondToCaller(): void {
+  private respondToCaller(budgetWords: number): void {
     if (!this.activeResponse && this.ready && !this.stopped) {
+      this.callerTurnsSinceAvailability += 1;
+      this.sendReplyBudget(budgetWords);
       this.send({ type: "response.create" });
       this.activeResponse = true;
     }
+  }
+
+  /**
+   * Prompt-only length limits don't hold in real calls (replies still averaged 23
+   * words), so each turn carries an explicit word budget sized to how the caller
+   * spoke. The previous turn's note is removed so they don't pile up in context.
+   */
+  private sendReplyBudget(words: number): void {
+    const previous = this.budgetItemId;
+    const id = `budget_${(this.budgetSeq += 1)}`;
+    this.send({
+      type: "conversation.item.create",
+      item: {
+        id,
+        type: "message",
+        role: "system",
+        content: [
+          {
+            type: "input_text",
+            text: `REPLY BUDGET for your next reply: at most ${words} words, one sentence if you can. Answer only what the caller just said and add nothing extra.`
+          }
+        ]
+      }
+    });
+    if (previous) this.send({ type: "conversation.item.delete", item_id: previous });
+    this.budgetItemId = id;
   }
 
   private clearShortTurnTimer(): void {
@@ -850,7 +914,10 @@ export class AzureRealtimeBridge implements AIBridge {
       this.clearBargeInTimer();
       this.options.logger?.info({ callId: this.session?.callId }, "Caller speech stopped");
       this.speechStopped?.();
-      if (this.options.attachCallId) return; // SIP: Azure creates the response itself
+      if (this.options.attachCallId) {
+        this.callerTurnsSinceAvailability += 1; // SIP: Azure creates the response itself
+        return;
+      }
       this.decideResponseToCaller();
       return;
     }
@@ -938,7 +1005,7 @@ export class AzureRealtimeBridge implements AIBridge {
         if (isJunkTurn(text)) {
           this.options.logger?.info({ callId: this.session?.callId, text }, "Ignored a short noise-like turn");
         } else {
-          this.respondToCaller();
+          this.respondToCaller(replyBudgetWords(0, text));
         }
       }
       return;
@@ -1060,6 +1127,24 @@ export class AzureRealtimeBridge implements AIBridge {
         // Malformed arguments still transfer with no selector — findStaff
         // returning nothing is handled the same as "staff not found" below.
       }
+      const check = (await this.options.resolveTransfer?.(selector)) ?? { ok: true as const };
+      if (!check.ok) {
+        const refusal = {
+          transferring: false,
+          reason: check.reason,
+          teamMembersYouCanOffer: check.available,
+          instruction:
+            "Do not say you are connecting anyone. In one short sentence say you can't connect them to that person, then offer one of teamMembersYouCanOffer by name, or a message for the team."
+        };
+        this.send({
+          type: "conversation.item.create",
+          item: { type: "function_call_output", call_id: callId, output: JSON.stringify(refusal) }
+        });
+        this.transcript?.({ role: "tool", content: `transfer_to_staff -> ${JSON.stringify({ transferring: false, reason: check.reason })}`, at: new Date() });
+        this.send({ type: "response.create" });
+        this.activeResponse = true;
+        return;
+      }
       this.pendingTransfer = selector;
       this.send({
         type: "conversation.item.create",
@@ -1077,7 +1162,19 @@ export class AzureRealtimeBridge implements AIBridge {
     let parsedInput: unknown;
     try {
       parsedInput = rawArguments ? JSON.parse(rawArguments) : {};
-      output = await this.toolCall?.(name, parsedInput);
+      if (name === "create_booking" && this.callerTurnsSinceAvailability < MIN_TURNS_BEFORE_BOOKING) {
+        // The caller has had one turn at most since the slots were offered (picking one).
+        // A booking needs a recap and their yes first; do it in code, not just in the prompt.
+        output = {
+          booked: false,
+          reason: "the caller has not confirmed the recap yet",
+          instruction:
+            "Do not say anything is booked. In one short sentence recap the service, day and time (and ask their name if you don't have it), then wait for a clear yes before calling create_booking again."
+        };
+      } else {
+        output = await this.toolCall?.(name, parsedInput);
+        if (name === "check_availability") this.callerTurnsSinceAvailability = 0;
+      }
       this.transcript?.({
         role: "tool",
         content: `${name} -> ${JSON.stringify(output).slice(0, 1_500)}`,
