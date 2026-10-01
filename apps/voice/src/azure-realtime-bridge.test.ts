@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { describe, it, mock } from "node:test";
 import {
   AzureRealtimeBridge,
-  buildInstructions,
   buildSessionConfig,
   buildSipAcceptConfig,
+  isJunkTurn,
   isTranscriptionArtifact
 } from "./azure-realtime-bridge.js";
 import type { CallSession } from "./call-session.js";
@@ -32,129 +32,6 @@ const session: CallSession = {
   memories: [],
   startedAt: "2026-07-06T04:00:00.000Z"
 };
-
-describe("realtime caller profile instructions", () => {
-  it("shows caller-local geo and distinguishes filled from missing intake fields", () => {
-    const instructions = buildInstructions(session);
-    assert.match(instructions, /Asia\/Kolkata/);
-    assert.match(instructions, /service_interest.*Student visa/);
-    assert.match(instructions, /target_date.*not yet known/);
-    assert.match(instructions, /at most TWO missing key-priority fields/);
-  });
-
-  it("uses structured profile capture for names instead of freeform memory", () => {
-    const instructions = buildInstructions(session);
-    assert.match(instructions, /update_caller_profile with fields \{name:/);
-    assert.doesNotMatch(instructions, /save_memory with kind 'fact'.*Caller name/);
-  });
-
-  it("instructs greeting a returning caller by name before asking anything else", () => {
-    const instructions = buildInstructions(session);
-    assert.match(instructions, /RETURNING CALLER/);
-    assert.match(instructions, /Greet them by name warmly right after your opening greeting/);
-    assert.match(instructions, /NEVER ask a returning caller for their name/);
-  });
-
-  it("lists service prices upfront and requires stating them before booking tools", () => {
-    const instructions = buildInstructions(session);
-    assert.match(instructions, /SERVICES & PRICING/);
-    assert.match(instructions, /Consultation \(30 min\): 110\.00 dollars/);
-    assert.match(instructions, /Once the caller wants to book a specific service, mention its price before checking times/);
-    assert.match(instructions, /If the caller asks what something costs, answer straight away/);
-    assert.match(instructions, /Never call check_availability or create_booking before the caller has heard the price/);
-  });
-
-  it("forbids claiming a booking without create_booking, inventing facts, and answering noise", () => {
-    const instructions = buildInstructions(session);
-    assert.match(instructions, /NEVER say a booking is booked, confirmed, locked in, or done unless create_booking has returned success/);
-    assert.match(instructions, /exact service passed to create_booking/);
-    assert.match(instructions, /Never state a fact the BUSINESS PROFILE or SERVICES above does not contain/);
-    assert.match(instructions, /Background noise, coughs, or a few unintelligible syllables are NOT a request/);
-    assert.match(instructions, /save it only after they confirm/);
-    assert.match(instructions, /ONE consistent gender for the whole call/);
-  });
-
-  it("briefs the caller (and asks who/why once) before transferring", () => {
-    const instructions = buildInstructions(session);
-    assert.match(instructions, /TRANSFER FLOW/);
-    assert.match(instructions, /is there a particular consultant you'd like, or shall I put you through to whoever's available/);
-    assert.match(instructions, /never ask for appointment details, never ask a second question/);
-    assert.match(instructions, /Please stay on the line/);
-    assert.match(instructions, /WITHOUT calling transfer_to_staff in the same response is a failure/);
-    assert.match(instructions, /Do not invent a consultant's name/);
-  });
-
-  it("tells the agent not to promise a transfer when no staff phone exists", () => {
-    const unavailable = buildInstructions({ ...session, transferAvailable: false });
-    assert.match(unavailable, /LIVE TRANSFER IS NOT AVAILABLE/);
-    assert.match(unavailable, /NEVER call transfer_to_staff/);
-    assert.doesNotMatch(buildInstructions({ ...session, transferAvailable: true }), /LIVE TRANSFER IS NOT AVAILABLE/);
-    assert.doesNotMatch(buildInstructions(session), /LIVE TRANSFER IS NOT AVAILABLE/);
-  });
-
-  it("offers a consultation at most once and never re-pitches after a decline", () => {
-    const instructions = buildInstructions(session);
-    assert.match(instructions, /Offer a consultation at most ONCE per call/);
-    assert.match(instructions, /Never ask again, never re-pitch the price/);
-  });
-
-  it("gives office hours and the live open/closed status so the agent can explain after-hours", () => {
-    const instructions = buildInstructions({
-      ...session,
-      businessHours: [0, 1, 2, 3, 4, 5, 6].map((weekday) => ({
-        weekday,
-        opens: "09:00:00",
-        closes: "17:00:00",
-        closed: weekday === 0
-      }))
-    });
-    assert.match(instructions, /== OFFICE HOURS/);
-    assert.match(instructions, /Monday: 9 AM to 5 PM/);
-    assert.match(instructions, /Sunday: closed/);
-    assert.match(instructions, /RIGHT NOW: The office/);
-    assert.match(instructions, /Never just say 'nothing's available' without the reason/);
-  });
-
-  it("tells the agent not to invent a price when a service has none set", () => {
-    const instructions = buildInstructions({
-      ...session,
-      services: [{ name: "Mystery Service", durationMinutes: 30, price: null }]
-    });
-    assert.match(instructions, /Mystery Service \(30 min\): price not set — do not guess a number/);
-  });
-
-  it("instructs asking the caller's language preference upfront, then holding it for the rest of the call", () => {
-    const instructions = buildInstructions({
-      ...session,
-      agent: { ...session.agent, languages: ["English", "Hindi", "Spanish"] }
-    });
-    assert.match(instructions, /English, Hindi, Spanish/);
-    assert.match(instructions, /ask ONE short, natural question about which language they'd prefer/);
-    assert.match(instructions, /HOLD it for the rest of the call/);
-  });
-
-  it("locks to a single language when only one is configured", () => {
-    const instructions = buildInstructions({
-      ...session,
-      agent: { ...session.agent, languages: ["French"] }
-    });
-    assert.match(instructions, /Speak French only/);
-  });
-
-  it("instructs ending the call only after the caller confirms nothing else is needed", () => {
-    const instructions = buildInstructions(session);
-    assert.match(instructions, /then call end_call/);
-    assert.match(instructions, /Never call end_call while the caller is mid-request/);
-    assert.match(instructions, /Never call end_call more than once/);
-  });
-
-  it("instructs hanging up immediately when the caller says goodbye, even without a name", () => {
-    const instructions = buildInstructions(session);
-    assert.match(instructions, /says goodbye or clearly wants to end the call at ANY point/);
-    assert.match(instructions, /even if you don't have their name/);
-    assert.match(instructions, /goodbye ALWAYS outranks the identity and intake rules/);
-  });
-});
 
 describe("buildSessionConfig", () => {
   it("formats session parameters with type realtime and audio input/output blocks", () => {
@@ -354,6 +231,137 @@ describe("transfer waits for the agent line to finish playing", () => {
       assert.equal(transferred, false, "still playing the last 600 ms of padding");
       mock.timers.tick(600);
       assert.equal(transferred, true);
+    } finally {
+      mock.timers.reset();
+    }
+  });
+});
+
+describe("isJunkTurn", () => {
+  it("treats empty text, lone characters, filler sounds and silence hallucinations as noise", () => {
+    for (const text of ["", " . ", "ए", "आ", "uh", "Um...", "hmm", "हम्म", "Thanks for watching"]) {
+      assert.equal(isJunkTurn(text), true, JSON.stringify(text));
+    }
+  });
+
+  it("keeps real short words and sentences", () => {
+    for (const text of ["yes", "No", "ok", "hi", "haan", "वह", "Can I speak to someone?"]) {
+      assert.equal(isJunkTurn(text), false, text);
+    }
+  });
+});
+
+describe("interruptions tell the model what the caller actually heard", () => {
+  const audioDelta = (ms: number) => ({
+    type: "response.output_audio.delta",
+    item_id: "item_1",
+    content_index: 0,
+    delta: Buffer.alloc(ms * 8).toString("base64")
+  });
+
+  it("truncates the playing item at the point the caller interrupted", () => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    try {
+      const { sent, handle } = bridgeWithFakeSocket();
+      handle(audioDelta(2000));
+      mock.timers.tick(700);
+      handle({ type: "input_audio_buffer.speech_started" });
+      mock.timers.tick(300);
+      const truncate = sent.find((e) => e.type === "conversation.item.truncate");
+      assert.deepEqual(truncate, { type: "conversation.item.truncate", item_id: "item_1", content_index: 0, audio_end_ms: 700 });
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it("does not truncate when the agent is not speaking", () => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    try {
+      const { sent, handle } = bridgeWithFakeSocket();
+      handle({ type: "input_audio_buffer.speech_started" });
+      mock.timers.tick(300);
+      assert.equal(sent.some((e) => e.type === "conversation.item.truncate"), false);
+    } finally {
+      mock.timers.reset();
+    }
+  });
+});
+
+describe("very short caller turns", () => {
+  const started = () => {
+    const fake = bridgeWithFakeSocket();
+    fake.internals.ready = true;
+    return fake;
+  };
+  const responses = (sent: Array<Record<string, unknown>>) => sent.filter((e) => e.type === "response.create").length;
+  const transcript = (text: string) => ({ type: "conversation.item.input_audio_transcription.completed", transcript: text });
+
+  it("does not answer a short noise-like turn", () => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    try {
+      const { sent, handle } = started();
+      handle({ type: "input_audio_buffer.speech_started" });
+      mock.timers.tick(400);
+      handle({ type: "input_audio_buffer.speech_stopped" });
+      assert.equal(responses(sent), 0, "waits for the transcript first");
+      handle(transcript("ए"));
+      mock.timers.tick(2000);
+      assert.equal(responses(sent), 0, "noise is never answered");
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it("answers a short real turn as soon as its transcript arrives", () => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    try {
+      const { sent, handle } = started();
+      handle({ type: "input_audio_buffer.speech_started" });
+      mock.timers.tick(400);
+      handle({ type: "input_audio_buffer.speech_stopped" });
+      handle(transcript("Yes"));
+      assert.equal(responses(sent), 1);
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it("answers anyway when the transcript is slow, and answers long turns immediately", () => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    try {
+      const slow = started();
+      slow.handle({ type: "input_audio_buffer.speech_started" });
+      mock.timers.tick(400);
+      slow.handle({ type: "input_audio_buffer.speech_stopped" });
+      mock.timers.tick(800);
+      assert.equal(responses(slow.sent), 1);
+
+      const long = started();
+      long.handle({ type: "input_audio_buffer.speech_started" });
+      mock.timers.tick(1500);
+      long.handle({ type: "input_audio_buffer.speech_stopped" });
+      assert.equal(responses(long.sent), 1);
+    } finally {
+      mock.timers.reset();
+    }
+  });
+});
+
+describe("rate-limited responses", () => {
+  const rateLimited = {
+    type: "response.done",
+    response: { status: "failed", status_details: { type: "failed", error: { code: "inference_rate_limit_exceeded" } }, output: [] }
+  };
+
+  it("retries a response that Azure failed with a rate limit, at most three times", () => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    try {
+      const { sent, handle } = bridgeWithFakeSocket();
+      for (let i = 0; i < 5; i += 1) {
+        handle(rateLimited);
+        mock.timers.tick(1500);
+      }
+      assert.equal(sent.filter((e) => e.type === "response.create").length, 3);
     } finally {
       mock.timers.reset();
     }

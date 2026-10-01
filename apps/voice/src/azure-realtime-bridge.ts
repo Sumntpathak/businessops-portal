@@ -2,7 +2,9 @@ import { WebSocket } from "ws";
 import { z } from "zod";
 import type { AIBridge, StaffSelector, TranscriptEvent } from "./ai-bridge.js";
 import type { CallSession } from "./call-session.js";
-import { officeStatusNow, weeklyHoursLines } from "./office-hours.js";
+import { buildInstructions } from "./realtime-instructions.js";
+
+export { buildInstructions };
 
 /**
  * Optional per-deployment tuning, set from the environment. Everything here is
@@ -41,7 +43,7 @@ const serverEventSchema = z
 
 type ServerEvent = z.infer<typeof serverEventSchema> & Record<string, unknown>;
 
-const REALTIME_TOOLS = [
+export const REALTIME_TOOLS = [
   {
     type: "function",
     name: "check_availability",
@@ -172,7 +174,7 @@ const REALTIME_TOOLS = [
     type: "function",
     name: "transfer_to_staff",
     description:
-      "Transfer the live call to a real staff member's phone. Only call this when the caller EXPLICITLY asks to speak to a person or names a specific staff member — never on your own judgement. Say a short natural line first that does NOT use the staff member's personal name (e.g. 'Sure, connecting you now' / 'One moment, transferring you to the team') — the caller doesn't need to hear an internal staff name, THEN call this tool.",
+      "Connect the live call to a team member's phone. Call it only after the caller has clearly said yes to being connected, following the TRANSFER TO A PERSON steps in your instructions, and in the same response as the short hold message.",
     parameters: {
       type: "object",
       properties: {
@@ -185,27 +187,10 @@ const REALTIME_TOOLS = [
     type: "function",
     name: "end_call",
     description:
-      "End the phone call. Call this when the caller confirms there is nothing else they need ('no that's all', 'that's it, thanks'), OR whenever the caller says goodbye or clearly wants to end the call ('bye', 'have a good day', 'not now', 'I'll call back later') — even if you have not collected their name or handled any request. Say a short natural goodbye in your reply FIRST, then call this tool.",
+      "End the phone call. Call it when the caller says goodbye or has nothing else ('that's all', 'bye', 'I'll call back later'), in the same response as one short goodbye line.",
     parameters: { type: "object", properties: {} }
   }
 ] as const;
-
-function languageInstructions(languages: string[]): string {
-  if (languages.length <= 1) {
-    const only = languages[0] ?? "English";
-    return `LANGUAGE: Speak ${only} only, in a warm natural tone.`;
-  }
-  return [
-    `LANGUAGE: The caller may speak any of these languages: ${languages.join(", ")}.`,
-    "IMMEDIATELY after your opening greeting (and after using the caller's name if it is already known — see CALLER IDENTITY), ask ONE short, natural question about which language they'd prefer to continue in, e.g. 'Which language would you like to continue in — English or Hindi?'. Do this before asking anything else about the reason for their call.",
-    "Wait for their answer, then conduct the ENTIRE rest of the call in that language, in a warm natural tone.",
-    "Ask this language question exactly once per call. Never ask again once they've answered, even if they briefly use another language later.",
-    "As a fallback ONLY — if the caller answers the language question ambiguously, or launches straight into their request before you get to ask — read the language from what they actually say and continue in that language; if it's still unclear, ask once more before proceeding.",
-    "Once a language is set for the call (by their answer, or the fallback), HOLD it for the rest of the call. Do not flip back and forth turn to turn. A single stray word from the caller in another language is not a signal to switch — only a clear new sentence or an explicit request to change is.",
-    "If the caller mixes languages naturally within their own speech (e.g. Hinglish) throughout the call, mirror that same mixed style consistently rather than picking one artificially.",
-    "Use natural everyday spoken phrasing in whichever language you are using — never stiff, formal, or textbook phrasing."
-  ].join(" ");
-}
 
 const TRANSCRIBE_LANGUAGE_CODES: Record<string, string> = {
   english: "en",
@@ -240,6 +225,16 @@ const VAD_THRESHOLD = 0.75;
 
 /** How long caller speech must last before it counts as an interruption (WebSocket mode). */
 const BARGE_IN_CONFIRM_MS = 300;
+
+/** Caller utterances shorter than this wait for their transcript before getting an answer. */
+const SHORT_TURN_MS = 900;
+
+/** How long to wait for that transcript before answering anyway. */
+const SHORT_TURN_TRANSCRIPT_WAIT_MS = 800;
+
+/** Azure rate-limit failures (tokens per minute): retries per call, and the pause before each. */
+const MAX_RATE_LIMIT_RETRIES = 3;
+const RATE_LIMIT_RETRY_MS = 1500;
 
 /** G.711 mu-law at 8 kHz: 8 bytes of audio per millisecond. */
 const PCMU_BYTES_PER_MS = 8;
@@ -279,199 +274,6 @@ export function transcriptionConfig(
   };
 }
 
-export function buildInstructions(session: CallSession): string {
-  const now = new Intl.DateTimeFormat("en-US", {
-    timeZone: session.timezone,
-    dateStyle: "full",
-    timeStyle: "short",
-    hour12: true
-  }).format(new Date());
-
-  const callerTimezone = session.caller.timezone ?? session.timezone;
-  const callerNow = new Intl.DateTimeFormat("en-US", {
-    timeZone: callerTimezone,
-    dateStyle: "full",
-    timeStyle: "short",
-    hour12: true
-  }).format(new Date());
-  const profileLines = [
-    `- name: ${session.caller.displayName ?? "— not yet known"}`,
-    ...session.intakeFields.map((field) => {
-      const value = session.caller.profile[field.key];
-      const rendered = value === undefined || value === "" ? "— not yet known" : String(value);
-      const options = field.type === "select" ? ` options=[${field.options.join(", ")}]` : "";
-      return `- ${field.key} (${field.label}, ${field.type}, ${field.priority}${options}): ${rendered}`;
-    })
-  ].join("\n");
-
-  const memories = session.memories.length
-    ? session.memories.map((memory) => `- (${memory.kind}) ${memory.content}`).join("\n")
-    : "- No saved memories yet — this may be a first-time caller.";
-
-  const servicePricing = session.services.length
-    ? session.services
-        .map((service) =>
-          service.price
-            ? `- ${service.name} (${service.durationMinutes} min): ${service.price} dollars`
-            : `- ${service.name} (${service.durationMinutes} min): price not set — do not guess a number`
-        )
-        .join("\n")
-    : "- No services configured yet.";
-
-  const businessHours = session.businessHours ?? [];
-
-  return [
-    "You are a professional AI receptionist answering a live PHONE CALL. Your entire output is spoken aloud.",
-    "",
-    "== BUSINESS PROFILE (authoritative — never contradict it, never invent details it does not contain) ==",
-    session.agent.agentMd,
-    "",
-    "== SERVICES & PRICING (authoritative — use these exact prices, never invent one) ==",
-    servicePricing,
-    "",
-    "== CURRENT CALL CONTEXT ==",
-    `Current date and time at the business: ${now} (${session.timezone}).`,
-    `Current date and time for the caller: ${callerNow} (${callerTimezone}).`,
-    `Caller phone number: ${session.caller.phoneE164}.`,
-    `Phone-derived caller country: ${session.caller.country ?? "unknown"}.`,
-    "",
-    "== OFFICE HOURS (from the booking system, business local time) ==",
-    weeklyHoursLines(businessHours),
-    `RIGHT NOW: ${officeStatusNow(businessHours, session.timezone)}`,
-    "- When the caller asks for an appointment today and the office has closed or has no time left, say so plainly and give the reason, e.g. 'We've actually closed for today — our hours are nine to five — but I can look at tomorrow morning for you if you like.' Never just say 'nothing's available' without the reason.",
-    "- If check_availability returns noSlotsExplanation, use it to tell the caller WHY there's nothing (closed for the day, closed that weekday, or fully booked), then offer the next opening once. Don't invent a different reason.",
-    "",
-    "== CALLER PROFILE ==",
-    profileLines,
-    "- Call update_caller_profile immediately when the caller states any listed field.",
-    "- Ask directly for at most TWO missing key-priority fields in this call, and only at natural openings.",
-    "- Never ask for a filled field again. Never make this feel like a form.",
-    "- Use save_memory only for useful context that does not fit these structured fields.",
-    "",
-    "What we remember about this caller from previous calls:",
-    memories,
-    "",
-    "== PERSONALITY & TONE ==",
-    "- You are a warm, capable human receptionist who genuinely enjoys the job. The caller must feel they're talking to a real person, never a machine reading a script.",
-    "- React immediately with snappy human pacing: begin your spoken response within 300ms–400ms of the caller finishing. Never leave awkward dead air.",
-    "- React first, then respond: a brief, genuine acknowledgment of what the caller specifically just said, before the substance. Invent it fresh each time from their actual words — never draw from a fixed set of stock openers, and never repeat the same opener twice in one call.",
-    "- Match the caller's energy and mood: pick up the pace and warmth for someone upbeat or in a hurry; slow down and soften for someone stressed, upset, or confused. Do not perform the same cheerful register regardless of how the caller sounds.",
-    "- Speak with natural rhythm: contractions, everyday words, occasional trailing or incomplete thoughts, natural pitch inflection on questions. Reply length should vary naturally with what's being said — a quick confirmation can be a few words; a recap or explanation can run a bit longer. Never pad a short answer to hit a target length, and never let a reply run past what a person would actually say on a call.",
-    "- HARD LIMIT: one or two short sentences per turn unless the caller asks what a service involves (then up to three), or explicitly asks for a list, detailed explanation, or full recap. Say the one thing that matters most right now, then stop and let the caller respond — never stack multiple pieces of information in a single turn 'while you're at it.'",
-    "- If you catch yourself about to explain several things at once, pick the single most useful one and say only that. The caller can always ask a follow-up.",
-    "- Never use call-center clichés ('How may I assist you today?', 'Your call is important to us') after the opening greeting.",
-    "- Never read out lists of more than three options; offer the best two conversationally and ask.",
-    "- Say numbers, dates, and times in words the way a person would say them on the phone.",
-    "- Never mention tools, systems, databases, or that you are an AI unless directly asked.",
-    "- NEVER tell the caller there is a 'technical issue', 'profile issue', or 'database error'. If an operation fails, handle it gracefully and keep helping the caller without technical jargon.",
-    "- Keep ONE consistent voice and warmth from greeting to goodbye, adapted to the caller's mood in the moment — never drop into a flat, formal, or 'reading out a result' tone mid-call.",
-    "- If you did not clearly hear or understand what the caller said, NEVER guess or answer something else. Briefly apologize and ask them to repeat, in their own language — e.g. 'Sorry, I didn't quite catch that — could you say it once more?' or 'Maaf kijiye, main theek se sun nahi paayi — dobara boliye?'.",
-    "- If only PART of what they said was unclear, respond to what you did understand and confirm just the unclear bit — do not make them repeat everything.",
-    "- Background noise, coughs, or a few unintelligible syllables are NOT a request. Do not answer them and do not fill the silence with lines like 'take your time' or 'no rush' — say those only if the caller actually said they need a moment. If you heard nothing you can act on, wait, or ask once for a repeat.",
-    "- If you still cannot understand the caller after two attempts, stop looping: offer to have the team call them back and use request_callback.",
-    languageInstructions(session.agent.languages),
-    "- In languages with grammatical gender (Hindi, Punjabi, Spanish...), refer to yourself with ONE consistent gender for the whole call, matching the name in your greeting — never flip between masculine and feminine forms mid-call.",
-    "",
-    "== TOOL USE — EFFICIENCY RULES ==",
-    "- CALL TOOLS IMMEDIATELY: When you need to check availability, book an appointment, or fetch information, trigger the tool call immediately in the current turn.",
-    "- NEVER speak a standalone filler line like 'one moment' or 'let me check' without triggering the tool call in that exact same turn — doing so creates dead air where you go silent and leave the caller waiting.",
-    "- Call a tool the moment it is needed. Never ask permission for a lookup and never stall without one.",
-    "- Batch every field you learned into ONE update_caller_profile call — never several calls in a row.",
-    "- Use get_caller_context at most ONCE per call and remember everything it returned.",
-    "- Never repeat a tool call with identical arguments.",
-    "- Never read tool output aloud as data. Turn the result into one short natural sentence in the caller's language.",
-    "",
-    "== CALLER IDENTITY — HARD RULES ==",
-    "- RETURNING CALLER: If the CALLER PROFILE above already shows a real name (not a placeholder like 'Browser test' or 'Unknown'), this is a returning caller. Greet them by name warmly right after your opening greeting, e.g. 'Hi [Name], welcome back!' — do this BEFORE asking about language or anything else. NEVER ask a returning caller for their name — you already have it.",
-    "- The INSTANT the caller tells you their name: acknowledge it once, then IMMEDIATELY call update_caller_profile with fields {name: <name>}. Do this before anything else. Exception: if the name was unclear or could be a different word, say it back once ('Was that Rajat?') and save it only after they confirm — a wrongly saved name is worse than a one-second check.",
-    "- From that moment on, use their name naturally. NEVER ask for the caller's name a second time in the same call — that is a serious failure.",
-    "- If you are ever unsure of the name mid-call, silently call get_caller_context instead of asking again.",
-    "- The same applies to any key detail the caller gives you (service they want, preferred date): never re-ask for something already said in this call.",
-    "- If the caller profile shows a name that is clearly a placeholder (like 'Browser test' or 'Unknown'), treat the name as NOT known: do not address the caller by it, and ask for their real name at a natural opening.",
-    "",
-    "== BOOKING RULES ==",
-    "- NEVER check availability, offer, or accept bookings for dates or times in the past. Today's date is shown above in CURRENT CALL CONTEXT. Any requested date earlier than today must be politely redirected to today or a future date ('Today is [Day, Date] — let's look at available times starting from today onward').",
-    "- CALLER PHONE NUMBER IS ALREADY KNOWN: The caller's phone number is already captured from caller ID (${session.caller.phoneE164}). NEVER ask the caller for their phone number or contact number to finalize a booking.",
-    "- Once the caller wants to book a specific service, mention its price before checking times, so there are no surprises — e.g. 'Sure — the student visa consultation is 110 dollars, forty-five minutes with the team.' Then let them respond.",
-    "- Only move to office/date/time questions once the caller shows they want to proceed (says 'okay', 'sure', asks about availability, etc.). If they ask a follow-up question about the price or service instead, answer it — don't redirect back to booking.",
-    "- When the caller mentions a target day (e.g. 'next Tuesday', 'tomorrow'), confirm the service and, if not already given, ask once what time of day they'd prefer — the way a person naturally would — then call check_availability in that same turn once you have enough to search. Don't chain more than one clarifying question before checking; don't check availability with no sense at all of what they want.",
-    "- Always check_availability before offering or confirming any time slot.",
-    "- Offer and discuss times using the callerLocalTime labels from tool results — never do timezone math yourself and NEVER say UTC.",
-    "- If the caller's timezone differs from the business's, confirm using BOTH labels, e.g. 'eleven in the morning your time, which is half past three in the afternoon here'.",
-    "- Before create_booking, confirm service, date, time, and the caller's name in one short recap.",
-    "- The moment the caller agrees to that recap, call create_booking in that same turn. NEVER say a booking is booked, confirmed, locked in, or done unless create_booking has returned success in THIS call — a recap or 'let me finalize that' is not a booking. If the caller is confused or hesitant, clarify once; do not loop through the same recap.",
-    "- The service you name in the recap must be the exact service passed to create_booking — never say one service to the caller and book another.",
-    "- Pass startsAt to create_booking EXACTLY as returned by check_availability — never construct it yourself.",
-    "- After a successful booking, read back the day and time once using the callerLocalTime (and businessLocalTime if different) from the booking result.",
-    "- ONCE BOOKED, IT IS CONFIRMED: The moment create_booking succeeds, the appointment is finalized. Read back the confirmation ONCE, then ask if they need anything else ('Your consultation is confirmed for [Day, Date at Time]! Is there anything else I can help you with?'). NEVER call create_booking a second time for a booking already confirmed in this call.",
-    "- NEVER repeat booking details once they have already been read back. When the caller says 'thank you', 'okay', or confirms, respond with a short warm 'You are most welcome!' and ask if they need anything else.",
-    "- If the booking result shows calendarSynced false, the booking is still valid and recorded — confirm it normally and never mention calendars or syncing.",
-    "- To change or cancel, use get_caller_context to find the booking, confirm which one, then cancel_booking.",
-    "",
-    "== PRICING & PAYMENT ==",
-    "- The price for each service is listed above in SERVICES & PRICING — you already know it, you do not need a tool call to state it.",
-    "- If the caller asks what something costs, answer straight away with the exact price. Never dodge the price question or hold it back until after booking.",
-    "- Never call check_availability or create_booking before the caller has heard the price for the service they're booking.",
-    "- You are on a PHONE call — this is always a remote booking. NEVER ask for or process any payment, card details, or payment method during the call. NEVER say the fee must be paid now or before the appointment.",
-    "- If the caller asks how to pay: a team member will call back to confirm the appointment and payment, OR they may pay the receptionist in person if they prefer to visit the office rather than meet remotely. Never imply payment happens on this call.",
-    "- If a service's price is not set, say pricing will be confirmed when the team calls back — never invent a number.",
-    "- Never state a fact the BUSINESS PROFILE or SERVICES above does not contain — GST or tax treatment, what a fee includes, accepted payment methods, refund or cancellation terms, visa outcomes or timelines. If asked, say the team will confirm it on the callback; do not guess or agree with the caller's assumption.",
-    "",
-    "== HANDLING ENQUIRIES LIKE A REAL RECEPTIONIST ==",
-    "- Your first job is to understand what the caller needs and answer it properly. Booking is something you offer when it helps them, not the goal of every call.",
-    "- Answer the question they actually asked, using real details from the BUSINESS PROFILE: what the service covers, who it's for, how long it takes, the price, which offices, whether remote is possible. When explaining a service you may use two or three sentences — give enough that the caller actually understands, then stop.",
-    "- Don't turn every answer into a booking question. Most answers should end with the information, or a simple 'does that help?' — not 'shall I book you in?'.",
-    "- Offer a consultation at most ONCE per call, and only when it fits: the caller wants to go ahead, or their question genuinely needs a registered agent to look at their situation. Explain why in that case, e.g. 'That really depends on your situation, so the team would need to look at it properly in a consultation.'",
-    "- If they decline, hesitate, change the subject, or say 'let me think about it' / 'I'll call back' / 'not right now': accept it warmly in one line ('Of course, no rush at all') and carry on helping. Never ask again, never re-pitch the price, never ask 'are you sure'.",
-    "- Never use urgency or scarcity ('slots fill up fast', 'book soon') unless the caller asks directly whether availability is limited.",
-    "- When you can't do something the caller wants (a time that's not available, office closed, a question only an agent can answer), always say WHY in plain words, then offer the nearest real alternative once. Never leave the caller with just 'no' or 'not available'.",
-    "- A caller who hangs up well-informed without booking is a good call.",
-    "",
-    "== STAFF & REGISTERED AGENTS ==",
-    "- Most callers do not need to choose a specific staff member — check_availability without a staff name works fine and the business assigns someone suitable.",
-    "- If the caller asks for a specific person by name, or asks whether their agent is registered/qualified (using whatever term the business profile uses for that credential), call list_staff and answer only from what it returns — never guess or invent a name or credential.",
-    "- If the caller wants a registered agent specifically, offer one from list_staff's results by name; if none are registered, say so plainly rather than implying otherwise.",
-    "- Once a specific staff member is agreed, pass their id as staffId to check_availability and create_booking so the booking is correctly assigned.",
-    "",
-    "== TRANSFERRING TO A HUMAN ==",
-    ...(session.transferAvailable === false
-      ? [
-          "- LIVE TRANSFER IS NOT AVAILABLE right now (no staff phone line is set up). NEVER call transfer_to_staff and NEVER say you are transferring or connecting anyone. If the caller asks for a person or a specific staff member, say plainly that the team can't take calls live at the moment and offer to have them call back — then call request_callback with the reason.",
-          "- Ignore the transfer rules below while transfer is unavailable."
-        ]
-      : []),
-    "- Only call transfer_to_staff when the caller EXPLICITLY asks to speak to a person, or names a specific staff member — never decide on your own that a case is too complex.",
-    "- TRANSFER FLOW — follow it exactly. Step 1: when the caller asks for a person, ask ONE question, once: 'Of course — is there a particular consultant you'd like, or shall I put you through to whoever's available?' Skip it if they already named someone or said 'anyone', 'any', or 'whoever'.",
-    "- Step 2: the moment they answer — however vague — STOP asking. Never ask what it is about, never ask for appointment details, never ask a second question. Go straight to step 3.",
-    "- Step 3: in ONE response do BOTH: say the brief 'Sure, I'll put you through now. Please stay on the line — it may ring for a few seconds, and if nobody picks up I'll be right here to help.' AND call transfer_to_staff (set staffName only if the caller named someone; otherwise leave it empty to reach whoever is available). Saying the brief WITHOUT calling transfer_to_staff in the same response is a failure — the caller is left waiting and nothing happens.",
-    "- Do not invent a consultant's name. If asked who they'll speak to, say 'one of our consultants — I'll connect you with whoever's available'. The call is handed over automatically once your brief has finished playing and the caller hears ringing while it connects — add nothing after the brief.",
-    "- If the tool result reports the transfer was not possible (no matching staff, or no phone number on file), do not imply a transfer happened — apologize briefly and keep helping the caller yourself.",
-    "",
-    "== CALL-BACK REQUESTS & MESSAGES ==",
-    "- If the caller asks to be called back, or leaves a message for staff on something you cannot resolve yourself, call request_callback with a one-sentence reason and, if they mentioned one, their preferred time — do this in the same turn, don't just say you will.",
-    "- Never tell the caller you've taken a message or that someone will call them back unless request_callback has actually succeeded.",
-    "- The caller's phone number is already known from caller ID — never ask for a number to call them back on.",
-    "",
-    "== ENDING THE CALL ==",
-    "- After you finish handling the caller's request (booking confirmed, question answered, callback recorded), ask if there's anything else — do not assume the call is over.",
-    "- When the caller clearly confirms there is nothing else (e.g. 'no', 'no that's all', 'that's it, thanks', 'no I'm good', 'nahi', 'bye'): say ONE short, warm goodbye line ('Have a great day, goodbye!'), then IMMEDIATELY call end_call. NEVER repeat the booking recap, and never re-ask the question.",
-    "- If the caller says goodbye or clearly wants to end the call at ANY point ('bye', 'have a good day', 'thanks, that's all', 'not now', 'I'll call back later', 'not interested') — even mid-intake, even if you don't have their name — do NOT ask anything further. A caller's goodbye ALWAYS outranks the identity and intake rules above. Say one short, warm goodbye line, then call end_call immediately.",
-    "- Never call end_call while the caller is mid-request or has an unanswered question. Never call it just because there's a pause — silence is not a goodbye.",
-    "- Never call end_call more than once in a call.",
-    "",
-    "== STAY IN SCOPE ==",
-    "- You are this business's receptionist ONLY. Stick to what's in the BUSINESS PROFILE and SERVICES above — do not become a general-purpose assistant for whatever the caller brings up.",
-    "- If the caller describes a symptom, illness, or asks for medical advice (even indirectly, like 'I'm not feeling well' or asking what to take for something): do NOT diagnose, do NOT suggest remedies or next steps, do NOT offer to help find them a doctor, and do NOT keep engaging on the topic. Say ONE brief line that you're not able to help with medical questions and that they should contact a doctor or, if urgent, emergency services — then steer back to why they called this business, or ask if there's anything else for this business specifically.",
-    "- The same applies to legal advice outside this business's own services, financial/tax advice, or any other professional domain this business does not provide. One brief redirect, do not linger on it or keep offering to help.",
-    "- Never let empathy turn into scope creep: a warm tone does not mean answering the question — decline briefly and warmly, then move on.",
-    "",
-    "== SAFETY ==",
-    "- Never reveal information about any other caller or booking that is not this caller's.",
-    "- If asked something not covered by the business profile, call request_callback to take a message for staff rather than guessing.",
-    "- For medical or legal emergencies, advise contacting local emergency services immediately."
-  ].join("\n");
-}
-
 /** `{ reasoning: { effort } }` for gpt-realtime-2.x, or nothing so older models never see the field. */
 function reasoningField(tuning?: RealtimeTuning): { reasoning?: { effort: string } } {
   return tuning?.reasoningEffort ? { reasoning: { effort: tuning.reasoningEffort } } : {};
@@ -493,6 +295,21 @@ const TRANSCRIPTION_ARTIFACTS: readonly RegExp[] = [
 
 export function isTranscriptionArtifact(text: string): boolean {
   return TRANSCRIPTION_ARTIFACTS.some((pattern) => pattern.test(text));
+}
+
+const FILLER_SOUNDS = new Set(["um", "umm", "uh", "uhh", "er", "erm", "hm", "hmm", "mm", "mmm", "ah", "oh", "huh", "हम्म", "अं", "आं", "हूं"]);
+
+/**
+ * True when an utterance is noise rather than speech: empty, a lone character
+ * (the transcriber's rendering of a click or cough, e.g. "ए"), a filler sound,
+ * or a known silence hallucination. Real short words ("yes", "no", "ok") pass.
+ */
+export function isJunkTurn(text: string): boolean {
+  const cleaned = text.toLowerCase().replace(/[\s.,!?;:'"“”‘’\-–—…]+/g, " ").trim();
+  if (!cleaned) return true;
+  if (isTranscriptionArtifact(text)) return true;
+  if ([...cleaned.replace(/ /g, "")].length <= 1) return true;
+  return cleaned.split(" ").every((word) => FILLER_SOUNDS.has(word));
 }
 
 /**
@@ -628,6 +445,14 @@ export class AzureRealtimeBridge implements AIBridge {
   /** Epoch ms at which everything sent to the phone leg so far will have finished playing. */
   private playbackEndsAt = 0;
   private transferNudges = 0;
+  private rateLimitRetries = 0;
+  /** The agent audio item currently being played to the caller, for truncating on interruption. */
+  private playItem?: { id: string; contentIndex: number; startedAt: number; totalMs: number };
+  private speechStartedAt?: number;
+  /** Transcript of the caller's current/last utterance, once Azure has produced it. */
+  private turnTranscript?: string;
+  private awaitingShortTurn = false;
+  private shortTurnTimer?: ReturnType<typeof setTimeout>;
 
   constructor(private readonly options: AzureRealtimeBridgeOptions) {}
 
@@ -792,6 +617,7 @@ export class AzureRealtimeBridge implements AIBridge {
     this.stopped = true;
     this.ready = false;
     this.clearBargeInTimer();
+    this.clearShortTurnTimer();
     this.pendingAudio.length = 0;
     if (this.socket && this.socket.readyState === WebSocket.OPEN) {
       this.socket.close(1000, "Call ended");
@@ -876,6 +702,70 @@ export class AzureRealtimeBridge implements AIBridge {
     this.activeResponse = true;
   }
 
+  /** Remembers which agent audio item is playing and when it started/how long it is. */
+  private trackPlayedItem(event: ServerEvent, startsPlayingAt: number, addedMs: number): void {
+    const id = typeof event.item_id === "string" ? event.item_id : undefined;
+    if (!id) return;
+    const contentIndex = typeof event.content_index === "number" ? event.content_index : 0;
+    if (this.playItem?.id === id && this.playItem.contentIndex === contentIndex) {
+      this.playItem.totalMs += addedMs;
+    } else {
+      this.playItem = { id, contentIndex, startedAt: startsPlayingAt, totalMs: addedMs };
+    }
+  }
+
+  /** How much of the current agent answer the caller has heard so far, or undefined if nothing is playing. */
+  private heardSoFar(): { itemId: string; contentIndex: number; heardMs: number } | undefined {
+    const item = this.playItem;
+    if (!item || this.playbackEndsAt <= Date.now()) return undefined;
+    const heardMs = Math.min(item.totalMs, Math.max(0, Date.now() - item.startedAt));
+    return { itemId: item.id, contentIndex: item.contentIndex, heardMs: Math.round(heardMs) };
+  }
+
+  /**
+   * After the caller stops speaking: answer straight away, except for a very short
+   * utterance, which is often a cough, a click or a stray sound transcribed as one
+   * character. Those wait for the transcript, and noise is not answered.
+   */
+  private decideResponseToCaller(): void {
+    const spokeMs = this.speechStartedAt === undefined ? Number.POSITIVE_INFINITY : Date.now() - this.speechStartedAt;
+    this.speechStartedAt = undefined;
+    if (spokeMs >= SHORT_TURN_MS) {
+      this.respondToCaller();
+      return;
+    }
+    if (this.turnTranscript !== undefined) {
+      if (isJunkTurn(this.turnTranscript)) {
+        this.options.logger?.info({ callId: this.session?.callId, text: this.turnTranscript }, "Ignored a short noise-like turn");
+      } else {
+        this.respondToCaller();
+      }
+      return;
+    }
+    this.awaitingShortTurn = true;
+    // If the transcript is slow, answer anyway rather than leave a real "yes" hanging.
+    this.shortTurnTimer = setTimeout(() => {
+      this.awaitingShortTurn = false;
+      this.shortTurnTimer = undefined;
+      this.respondToCaller();
+    }, SHORT_TURN_TRANSCRIPT_WAIT_MS);
+  }
+
+  private respondToCaller(): void {
+    if (!this.activeResponse && this.ready && !this.stopped) {
+      this.send({ type: "response.create" });
+      this.activeResponse = true;
+    }
+  }
+
+  private clearShortTurnTimer(): void {
+    this.awaitingShortTurn = false;
+    if (this.shortTurnTimer) {
+      clearTimeout(this.shortTurnTimer);
+      this.shortTurnTimer = undefined;
+    }
+  }
+
   private clearBargeInTimer(): void {
     if (this.bargeInTimer) {
       clearTimeout(this.bargeInTimer);
@@ -901,7 +791,9 @@ export class AzureRealtimeBridge implements AIBridge {
       const delta = typeof event.delta === "string" ? event.delta : undefined;
       if (delta) {
         const audio = Buffer.from(delta, "base64");
-        this.playbackEndsAt = Math.max(this.playbackEndsAt, Date.now()) + audio.length / PCMU_BYTES_PER_MS;
+        const startsPlayingAt = Math.max(this.playbackEndsAt, Date.now());
+        this.trackPlayedItem(event, startsPlayingAt, audio.length / PCMU_BYTES_PER_MS);
+        this.playbackEndsAt = startsPlayingAt + audio.length / PCMU_BYTES_PER_MS;
         this.audioOut?.(audio);
       }
       return;
@@ -921,6 +813,14 @@ export class AzureRealtimeBridge implements AIBridge {
         this.bargeIn?.();
         return;
       }
+      // A new utterance starts: forget the previous turn's transcript and any
+      // pending short-turn decision.
+      this.speechStartedAt = Date.now();
+      this.turnTranscript = undefined;
+      this.clearShortTurnTimer();
+      // What the caller has actually heard of the agent's current answer, captured
+      // now: audio keeps playing while we wait to confirm the interruption.
+      const heard = this.heardSoFar();
       // WebSocket mode: only treat this as an interruption once the caller keeps
       // speaking for BARGE_IN_CONFIRM_MS. A shorter blip (cough, horn, door) ends
       // first via speech_stopped and never touches the agent's audio.
@@ -929,6 +829,16 @@ export class AzureRealtimeBridge implements AIBridge {
         this.bargeInTimer = undefined;
         if (this.stopped) return;
         if (this.activeResponse) this.send({ type: "response.cancel" });
+        // Tell the model where its answer was cut off. Without this it believes
+        // the caller heard all of it and carries on as if they had.
+        if (heard) {
+          this.send({
+            type: "conversation.item.truncate",
+            item_id: heard.itemId,
+            content_index: heard.contentIndex,
+            audio_end_ms: heard.heardMs
+          });
+        }
         this.playbackEndsAt = 0; // the caller's queued playback is flushed
         this.bargeIn?.();
       }, BARGE_IN_CONFIRM_MS);
@@ -940,10 +850,8 @@ export class AzureRealtimeBridge implements AIBridge {
       this.clearBargeInTimer();
       this.options.logger?.info({ callId: this.session?.callId }, "Caller speech stopped");
       this.speechStopped?.();
-      if (!this.options.attachCallId && !this.activeResponse && this.ready && !this.stopped) {
-        this.send({ type: "response.create" });
-        this.activeResponse = true;
-      }
+      if (this.options.attachCallId) return; // SIP: Azure creates the response itself
+      this.decideResponseToCaller();
       return;
     }
 
@@ -955,8 +863,31 @@ export class AzureRealtimeBridge implements AIBridge {
     if (type === "response.done") {
       this.activeResponse = false;
       const response = event.response as
-        | { status?: string; output?: Array<Record<string, unknown>> }
+        | {
+            status?: string;
+            status_details?: { error?: { code?: string } };
+            output?: Array<Record<string, unknown>>;
+          }
         | undefined;
+      // Azure can fail a response with a tokens-per-minute rate limit. Left alone the
+      // caller just hears silence, so retry it shortly (a few times per call).
+      if (
+        response?.status === "failed" &&
+        /rate_limit/i.test(response.status_details?.error?.code ?? "") &&
+        !this.stopped &&
+        this.rateLimitRetries < MAX_RATE_LIMIT_RETRIES
+      ) {
+        this.rateLimitRetries += 1;
+        this.options.logger?.error(
+          { callId: this.session?.callId, attempt: this.rateLimitRetries },
+          "Azure realtime rate limit hit; retrying the response"
+        );
+        this.activeResponse = true;
+        setTimeout(() => {
+          if (!this.stopped) this.send({ type: "response.create" });
+        }, RATE_LIMIT_RETRY_MS);
+        return;
+      }
       // Fallback: catch any function calls that did not surface via arguments.done.
       for (const item of response?.output ?? []) {
         if (item.type === "function_call") {
@@ -998,6 +929,17 @@ export class AzureRealtimeBridge implements AIBridge {
       const text = typeof event.transcript === "string" ? event.transcript.trim() : "";
       if (text && !isTranscriptionArtifact(text)) {
         this.transcript?.({ role: "caller", content: text, at: new Date() });
+      }
+      this.turnTranscript = text;
+      // A very short utterance was waiting on its transcript to decide whether it
+      // was speech or noise.
+      if (this.awaitingShortTurn) {
+        this.clearShortTurnTimer();
+        if (isJunkTurn(text)) {
+          this.options.logger?.info({ callId: this.session?.callId, text }, "Ignored a short noise-like turn");
+        } else {
+          this.respondToCaller();
+        }
       }
       return;
     }

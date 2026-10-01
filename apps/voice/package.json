@@ -8,7 +8,8 @@
         "build": "tsc -p tsconfig.json",
         "start": "node dist/server.js",
         "typecheck": "tsc -p tsconfig.json --noEmit",
-        "test": "node --import tsx --test --test-isolation=none src/**/*.test.ts"
+        "test": "node --import tsx --test --test-isolation=none src/**/*.test.ts",
+        "eval": "tsx src/eval/run.ts"
     },
     "dependencies": {
         "@fastify/formbody": "^7.4.0",
