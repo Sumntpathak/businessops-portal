@@ -360,3 +360,48 @@ describe("ending the call", () => {
     assert.match(JSON.stringify(sent), /"name":"transfer_to_staff"/);
   });
 });
+
+describe("transfer is checked against what the caller actually said", () => {
+  const transferCall = { type: "response.function_call_arguments.done", call_id: "x1", name: "transfer_to_staff", arguments: JSON.stringify({ staffName: "Gundeep Malhotra" }) };
+
+  it("blocks the transfer when the caller's words say no (the 'नो गंदगी' call)", async () => {
+    let transferred = false;
+    const { bridge, internals, sent, handle } = fakeBridge({ resolveTransfer: async () => ({ ok: true }) });
+    bridge.onTransferRequested(() => { transferred = true; });
+    handle({ type: "conversation.item.input_audio_transcription.completed", transcript: "नो गंदगी" });
+    handle(transferCall);
+    await flush();
+    assert.match(JSON.stringify(sent), /transferring\\":false/);
+    assert.match(JSON.stringify(sent), /the caller said no/);
+    assert.equal(internals.pendingTransfer, undefined);
+    handle(done);
+    await flush();
+    assert.equal(transferred, false);
+  });
+
+  it("waits for a late transcript before deciding", async () => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    try {
+      const { internals, sent, handle } = fakeBridge({ resolveTransfer: async () => ({ ok: true }) });
+      handle({ type: "input_audio_buffer.speech_started" });
+      mock.timers.tick(1000);
+      handle({ type: "input_audio_buffer.speech_stopped" });
+      handle(transferCall); // the model calls the tool before transcription finished
+      mock.timers.tick(200);
+      handle({ type: "conversation.item.input_audio_transcription.completed", transcript: "No, Gundeep." });
+      for (let i = 0; i < 5; i += 1) { mock.timers.tick(50); await flush(); }
+      assert.match(JSON.stringify(sent), /the caller said no/);
+      assert.equal(internals.pendingTransfer, undefined);
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it("still transfers on a clear request", async () => {
+    const { internals, handle } = fakeBridge({ resolveTransfer: async () => ({ ok: true }) });
+    handle({ type: "conversation.item.input_audio_transcription.completed", transcript: "Can you connect me with a consultant?" });
+    handle(transferCall);
+    await flush();
+    assert.ok(internals.pendingTransfer);
+  });
+});

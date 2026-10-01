@@ -174,6 +174,7 @@ describe("realtime instructions: transfer", () => {
     assert.match(text, /call transfer_to_staff with staffName set to that same \[name\]/);
     assert.match(text, /otherwise Gundeep Malhotra\./);
     assert.match(text, /Asking to book a consultation is NOT asking to speak to someone/);
+    assert.match(text, /'No, \[name\]', 'no' or a name on its own after you offered someone means NO/);
   });
 
   it("needs a clear yes only when the agent suggests it or the named person is not on the team", () => {

@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { AIBridge, StaffSelector, TranscriptEvent } from "./ai-bridge.js";
 import type { CallSession } from "./call-session.js";
 import { CallerLanguage } from "./caller-language.js";
+import { isRefusal } from "./caller-intent.js";
 import { buildInstructions } from "./realtime-instructions.js";
 
 export { buildInstructions };
@@ -245,6 +246,8 @@ const VAD_THRESHOLD = 0.75;
 const BARGE_IN_CONFIRM_MS = 300;
 /** Tools that hit the calendar or database and can take seconds. */
 const SLOW_TOOLS = new Set(["check_availability", "create_booking", "cancel_booking", "get_caller_context"]);
+/** Longest wait for the caller's transcript before checking a transfer against it. */
+const TRANSCRIPT_WAIT_FOR_ACTION_MS = 1_500;
 /** Silence before the caller is told the lookup is still running. */
 const TOOL_HOLD_MS = 2_500;
 
@@ -529,6 +532,8 @@ export class AzureRealtimeBridge implements AIBridge {
   private toolNudges = 0;
   private endCallNudged = false;
   private languageTracker?: CallerLanguage;
+  /** The caller finished a turn whose transcript has not arrived yet. */
+  private transcriptPending = false;
   /** Tool calls currently executing (their result is not back yet). */
   private toolsInFlight = 0;
   /** Consecutive rate-limit failures since the last successful response. */
@@ -938,6 +943,20 @@ export class AzureRealtimeBridge implements AIBridge {
     return this.languageTracker;
   }
 
+  /**
+   * The transcript of the caller's latest turn, waiting briefly when it has not arrived
+   * yet (the model can call a tool before transcription finishes). Undefined in SIP mode
+   * or if no transcript turns up in time, in which case nothing is blocked.
+   */
+  private async latestCallerWords(): Promise<string | undefined> {
+    if (this.options.attachCallId) return undefined;
+    const deadline = Date.now() + TRANSCRIPT_WAIT_FOR_ACTION_MS;
+    while (this.transcriptPending && Date.now() < deadline && !this.stopped) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return this.turnTranscript;
+  }
+
   /** One short spoken hold line while a slow tool runs, only when nothing else is being said. */
   private sayStillChecking(): void {
     if (this.stopped || this.activeResponse || this.options.attachCallId) return;
@@ -1109,6 +1128,7 @@ export class AzureRealtimeBridge implements AIBridge {
       this.clearBargeInTimer();
       this.options.logger?.info({ callId: this.session?.callId }, "Caller speech stopped");
       this.speechStopped?.();
+      if (!this.options.attachCallId) this.transcriptPending = true;
       if (this.options.attachCallId) {
         this.callerTurnsSinceAvailability += 1; // SIP: Azure creates the response itself
         return;
@@ -1202,6 +1222,7 @@ export class AzureRealtimeBridge implements AIBridge {
         this.transcript?.({ role: "caller", content: text, at: new Date() });
       }
       this.turnTranscript = text;
+      this.transcriptPending = false;
       if (text && !isJunkTurn(text)) this.callerLanguage().observe(text);
       // A very short utterance was waiting on its transcript to decide whether it
       // was speech or noise.
@@ -1332,6 +1353,27 @@ export class AzureRealtimeBridge implements AIBridge {
       } catch {
         // Malformed arguments still transfer with no selector — findStaff
         // returning nothing is handled the same as "staff not found" below.
+      }
+      // The model decides from audio and can mishear "No, Gundeep" as a request for
+      // Gundeep. Check the caller's own words before a transfer that can't be undone.
+      const heard = await this.latestCallerWords();
+      if (heard !== undefined && isRefusal(heard)) {
+        this.options.logger?.info({ callId: this.session?.callId, heard }, "Blocked a transfer: the caller said no");
+        this.send({
+          type: "conversation.item.create",
+          item: {
+            type: "function_call_output",
+            call_id: callId,
+            output: JSON.stringify({
+              transferring: false,
+              reason: `the caller said no ("${heard}")`,
+              instruction: "Do not transfer and do not say you are connecting anyone. In one short sentence say no problem, then ask how else you can help. Do not offer a transfer again unless the caller asks for a person."
+            })
+          }
+        });
+        this.transcript?.({ role: "tool", content: `transfer_to_staff -> blocked: caller said no ("${heard}")`, at: new Date() });
+        this.requestToolFollowUp();
+        return;
       }
       const check = (await this.options.resolveTransfer?.(selector)) ?? { ok: true as const };
       if (!check.ok) {
