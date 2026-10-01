@@ -274,20 +274,35 @@ const MAX_TRANSFER_NUDGES = 2;
 /** Upper bound so a bad estimate can never leave a call hanging. */
 const MAX_PLAYBACK_DRAIN_MS = 10_000;
 
+/** Business words callers are likely to say (suburbs, services, staff), so accented speech is spelled right. */
+export function transcriptionVocabulary(session: CallSession): string[] {
+  const info = session.agent.businessInfo;
+  const words = [
+    info?.receptionistName ?? "",
+    ...(info?.offices ?? []).map((office) => office.name),
+    ...session.services.map((service) => service.name),
+    ...(session.transferRoster ?? [])
+  ].map((word) => word.trim()).filter(Boolean);
+  return [...new Set(words)].slice(0, 30);
+}
+
 export function transcriptionConfig(
   model: string,
-  languages: string[]
+  languages: string[],
+  vocabulary: string[] = []
 ): { model: string; language?: string; prompt?: string } {
+  const terms = vocabulary.length ? `Words that may come up: ${vocabulary.join(", ")}.` : "";
   if (languages.length === 1) {
     const code = TRANSCRIBE_LANGUAGE_CODES[(languages[0] ?? "").toLowerCase()];
-    return code ? { model, language: code } : { model };
+    return { model, ...(code ? { language: code } : {}), ...(terms ? { prompt: terms } : {}) };
   }
   return {
     model,
     prompt:
       `The speaker uses only these languages, often mixed in one sentence: ${languages.join(", ")}. ` +
       "Always transcribe in the language actually spoken, using its standard script " +
-      "(Hindi in Devanagari, Punjabi in Gurmukhi). Never transcribe into any other language."
+      "(Hindi in Devanagari, Punjabi in Gurmukhi). Never transcribe into any other language." +
+      (terms ? ` ${terms}` : "")
   };
 }
 
@@ -377,7 +392,8 @@ export function buildSessionConfig(
         // only had the agent's side.
         transcription: transcriptionConfig(
           tuning?.transcribeModel ?? INPUT_TRANSCRIPTION_MODEL,
-          session.agent.languages
+          session.agent.languages,
+          transcriptionVocabulary(session)
         ),
         turn_detection: {
           type: "server_vad",
@@ -434,7 +450,8 @@ export function buildSipAcceptConfig(
         noise_reduction: { type: "near_field" },
         transcription: transcriptionConfig(
           tuning?.transcribeModel ?? INPUT_TRANSCRIPTION_MODEL,
-          session.agent.languages
+          session.agent.languages,
+          transcriptionVocabulary(session)
         ),
         turn_detection: {
           type: "server_vad",
@@ -499,6 +516,10 @@ export class AzureRealtimeBridge implements AIBridge {
   private budgetItemId?: string;
   /** Real caller turns since the last check_availability: a booking needs the pick and then a confirmation. */
   private callerTurnsSinceAvailability = 0;
+  /** Reply budget for a caller turn that arrived while a stale response was still active. */
+  private pendingReplyBudget?: number;
+  /** A tool finished while another response was active; its follow-up waits for response.done. */
+  private toolFollowUpPending = false;
 
   constructor(private readonly options: AzureRealtimeBridgeOptions) {}
 
@@ -794,9 +815,57 @@ export class AzureRealtimeBridge implements AIBridge {
   }
 
   private respondToCaller(budgetWords: number): void {
-    if (!this.activeResponse && this.ready && !this.stopped) {
-      this.callerTurnsSinceAvailability += 1;
-      this.sendReplyBudget(budgetWords);
+    if (!this.ready || this.stopped) return;
+    this.callerTurnsSinceAvailability += 1;
+    if (this.activeResponse) {
+      // The caller finished a NEW turn while an older answer is still being generated
+      // (a reasoning model can take seconds). Dropping this turn made the agent answer
+      // the previous question after the caller had moved on. Cancel the stale answer
+      // and reply to this turn once Azure confirms with response.done.
+      this.pendingReplyBudget = budgetWords;
+      this.send({ type: "response.cancel" });
+      return;
+    }
+    this.createReply(budgetWords);
+  }
+
+  private createReply(budgetWords: number): void {
+    this.sendReplyBudget(budgetWords);
+    this.send({ type: "response.create" });
+    this.activeResponse = true;
+  }
+
+  /**
+   * Asks the model to speak after a tool result. If another response is still active
+   * (the caller asked something new while the tool ran), a second response.create would
+   * be rejected and the tool answer would surface turns later; wait for response.done.
+   */
+  private requestToolFollowUp(): void {
+    if (this.activeResponse) {
+      this.toolFollowUpPending = true;
+      return;
+    }
+    this.send({ type: "response.create" });
+    this.activeResponse = true;
+  }
+
+  /**
+   * After response.done, starts ONE response for whatever was waiting: a caller turn
+   * that arrived mid-response, or a finished tool's follow-up. Either way the model sees
+   * the whole conversation, so the reply covers the caller's latest words.
+   */
+  private flushPendingReply(output: Array<Record<string, unknown>>): void {
+    const budget = this.pendingReplyBudget;
+    const followUp = this.toolFollowUpPending;
+    this.pendingReplyBudget = undefined;
+    this.toolFollowUpPending = false;
+    // The transfer nudge may already have started a response; replying again would cancel it.
+    if (this.stopped || this.activeResponse) return;
+    // A tool from this response is still running: its follow-up will answer the caller.
+    if (!followUp && output.some((item) => item.type === "function_call")) return;
+    if (budget !== undefined) {
+      this.createReply(budget);
+    } else if (followUp) {
       this.send({ type: "response.create" });
       this.activeResponse = true;
     }
@@ -950,9 +1019,12 @@ export class AzureRealtimeBridge implements AIBridge {
         response?.status === "failed" &&
         /rate_limit/i.test(response.status_details?.error?.code ?? "") &&
         !this.stopped &&
+        // A newer caller turn is waiting: answer that instead of retrying the stale reply.
+        this.pendingReplyBudget === undefined &&
         this.rateLimitStreak < MAX_RATE_LIMIT_STREAK
       ) {
         this.rateLimitStreak += 1;
+        this.toolFollowUpPending = false; // the retried response sees any tool output too
         const waitMs = Math.min(MAX_RATE_LIMIT_WAIT_MS, RATE_LIMIT_RETRY_MS * this.rateLimitStreak);
         this.options.logger?.error(
           { callId: this.session?.callId, attempt: this.rateLimitStreak, waitMs },
@@ -975,6 +1047,7 @@ export class AzureRealtimeBridge implements AIBridge {
         }
       }
       this.nudgeMissingTransfer(response);
+      this.flushPendingReply(response?.output ?? []);
       // Azure finishes generating audio far faster than Twilio plays it, so at
       // response.done the goodbye / "connecting you now" line is still queued on
       // the phone leg. Hang up or redirect only once it has actually played,
@@ -1097,7 +1170,8 @@ export class AzureRealtimeBridge implements AIBridge {
           input: {
             transcription: transcriptionConfig(
               "whisper-1",
-              this.session?.agent.languages ?? []
+              this.session?.agent.languages ?? [],
+              this.session ? transcriptionVocabulary(this.session) : []
             )
           }
         }
@@ -1150,8 +1224,7 @@ export class AzureRealtimeBridge implements AIBridge {
           item: { type: "function_call_output", call_id: callId, output: JSON.stringify(refusal) }
         });
         this.transcript?.({ role: "tool", content: `transfer_to_staff -> ${JSON.stringify({ transferring: false, reason: check.reason })}`, at: new Date() });
-        this.send({ type: "response.create" });
-        this.activeResponse = true;
+        this.requestToolFollowUp();
         return;
       }
       this.pendingTransfer = selector;
@@ -1280,7 +1353,6 @@ export class AzureRealtimeBridge implements AIBridge {
         }
       });
     }
-    this.send({ type: "response.create" });
-    this.activeResponse = true;
+    this.requestToolFollowUp();
   }
 }

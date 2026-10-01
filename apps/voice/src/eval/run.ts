@@ -8,6 +8,7 @@
  */
 import fs from "node:fs";
 import { WebSocket } from "ws";
+import { parseBusinessInfo } from "@recepto/shared";
 import { buildInstructions, greetingInstruction, REALTIME_TOOLS, replyBudgetWords } from "../azure-realtime-bridge.js";
 import type { CallSession } from "../call-session.js";
 import { SCENARIOS, type Scenario, type TurnResult } from "./scenarios.js";
@@ -51,7 +52,15 @@ const session: CallSession = {
   timezone: "Australia/Melbourne",
   caller: { id: "eval-caller", phoneE164: "+61400000002", displayName: null, country: "Australia", timezone: "Australia/Melbourne", profile: {}, stage: "new" },
   intakeFields: [],
-  agent: { agentMd, voiceGreeting: "Thanks for calling Holistic Migration Solutions, this is Riya — how can I help you today?", languageMode: "english", languages: ["English", "Hindi"] },
+  agent: {
+    agentMd,
+    voiceGreeting: "Thanks for calling Holistic Migration Solutions, this is Riya — how can I help you today?",
+    languageMode: "english",
+    languages: ["English", "Hindi", "Punjabi"],
+    ...(process.env.EVAL_BUSINESS_INFO
+      ? { businessInfo: parseBusinessInfo(JSON.parse(fs.readFileSync(process.env.EVAL_BUSINESS_INFO, "utf8"))) }
+      : {})
+  },
   services: [
     { name: "Corporate / Skilled Migration Consultation", durationMinutes: 45, price: "110.00" },
     { name: "General Advisory Consultation", durationMinutes: 30, price: "110.00" },

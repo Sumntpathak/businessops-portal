@@ -163,6 +163,9 @@ export const agentProfiles = pgTable(
     voiceGreeting: text("voice_greeting").notNull(),
     languageMode: languageModeEnum("language_mode").notNull().default("hinglish"),
     languages: jsonb("languages").$type<string[]>().notNull().default(sql`'["English", "Hindi"]'::jsonb`),
+    // Structured business facts (offices, FAQs, persona) edited in the dashboard;
+    // shape is @recepto/shared BusinessInfo, validated on write and on read.
+    businessInfo: jsonb("business_info").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
     version: integer("version").notNull().default(1),
     source: agentProfileSourceEnum("source").notNull(),
     updatedBy: uuid("updated_by")

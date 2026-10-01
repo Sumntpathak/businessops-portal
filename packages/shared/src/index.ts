@@ -14,3 +14,4 @@ export interface ApiError {
 
 export const APP_NAME = "Recepto";
 export * from "./voice-channel.js";
+export * from "./business-info.js";

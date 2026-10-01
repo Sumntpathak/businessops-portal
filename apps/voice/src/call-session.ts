@@ -1,3 +1,5 @@
+import type { BusinessInfo } from "@recepto/shared";
+
 export interface BusinessHour {
   weekday: number;
   opens: string;
@@ -34,6 +36,8 @@ export interface CallSession {
     voiceGreeting: string;
     languageMode: "hinglish" | "english" | "hindi";
     languages: string[];
+    /** Structured business facts from the dashboard; absent for older profiles and tests. */
+    businessInfo?: BusinessInfo;
   };
   services: Array<{
     name: string;

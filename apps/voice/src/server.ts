@@ -11,6 +11,7 @@ import {
 } from "@recepto/calendar";
 import { createDatabase, decryptTwilioAuthToken, schema, withTenant } from "@recepto/db";
 import { validateEnv } from "@recepto/shared/env";
+import { parseBusinessInfo, type BusinessInfo } from "@recepto/shared";
 import type { AIBridge, StaffSelector, TranscriptEvent } from "./ai-bridge.js";
 import {
   AzureRealtimeBridge,
@@ -229,6 +230,7 @@ interface CachedTenantMeta {
     voiceGreeting: string;
     languageMode: "hinglish" | "english" | "hindi";
     languages: string[];
+    businessInfo: BusinessInfo;
   };
   intakeFields: {
     id: string;
@@ -310,7 +312,8 @@ async function getCachedTenantMeta(tenantId: string): Promise<CachedTenantMeta> 
         agentMd: schema.agentProfiles.agentMd,
         voiceGreeting: schema.agentProfiles.voiceGreeting,
         languageMode: schema.agentProfiles.languageMode,
-        languages: schema.agentProfiles.languages
+        languages: schema.agentProfiles.languages,
+        businessInfo: schema.agentProfiles.businessInfo
       })
       .from(schema.agentProfiles)
       .where(scoped.where(schema.agentProfiles))
@@ -378,7 +381,8 @@ async function getCachedTenantMeta(tenantId: string): Promise<CachedTenantMeta> 
       agentMd: agent.agentMd,
       voiceGreeting: agent.voiceGreeting,
       languageMode: agent.languageMode as "hinglish" | "english" | "hindi",
-      languages: agent.languages
+      languages: agent.languages,
+      businessInfo: parseBusinessInfo(agent.businessInfo)
     },
     intakeFields: intakeFields.map((field) => ({
       id: field.id,

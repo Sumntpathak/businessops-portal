@@ -107,7 +107,7 @@ describe("realtime instructions: language", () => {
     assert.match(text, /Speak English from the first word\. Do not ask which language/);
     assert.match(text, /A single word, a filler sound or a short phrase is NOT a reason to switch/);
     assert.match(text, /Only use these languages: English, Hindi/);
-    assert.match(text, /one consistent feminine form/);
+    assert.match(text, /In Hindi always use the female forms: सकती हूँ/);
     assert.doesNotMatch(text, /Which language would you like to continue in/);
   });
 
@@ -127,7 +127,8 @@ describe("realtime instructions: facts, names and booking", () => {
 
   it("forbids guessing facts and gives no medical or personal migration advice", () => {
     assert.match(text, /GST, payment methods, refunds, visa outcomes, timelines/);
-    assert.match(text, /Never give personal migration or legal advice/);
+    assert.match(text, /personal legal, migration, medical or financial advice/);
+    assert.match(text, /Your own general knowledge is not a source/);
     assert.match(text, /For medical or health talk give no advice/);
   });
 
@@ -142,8 +143,9 @@ describe("realtime instructions: facts, names and booking", () => {
     assert.match(text, /The service you recap is the service you book/);
   });
 
-  it("offers a consultation at most once", () => {
-    assert.match(text, /Offer a consultation at most once/);
+  it("never sells, and offers a booking at most once", () => {
+    assert.match(text, /Never sell\. Do not suggest a consultation or booking unless the caller asks/);
+    assert.match(text, /Offer it at most once/);
     assert.match(text, /never bring it up again/);
   });
 
@@ -170,10 +172,9 @@ describe("realtime instructions: transfer", () => {
     assert.match(text, /If transfer_to_staff comes back with transferring false/);
   });
 
-  it("budgets every reply and keeps visa answers to one sentence", () => {
+  it("budgets every reply", () => {
     const text = buildInstructions(session);
     assert.match(text, /REPLY BUDGET in words\. Never go over it/);
-    assert.match(text, /Do not explain visa types, eligibility or processes/);
   });
 
   it("tells the agent not to promise a transfer when no staff phone exists", () => {
@@ -183,5 +184,47 @@ describe("realtime instructions: transfer", () => {
     assert.doesNotMatch(unavailable, /Would you like me to connect you to a team member/);
     assert.doesNotMatch(buildInstructions({ ...session, transferAvailable: true }), /LIVE TRANSFER IS NOT AVAILABLE/);
     assert.doesNotMatch(buildInstructions(session), /LIVE TRANSFER IS NOT AVAILABLE/);
+  });
+});
+
+describe("realtime instructions: business details and persona", () => {
+  const info = {
+    receptionistName: "Riya",
+    receptionistGender: "female" as const,
+    about: "Melbourne migration advisers.",
+    email: "enquiry@example.com",
+    website: "",
+    offices: [{ name: "Carnegie", address: "23 Koornang Road", phone: "+61 3 9999 7994", notes: "" }],
+    faqs: [{ question: "Do you guarantee approval?", answer: "No one can guarantee a visa outcome." }],
+    outOfScope: "visa eligibility and timelines"
+  };
+
+  it("renders offices, FAQs and out-of-scope topics as the only facts", () => {
+    const text = buildInstructions({ ...session, agent: { ...session.agent, businessInfo: info } });
+    assert.match(text, /# BUSINESS DETAILS/);
+    assert.match(text, /Office Carnegie: 23 Koornang Road; phone \+61 3 9999 7994/);
+    assert.match(text, /Q: Do you guarantee approval\? A: No one can guarantee/);
+    assert.match(text, /Never discuss: visa eligibility and timelines\./);
+    assert.match(text, /You are Riya, a woman/);
+  });
+
+  it("works with no business details entered", () => {
+    assert.match(buildInstructions(session), /none entered yet/);
+  });
+
+  it("keeps a male persona's Hindi and Punjabi forms and native-script samples", () => {
+    const text = buildInstructions({
+      ...session,
+      agent: { ...session.agent, languages: ["English", "Hindi", "Punjabi"], businessInfo: { ...info, receptionistGender: "male" } }
+    });
+    assert.match(text, /You are Riya, a man/);
+    assert.match(text, /In Hindi always use the male forms: सकता हूँ/);
+    assert.match(text, /In Punjabi always use the male forms: ਸਕਦਾ ਹਾਂ/);
+    assert.match(text, /Punjabi, caller says hi: .*ਸਕਦਾ ਹਾਂ/);
+    assert.doesNotMatch(text, /सकती हूँ/);
+  });
+
+  it("answers the latest question, not an earlier one", () => {
+    assert.match(buildInstructions(session), /Always answer the caller's LATEST words/);
   });
 });

@@ -41,7 +41,7 @@ describe("buildSessionConfig", () => {
       input: {
         format: { type: "audio/pcmu" },
         noise_reduction: { type: "near_field" },
-        transcription: { model: "whisper-1", language: "en" },
+        transcription: { model: "whisper-1", language: "en", prompt: "Words that may come up: Consultation." },
         turn_detection: {
           type: "server_vad",
           threshold: 0.75,
@@ -77,7 +77,7 @@ describe("buildSipAcceptConfig", () => {
       input: {
         format: { type: "audio/pcmu" },
         noise_reduction: { type: "near_field" },
-        transcription: { model: "whisper-1", language: "en" },
+        transcription: { model: "whisper-1", language: "en", prompt: "Words that may come up: Consultation." },
         turn_detection: {
           type: "server_vad",
           threshold: 0.75,

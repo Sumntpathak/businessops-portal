@@ -145,3 +145,90 @@ describe("booking needs a recap and a yes", () => {
     }
   });
 });
+
+describe("a new question while the old answer is still being generated", () => {
+  const askQuestion = (handle: (e: Record<string, unknown>) => void) => {
+    handle({ type: "input_audio_buffer.speech_started" });
+    mock.timers.tick(1500);
+    handle({ type: "input_audio_buffer.speech_stopped" });
+  };
+
+  it("cancels the stale answer and replies to the latest question once the cancel lands", () => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    try {
+      const { sent, handle } = fakeBridge();
+      askQuestion(handle); // question 1: response 1 starts (model still thinking)
+      assert.equal(sent.filter((e) => e.type === "response.create").length, 1);
+      askQuestion(handle); // question 2 before response 1 finished
+      assert.equal(sent.filter((e) => e.type === "response.create").length, 1, "no overlapping response");
+      assert.ok(sent.some((e) => e.type === "response.cancel"), "stale answer is cancelled");
+      handle({ type: "response.done", response: { status: "cancelled", output: [] } });
+      assert.equal(sent.filter((e) => e.type === "response.create").length, 2, "question 2 is answered");
+      handle(done);
+      assert.equal(sent.filter((e) => e.type === "response.create").length, 2, "and only once");
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it("does not add a second reply when the stale response called a tool", () => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    try {
+      const { sent, handle } = fakeBridge();
+      askQuestion(handle);
+      askQuestion(handle);
+      handle({ type: "response.done", response: { status: "completed", output: [{ type: "function_call", call_id: "", name: "" }] } });
+      assert.equal(sent.filter((e) => e.type === "response.create").length, 1, "the tool follow-up answers instead");
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it("answers the waiting question instead of retrying a rate-limited stale answer", () => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    try {
+      const { sent, handle } = fakeBridge();
+      askQuestion(handle);
+      askQuestion(handle);
+      handle({ type: "response.done", response: { status: "failed", status_details: { error: { code: "rate_limit_exceeded" } }, output: [] } });
+      mock.timers.tick(30_000);
+      assert.equal(sent.filter((e) => e.type === "response.create").length, 2, "one reply for the new question, no retry");
+    } finally {
+      mock.timers.reset();
+    }
+  });
+});
+
+describe("a tool finishing while another response is active", () => {
+  it("waits for response.done instead of colliding, then answers once", async () => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    try {
+      const { bridge, sent, handle } = fakeBridge();
+      bridge.onToolCall(() => ({ slots: [] }));
+      // The model calls check_availability; its response is still active when the tool returns.
+      handle({ type: "response.created" });
+      handle({ type: "response.function_call_arguments.done", call_id: "t1", name: "check_availability", arguments: "{}" });
+      await flush();
+      assert.equal(sent.filter((e) => e.type === "response.create").length, 0, "no response.create while one is active");
+      handle({ type: "response.done", response: { status: "completed", output: [{ type: "function_call", call_id: "t1", name: "check_availability" }] } });
+      assert.equal(sent.filter((e) => e.type === "response.create").length, 1, "the tool answer follows response.done");
+    } finally {
+      mock.timers.reset();
+    }
+  });
+});
+
+describe("transcription vocabulary", () => {
+  it("adds office, service and staff names to the transcription prompt", async () => {
+    const { transcriptionConfig, transcriptionVocabulary } = await import("./azure-realtime-bridge.js");
+    const vocab = transcriptionVocabulary({
+      ...session,
+      services: [{ name: "Student Services Consultation", durationMinutes: 30, price: "110" }],
+      transferRoster: ["Gundeep Malhotra"],
+      agent: { ...session.agent, businessInfo: { receptionistName: "Riya", receptionistGender: "female", about: "", email: "", website: "", offices: [{ name: "Carnegie", address: "", phone: "", notes: "" }], faqs: [], outOfScope: "" } }
+    });
+    assert.deepEqual(vocab, ["Riya", "Carnegie", "Student Services Consultation", "Gundeep Malhotra"]);
+    assert.match(transcriptionConfig("m", ["English", "Hindi"], vocab).prompt ?? "", /Words that may come up: Riya, Carnegie/);
+    assert.deepEqual(transcriptionConfig("m", ["English"]), { model: "m", language: "en" });
+  });
+});

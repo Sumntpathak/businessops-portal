@@ -188,6 +188,39 @@ export const SCENARIOS: Scenario[] = [
     checks: [...base, toolCalledOn("check_availability", 0), noToolOn("create_booking", 1)]
   },
   {
+    name: "fact not in the knowledge: no general knowledge, offers a message",
+    caller: ["How long does a partner visa take to process these days?"],
+    checks: [
+      ...base,
+      replyAvoids(0, /\b(\d+|one|two|three|six|twelve)\s*(to\s*\w+\s*)?(weeks?|months?|years?)\b/i, "does not quote a timeline"),
+      replyMatches(0, /don.t have|team|message|call you back/i, "says it doesn't have it and offers a message")
+    ]
+  },
+  {
+    name: "office question: answers from details, does not sell",
+    caller: ["Where is your Carnegie office?", "Okay, thanks."],
+    checks: [
+      ...base,
+      replyMatches(0, /koornang/i, "gives the Carnegie address"),
+      replyAvoids(0, /\b(book|consultation)\b/i, "does not push a booking"),
+      replyAvoids(1, /\b(book|consultation)\b/i, "still does not push a booking")
+    ]
+  },
+  {
+    name: "Hindi: stays female",
+    caller: ["नमस्ते, मुझे आपके ऑफिस का पता चाहिए, आप बता सकती हैं?"],
+    checks: [...base, replyAvoids(0, /सकता|बताता|देखता|करता हूँ/, "uses female verb forms")]
+  },
+  {
+    name: "Punjabi: answers in Punjabi and stays female",
+    caller: ["ਸਤ ਸ੍ਰੀ ਅਕਾਲ ਜੀ, ਮੈਨੂੰ ਤੁਹਾਡੇ ਦਫ਼ਤਰ ਦਾ ਪਤਾ ਚਾਹੀਦਾ ਹੈ।"],
+    checks: [
+      ...base,
+      replyMatches(0, /[਀-੿]/, "answers in Gurmukhi"),
+      replyAvoids(0, /ਸਕਦਾ|ਦੱਸਦਾ|ਦੇਖਦਾ|ਕਰਦਾ ਹਾਂ/, "uses female verb forms")
+    ]
+  },
+  {
     name: "name capture: spell before saving",
     caller: ["My name is Ritika.", "R I T I K A.", "Yes that's right."],
     checks: [...base, noToolOn("update_caller_profile", 0)]

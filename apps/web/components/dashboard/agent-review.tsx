@@ -5,6 +5,7 @@ import ReactMarkdown from "react-markdown";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PageBody, PageHeader, PageShell } from "@/components/dashboard/page-shell";
+import { BusinessInfoEditor } from "@/components/dashboard/business-info-editor";
 
 type JobStatus = "queued" | "crawling" | "distilling" | "ready_for_review" | "failed";
 interface Service { id?: string; name: string; durationMinutes: number; price: string | null; description: string; active: boolean; }
@@ -13,7 +14,7 @@ interface AgentStatus {
   tenantStatus: string;
   timezone: string;
   job: { status: JobStatus; error: string | null; crawlResult: Array<{ url: string; title: string; text: string }> | null } | null;
-  profile: { agentMd: string; version: number; source: "auto" | "manual"; languages: string[] } | null;
+  profile: { agentMd: string; version: number; source: "auto" | "manual"; languages: string[]; businessInfo: unknown } | null;
   services: Service[];
   businessHours: BusinessHour[];
   revisions: Array<{ id: string; version: number; createdAt: string }>;
@@ -214,6 +215,9 @@ export function AgentReview() {
       </PageHeader>
       <PageBody className="space-y-8">
       {message ? <p role="status" className="rounded-lg border bg-muted/20 px-4 py-3 text-sm">{message}</p> : null}
+
+      {/* Keyed on readiness so it initialises once from the loaded profile and is not reset by the 3s poll. */}
+      <BusinessInfoEditor key={reviewReady ? "ready" : "waiting"} initial={status.profile?.businessInfo} disabled={!reviewReady} />
 
       <section>
         <div className="mb-4 flex items-end justify-between gap-4">
