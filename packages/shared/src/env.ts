@@ -32,6 +32,11 @@ export const voiceEnvSchema = z.object({
   AZURE_REALTIME_KEY: z.string().min(1).optional(),
   AZURE_REALTIME_MODEL: z.string().default("gpt-realtime-mini"),
   AZURE_REALTIME_VOICE: z.string().default("shimmer"),
+  // gpt-realtime-2.x only. Leave unset for older deployments, which reject the field.
+  AZURE_REALTIME_REASONING_EFFORT: z.enum(["minimal", "low", "medium", "high"]).optional(),
+  // Input transcription deployment. whisper-1 is the safe default; the newer
+  // gpt-4o-mini-transcribe hallucinates far less on silence and noise.
+  AZURE_TRANSCRIBE_MODEL: z.string().default("whisper-1"),
   // Present only once the Azure SIP connector is configured; the /azure/incoming
   // webhook route stays disabled until both are set.
   AZURE_WEBHOOK_SECRET: z.string().min(1).optional(),

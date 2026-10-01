@@ -4,7 +4,8 @@ import {
   AzureRealtimeBridge,
   buildInstructions,
   buildSessionConfig,
-  buildSipAcceptConfig
+  buildSipAcceptConfig,
+  isTranscriptionArtifact
 } from "./azure-realtime-bridge.js";
 import type { CallSession } from "./call-session.js";
 
@@ -214,6 +215,46 @@ describe("buildSipAcceptConfig", () => {
     });
     assert.equal(config.tool_choice, "auto");
     assert.ok(Array.isArray(config.tools) && config.tools.length > 0);
+  });
+});
+
+describe("gpt-realtime-2.x tuning", () => {
+  const audioInput = (config: Record<string, unknown>) =>
+    (config.audio as { input: { transcription: { model: string } } }).input;
+
+  it("omits reasoning and keeps whisper-1 when no tuning is given, so older deployments are unaffected", () => {
+    for (const config of [buildSessionConfig(session, "alloy"), buildSipAcceptConfig(session, "m", "alloy")]) {
+      assert.equal("reasoning" in config, false);
+      assert.equal(audioInput(config).transcription.model, "whisper-1");
+    }
+  });
+
+  it("adds reasoning.effort and the chosen transcription model to both session paths", () => {
+    const tuning = { reasoningEffort: "low" as const, transcribeModel: "gpt-4o-mini-transcribe" };
+    for (const config of [buildSessionConfig(session, "alloy", tuning), buildSipAcceptConfig(session, "m", "alloy", tuning)]) {
+      assert.deepEqual(config.reasoning, { effort: "low" });
+      assert.equal(audioInput(config).transcription.model, "gpt-4o-mini-transcribe");
+    }
+  });
+});
+
+describe("isTranscriptionArtifact", () => {
+  it("flags stock silence hallucinations and prompt echoes", () => {
+    for (const text of [
+      "Thanks for watching",
+      "Thank you for watching!",
+      "Please like, share and subscribe to my channel.",
+      "Always transcribe in the language actually spoken, using its standard script.",
+      "Never transcribe into any other language."
+    ]) {
+      assert.equal(isTranscriptionArtifact(text), true, text);
+    }
+  });
+
+  it("keeps genuine caller speech, including a plain thank you", () => {
+    for (const text of ["Thank you.", "I want to book a consultation", "Can I speak to a human?", "My name is Ritika"]) {
+      assert.equal(isTranscriptionArtifact(text), false, text);
+    }
   });
 });
 

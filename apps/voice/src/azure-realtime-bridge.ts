@@ -4,12 +4,25 @@ import type { AIBridge, StaffSelector, TranscriptEvent } from "./ai-bridge.js";
 import type { CallSession } from "./call-session.js";
 import { officeStatusNow, weeklyHoursLines } from "./office-hours.js";
 
+/**
+ * Optional per-deployment tuning, set from the environment. Everything here is
+ * omitted from the session config when unset, so older deployments (which reject
+ * unknown session fields) keep working unchanged.
+ */
+export interface RealtimeTuning {
+  /** gpt-realtime-2.x only: how much the model reasons per turn. OpenAI suggests starting at "low". */
+  reasoningEffort?: "minimal" | "low" | "medium" | "high";
+  /** Input transcription deployment, e.g. "gpt-4o-mini-transcribe". Defaults to whisper-1. */
+  transcribeModel?: string;
+}
+
 export interface AzureRealtimeBridgeOptions {
   /** Azure OpenAI v1 realtime endpoint, e.g. https://<resource>.cognitiveservices.azure.com/openai/v1/realtime */
   url: string;
   apiKey: string;
   model: string;
   voice?: string;
+  tuning?: RealtimeTuning;
   /**
    * SIP mode: attach to a call already accepted via the REST accept endpoint
    * instead of opening a fresh model session. Audio flows carrier <-> Azure;
@@ -459,19 +472,44 @@ export function buildInstructions(session: CallSession): string {
   ].join("\n");
 }
 
+/** `{ reasoning: { effort } }` for gpt-realtime-2.x, or nothing so older models never see the field. */
+function reasoningField(tuning?: RealtimeTuning): { reasoning?: { effort: string } } {
+  return tuning?.reasoningEffort ? { reasoning: { effort: tuning.reasoningEffort } } : {};
+}
+
+/**
+ * Silence/noise makes speech-to-text models emit stock phrases from their
+ * training data (YouTube outros) or echo the transcription prompt itself. These
+ * are not the caller's words; they pollute the saved call history.
+ */
+const TRANSCRIPTION_ARTIFACTS: readonly RegExp[] = [
+  /thanks? (you )?for (watching|listening)/i,
+  /(like|share)[, ]+(and )?subscribe/i,
+  /subscribe to (my|the|our) channel/i,
+  /transcribe (it )?(in|into)\b/i,
+  /standard script/i,
+  /^\s*(subtitles? by|amara\.org)/i
+];
+
+export function isTranscriptionArtifact(text: string): boolean {
+  return TRANSCRIPTION_ARTIFACTS.some((pattern) => pattern.test(text));
+}
+
 /**
  * The full realtime session configuration. Sent as session.update on the
  * WebSocket path so the session has full audio format and transcription settings.
  */
 export function buildSessionConfig(
   session: CallSession,
-  voice?: string
+  voice?: string,
+  tuning?: RealtimeTuning
 ): Record<string, unknown> {
   return {
     type: "realtime",
     instructions: buildInstructions(session),
     tools: REALTIME_TOOLS,
     tool_choice: "auto",
+    ...reasoningField(tuning),
     audio: {
       input: {
         format: { type: "audio/pcmu" },
@@ -479,7 +517,10 @@ export function buildSessionConfig(
         noise_reduction: { type: "near_field" },
         // Without this Azure never emits caller transcripts, so call history
         // only had the agent's side.
-        transcription: transcriptionConfig(INPUT_TRANSCRIPTION_MODEL, session.agent.languages),
+        transcription: transcriptionConfig(
+          tuning?.transcribeModel ?? INPUT_TRANSCRIPTION_MODEL,
+          session.agent.languages
+        ),
         turn_detection: {
           type: "server_vad",
           threshold: VAD_THRESHOLD,
@@ -516,7 +557,8 @@ export function buildSessionConfig(
 export function buildSipAcceptConfig(
   session: CallSession,
   model: string,
-  voice?: string
+  voice?: string,
+  tuning?: RealtimeTuning
 ): Record<string, unknown> {
   return {
     type: "realtime",
@@ -524,6 +566,7 @@ export function buildSipAcceptConfig(
     instructions: buildInstructions(session),
     tools: REALTIME_TOOLS,
     tool_choice: "auto",
+    ...reasoningField(tuning),
     audio: {
       input: {
         format: { type: "audio/pcmu" },
@@ -531,7 +574,10 @@ export function buildSipAcceptConfig(
         // background noise. "near_field" fits a caller speaking into their own phone,
         // as opposed to a room/laptop mic picking up the caller from a distance.
         noise_reduction: { type: "near_field" },
-        transcription: transcriptionConfig(INPUT_TRANSCRIPTION_MODEL, session.agent.languages),
+        transcription: transcriptionConfig(
+          tuning?.transcribeModel ?? INPUT_TRANSCRIPTION_MODEL,
+          session.agent.languages
+        ),
         turn_detection: {
           type: "server_vad",
           // Raised from 0.5: background noise (traffic, other voices) was crossing
@@ -655,7 +701,7 @@ export class AzureRealtimeBridge implements AIBridge {
     if (!this.options.attachCallId) {
       this.send({
         type: "session.update",
-        session: buildSessionConfig(session, this.options.voice)
+        session: buildSessionConfig(session, this.options.voice, this.options.tuning)
       });
     }
 
@@ -950,7 +996,9 @@ export class AzureRealtimeBridge implements AIBridge {
     // Caller-side transcript.
     if (type === "conversation.item.input_audio_transcription.completed") {
       const text = typeof event.transcript === "string" ? event.transcript.trim() : "";
-      if (text) this.transcript?.({ role: "caller", content: text, at: new Date() });
+      if (text && !isTranscriptionArtifact(text)) {
+        this.transcript?.({ role: "caller", content: text, at: new Date() });
+      }
       return;
     }
 

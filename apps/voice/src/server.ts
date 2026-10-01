@@ -12,7 +12,12 @@ import {
 import { createDatabase, decryptTwilioAuthToken, schema, withTenant } from "@recepto/db";
 import { validateEnv } from "@recepto/shared/env";
 import type { AIBridge, TranscriptEvent } from "./ai-bridge.js";
-import { AzureRealtimeBridge, buildSessionConfig, buildSipAcceptConfig } from "./azure-realtime-bridge.js";
+import {
+  AzureRealtimeBridge,
+  buildSessionConfig,
+  buildSipAcceptConfig,
+  type RealtimeTuning
+} from "./azure-realtime-bridge.js";
 import { GeminiLiveBridge } from "./gemini-live-bridge.js";
 import type { BusinessHour, CallSession } from "./call-session.js";
 import { deriveCallerGeo } from "./caller-profile.js";
@@ -34,6 +39,13 @@ import {
 } from "./tools.js";
 
 const env = validateEnv(process.env);
+
+// gpt-realtime-2.x reasoning effort and the input-transcription deployment; both
+// are omitted from the session when unset so older deployments are unaffected.
+const realtimeTuning: RealtimeTuning = {
+  reasoningEffort: env.AZURE_REALTIME_REASONING_EFFORT,
+  transcribeModel: env.AZURE_TRANSCRIBE_MODEL
+};
 
 function requireEnv(value: string | undefined, name: string): string {
   if (!value) {
@@ -935,7 +947,7 @@ async function handleAzureSipCall(
 
   await azureSip.accept(
     providerCallId,
-    buildSipAcceptConfig(session, env.AZURE_REALTIME_MODEL, env.AZURE_REALTIME_VOICE)
+    buildSipAcceptConfig(session, env.AZURE_REALTIME_MODEL, env.AZURE_REALTIME_VOICE, realtimeTuning)
   );
 
   const bridge = new AzureRealtimeBridge({
@@ -943,6 +955,7 @@ async function handleAzureSipCall(
     apiKey: env.AZURE_REALTIME_KEY ?? "",
     model: env.AZURE_REALTIME_MODEL,
     voice: env.AZURE_REALTIME_VOICE,
+    tuning: realtimeTuning,
     attachCallId: providerCallId,
     logger: app.log
   });
@@ -1246,6 +1259,7 @@ mediaStreams.on("connection", (socket, request) => {
           apiKey: env.AZURE_REALTIME_KEY ?? "",
           model: env.AZURE_REALTIME_MODEL,
           voice: env.AZURE_REALTIME_VOICE,
+          tuning: realtimeTuning,
           logger: app.log
         });
   let session: CallSession | undefined;
@@ -1511,6 +1525,7 @@ browserTestStreams.on("connection", (socket, request) => {
             apiKey: env.AZURE_REALTIME_KEY ?? "",
             model: env.AZURE_REALTIME_MODEL,
             voice: rawVoice || env.AZURE_REALTIME_VOICE,
+            tuning: realtimeTuning,
             logger: app.log
           });
     let session: CallSession | undefined;
