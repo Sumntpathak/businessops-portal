@@ -9,9 +9,8 @@
 import fs from "node:fs";
 import { WebSocket } from "ws";
 import { parseBusinessInfo } from "@recepto/shared";
-import { buildInstructions, greetingInstruction, REALTIME_TOOLS, replyBudgetWords } from "../azure-realtime-bridge.js";
+import { buildInstructions, greetingInstruction, REALTIME_TOOLS } from "../azure-realtime-bridge.js";
 import type { CallSession } from "../call-session.js";
-import { CallerLanguage } from "../caller-language.js";
 import { SCENARIOS, type Scenario, type TurnResult } from "./scenarios.js";
 
 function loadEnvFile(file: string | undefined): void {
@@ -28,17 +27,13 @@ const arg = (name: string): string | undefined => {
   const i = process.argv.indexOf(name);
   return i >= 0 ? process.argv[i + 1] : undefined;
 };
-const MODEL = arg("--model") ?? "gpt-realtime-2.1-mini";
-const EFFORT = arg("--effort") ?? "low";
+const MODEL = arg("--model") ?? "gpt-realtime-mini";
+const EFFORT = arg("--effort") ?? "none";
 const ONLY = arg("--only");
 const VERBOSE = process.argv.includes("--verbose");
-// Mirrors the live bridge, which gives every reply a word budget sized to how the caller spoke.
-const BUDGET = !process.argv.includes("--no-budget");
 const GREETING_RUNS = Number(arg("--greeting") ?? 0);
 // Caller on an Indian number (the bridge then sees an India-based English speaker).
 const INDIA = process.argv.includes("--india");
-// Reproduces the pre-fix note sent after tool results, to compare against the current one.
-const OLD_LANGUAGE_NOTE = process.argv.includes("--old-language-note");
 
 const url = new URL(process.env.AZURE_REALTIME_URL ?? "");
 url.protocol = "wss:";
@@ -95,11 +90,7 @@ const TOOL_RESULTS: Record<string, unknown> = {
 };
 
 /** Mirrors the bridge: refuse unknown names before the agent promises a transfer. */
-function toolResult(name: string, rawArgs: string, state: { turnsSinceAvailability: number }): unknown {
-  if (name === "check_availability") state.turnsSinceAvailability = 0;
-  if (name === "create_booking" && state.turnsSinceAvailability < 2) {
-    return { booked: false, reason: "the caller has not confirmed the recap yet", instruction: "Do not say anything is booked. In one short sentence recap the service, day and time (and ask their name if you don't have it), then wait for a clear yes before calling create_booking again." };
-  }
+function toolResult(name: string, rawArgs: string): unknown {
   if (name === "transfer_to_staff") {
     const staffName = (() => { try { return String((JSON.parse(rawArgs) as { staffName?: string }).staffName ?? ""); } catch { return ""; } })();
     if (staffName && !/gundeep|malhotra/i.test(staffName)) {
@@ -116,9 +107,6 @@ function runScenario(scenario: Scenario): Promise<TurnResult[]> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(url.toString(), { headers: { "api-key": apiKey, authorization: `Bearer ${apiKey}` } });
     const turns: TurnResult[] = [];
-    const gate = { turnsSinceAvailability: 0 }; // mirrors the bridge: caller turns since the last availability check
-    const language = new CallerLanguage(session.agent.languages); // mirrors the bridge's language tracking
-    const multilingual = session.agent.languages.length > 1;
     let turnIndex = 0;
     let current: TurnResult = { caller: "", messages: [], tools: [] };
     let rounds = 0;
@@ -129,17 +117,8 @@ function runScenario(scenario: Scenario): Promise<TurnResult[]> {
     const nextCallerTurn = () => {
       if (turnIndex >= scenario.caller.length) { clearTimeout(timer); ws.close(); resolve(turns); return; }
       current = { caller: scenario.caller[turnIndex++]!, messages: [], tools: [], toolArgs: [] };
-      gate.turnsSinceAvailability += 1;
       rounds = 0;
-      language.observe(current.caller);
       send({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: current.caller }] } });
-      if (BUDGET) {
-        const words = replyBudgetWords(0, current.caller);
-        const languageLine = multilingual && !OLD_LANGUAGE_NOTE
-          ? ` The caller has been speaking ${language.language}: reply in ${language.language} unless their latest words are a full sentence in another of your languages.`
-          : "";
-        send({ type: "conversation.item.create", item: { type: "message", role: "system", content: [{ type: "input_text", text: `REPLY BUDGET for your next reply: at most ${words} words, one sentence if you can. Answer only what the caller just said and add nothing extra.${languageLine}` }] } });
-      }
       send({ type: "response.create" });
     };
 
@@ -178,7 +157,7 @@ function runScenario(scenario: Scenario): Promise<TurnResult[]> {
         const calls = output.filter((i) => i.type === "function_call");
         if (calls.length === 0 || ++rounds > 6) { turns.push(current); nextCallerTurn(); return; }
         // The live bridge sends no follow-up response after a transfer or end_call, so the call is over here too.
-        const results = calls.map((call) => ({ call, name: String(call.name), result: toolResult(String(call.name), String(call.arguments ?? "{}"), gate) }));
+        const results = calls.map((call) => ({ call, name: String(call.name), result: toolResult(String(call.name), String(call.arguments ?? "{}")) }));
         for (const { name, call } of results) {
           current.tools.push(name);
           current.toolArgs?.push((() => { try { return JSON.parse(String(call.arguments ?? "{}")) as Record<string, unknown>; } catch { return {}; } })());
@@ -190,12 +169,6 @@ function runScenario(scenario: Scenario): Promise<TurnResult[]> {
         }
         for (const { call, result } of results) {
           send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: call.call_id, output: JSON.stringify(result) } });
-        }
-        if (multilingual) {
-          const note = OLD_LANGUAGE_NOTE
-            ? "The tool result above is data, not a language cue. Keep holding the language already established this call, in the SAME warm tone the caller was just hearing — do not switch to English or shift into a flat reading voice because of it."
-            : language.replyNote();
-          send({ type: "conversation.item.create", item: { type: "message", role: "system", content: [{ type: "input_text", text: note }] } });
         }
         send({ type: "response.create" });
       }

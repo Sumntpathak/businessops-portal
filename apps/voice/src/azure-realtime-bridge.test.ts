@@ -4,8 +4,12 @@ import {
   AzureRealtimeBridge,
   buildSessionConfig,
   buildSipAcceptConfig,
-  isJunkTurn,
-  isTranscriptionArtifact
+  greetingInstruction,
+  isTranscriptionArtifact,
+  REALTIME_TOOLS,
+  transcriptionConfig,
+  transcriptionVocabulary,
+  type AzureRealtimeBridgeOptions
 } from "./azure-realtime-bridge.js";
 import type { CallSession } from "./call-session.js";
 
@@ -20,217 +24,185 @@ const session: CallSession = {
     displayName: "Sumant",
     country: "India",
     timezone: "Asia/Kolkata",
-    profile: { service_interest: "Student visa" },
+    profile: {},
     stage: "interested"
   },
-  intakeFields: [
-    { id: "f1", key: "service_interest", label: "Service interest", type: "text", options: [], priority: "key", sort: 10, active: true },
-    { id: "f2", key: "target_date", label: "Target date", type: "text", options: [], priority: "key", sort: 20, active: true }
-  ],
+  intakeFields: [],
   agent: { agentMd: "# Holistic", voiceGreeting: "Hello", languageMode: "english", languages: ["English"] },
   services: [{ name: "Consultation", durationMinutes: 30, price: "110.00" }],
   memories: [],
   startedAt: "2026-07-06T04:00:00.000Z"
 };
 
-describe("buildSessionConfig", () => {
-  it("formats session parameters with type realtime and audio input/output blocks", () => {
-    const config = buildSessionConfig(session, "alloy");
-    assert.equal(config.type, "realtime");
-    assert.deepEqual(config.audio, {
-      input: {
-        format: { type: "audio/pcmu" },
-        noise_reduction: { type: "near_field" },
-        transcription: { model: "whisper-1", language: "en", prompt: "Words that may come up: Consultation." },
-        turn_detection: {
-          type: "server_vad",
-          threshold: 0.75,
-          prefix_padding_ms: 250,
-          silence_duration_ms: 450,
-          interrupt_response: false,
-          create_response: false
-        }
-      },
-      output: {
-        format: { type: "audio/pcmu" },
-        voice: "alloy"
-      }
-    });
-    assert.equal(config.tool_choice, "auto");
-    assert.ok(Array.isArray(config.tools) && config.tools.length > 0);
-  });
+type Input = { turn_detection: Record<string, unknown>; transcription?: { model: string }; format: unknown };
+const inputOf = (config: Record<string, unknown>) => (config.audio as { input: Input }).input;
 
-  it("disables Azure's auto-created response since this mode manually creates one on speech_stopped", () => {
-    const config = buildSessionConfig(session, "alloy") as {
-      audio: { input: { turn_detection: { create_response: boolean } } };
-    };
-    assert.equal(config.audio.input.turn_detection.create_response, false);
-  });
-});
-
-describe("buildSipAcceptConfig", () => {
-  it("formats SIP accept payload with Azure SIP audio.input and audio.output blocks", () => {
-    const config = buildSipAcceptConfig(session, "gpt-realtime-mini", "shimmer");
-    assert.equal(config.type, "realtime");
-    assert.equal(config.model, "gpt-realtime-mini");
-    assert.deepEqual(config.audio, {
-      input: {
-        format: { type: "audio/pcmu" },
-        noise_reduction: { type: "near_field" },
-        transcription: { model: "whisper-1", language: "en", prompt: "Words that may come up: Consultation." },
-        turn_detection: {
-          type: "server_vad",
-          threshold: 0.75,
-          prefix_padding_ms: 250,
-          silence_duration_ms: 450
-        }
-      },
-      output: {
-        format: { type: "audio/pcmu" },
-        voice: "shimmer"
-      }
-    });
-    assert.equal(config.tool_choice, "auto");
-    assert.ok(Array.isArray(config.tools) && config.tools.length > 0);
-  });
-});
-
-describe("gpt-realtime-2.x tuning", () => {
-  const audioInput = (config: Record<string, unknown>) =>
-    (config.audio as { input: { transcription: { model: string } } }).input;
-
-  it("omits reasoning and keeps whisper-1 when no tuning is given, so older deployments are unaffected", () => {
-    for (const config of [buildSessionConfig(session, "alloy"), buildSipAcceptConfig(session, "m", "alloy")]) {
-      assert.equal("reasoning" in config, false);
-      assert.equal(audioInput(config).transcription.model, "whisper-1");
-    }
-  });
-
-  it("adds reasoning.effort and the chosen transcription model to both session paths", () => {
-    const tuning = { reasoningEffort: "low" as const, transcribeModel: "gpt-4o-mini-transcribe" };
-    for (const config of [buildSessionConfig(session, "alloy", tuning), buildSipAcceptConfig(session, "m", "alloy", tuning)]) {
-      assert.deepEqual(config.reasoning, { effort: "low" });
-      assert.equal(audioInput(config).transcription.model, "gpt-4o-mini-transcribe");
-    }
-  });
-});
-
-describe("isTranscriptionArtifact", () => {
-  it("flags stock silence hallucinations and prompt echoes", () => {
-    for (const text of [
-      "Thanks for watching",
-      "Thank you for watching!",
-      "Please like, share and subscribe to my channel.",
-      "Always transcribe in the language actually spoken, using its standard script.",
-      "Never transcribe into any other language."
-    ]) {
-      assert.equal(isTranscriptionArtifact(text), true, text);
-    }
-  });
-
-  it("keeps genuine caller speech, including a plain thank you", () => {
-    for (const text of ["Thank you.", "I want to book a consultation", "Can I speak to a human?", "My name is Ritika"]) {
-      assert.equal(isTranscriptionArtifact(text), false, text);
-    }
-  });
-});
-
-function bridgeWithFakeSocket(sessionOverride: Partial<CallSession> = {}) {
+function bridgeWithFakeSocket(options: Partial<AzureRealtimeBridgeOptions> = {}) {
   const sent: Array<Record<string, unknown>> = [];
-  const bridge = new AzureRealtimeBridge({ url: "https://x.openai.azure.com/openai/v1/realtime", apiKey: "k", model: "m" });
+  const bridge = new AzureRealtimeBridge({ url: "https://x.openai.azure.com/openai/v1/realtime", apiKey: "k", model: "m", ...options });
   const internals = bridge as unknown as Record<string, unknown>;
   internals.socket = { readyState: 1, send: (raw: string) => sent.push(JSON.parse(raw)) };
-  internals.session = { ...session, ...sessionOverride };
+  internals.session = session;
   const handle = (event: Record<string, unknown>) =>
     (internals.handleServerEvent as (e: unknown) => void).call(bridge, event);
-  return { bridge, internals, sent, handle };
+  const callTool = async (name: string, args: Record<string, unknown> = {}, callId = `call_${name}`) => {
+    handle({ type: "response.function_call_arguments.done", call_id: callId, name, arguments: JSON.stringify(args) });
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+  };
+  const creates = () => sent.filter((e) => e.type === "response.create").length;
+  return { bridge, internals, sent, handle, callTool, creates };
 }
 
-const holdMessageResponse = (extra: Array<Record<string, unknown>> = []) => ({
-  type: "response.done",
-  response: {
-    status: "completed",
-    output: [
-      {
-        type: "message",
-        content: [{ transcript: "Sure, I'll put you through now. Please stay on the line." }]
-      },
-      ...extra
-    ]
-  }
+const audioDelta = (ms: number) => ({
+  type: "response.output_audio.delta",
+  item_id: "item_1",
+  content_index: 0,
+  delta: Buffer.alloc(ms * 8).toString("base64")
 });
 
-describe("transfer nudge", () => {
-  it("reminds the agent to call transfer_to_staff when it only spoke the hold message", () => {
-    const { sent, handle } = bridgeWithFakeSocket();
-    handle(holdMessageResponse());
-    assert.ok(sent.some((e) => e.type === "response.create"));
-    const nudge = JSON.stringify(sent.find((e) => e.type === "conversation.item.create"));
-    assert.match(nudge, /did not call transfer_to_staff/);
-    const forced = sent.find((e) => e.type === "response.create") as { response?: { tool_choice?: unknown } };
-    assert.deepEqual(forced.response?.tool_choice, { type: "function", name: "transfer_to_staff" });
+describe("session config", () => {
+  it("lets Azure run turn-taking: server VAD with its default reply and interruption handling", () => {
+    const input = inputOf(buildSessionConfig(session));
+    assert.equal(input.turn_detection.type, "server_vad");
+    assert.equal(input.turn_detection.threshold, 0.75);
+    assert.equal("create_response" in input.turn_detection, false);
+    assert.equal("interrupt_response" in input.turn_detection, false);
+    assert.deepEqual(input.format, { type: "audio/pcmu" });
   });
 
-  it("catches the transfer promise however the agent words it", () => {
-    for (const line of [
-      "Sure, I’ll connect you to someone who can assist with that. Please hold on while I transfer you. It might ring for a few seconds.",
-      "Understood, I’m starting the transfer now. Please hold on, and it’ll ring shortly. I’m transferring you to Lara now.",
-      "Sure, I'll put you through to one of our consultants now."
-    ]) {
-      const { sent, handle } = bridgeWithFakeSocket();
-      handle({
-        type: "response.done",
-        response: { status: "completed", output: [{ type: "message", content: [{ transcript: line }] }] }
+  it("uses the same session on the SIP path, plus the model", () => {
+    const sip = buildSipAcceptConfig(session, "gpt-realtime-mini");
+    assert.equal(sip.model, "gpt-realtime-mini");
+    assert.deepEqual(inputOf(sip), inputOf(buildSessionConfig(session)));
+  });
+
+  it("adds reasoning effort only when set, and transcription unless switched off", () => {
+    assert.equal("reasoning" in buildSessionConfig(session), false);
+    assert.deepEqual(buildSessionConfig(session, undefined, { reasoningEffort: "low" }).reasoning, { effort: "low" });
+    assert.equal(inputOf(buildSessionConfig(session)).transcription?.model, "whisper-1");
+    assert.equal(inputOf(buildSessionConfig(session, undefined, { transcribeModel: "gpt-4o-mini-transcribe" })).transcription?.model, "gpt-4o-mini-transcribe");
+    assert.equal("transcription" in inputOf(buildSessionConfig(session, undefined, { transcribeModel: "off" })), false);
+    assert.equal("transcription" in inputOf(buildSipAcceptConfig(session, "m", undefined, { transcribeModel: "off" })), false);
+  });
+
+  it("offers only the booking, callback, transfer and hang-up tools", () => {
+    assert.deepEqual(REALTIME_TOOLS.map((tool) => tool.name), ["check_availability", "create_booking", "request_callback", "transfer_to_staff", "end_call"]);
+  });
+});
+
+describe("greeting", () => {
+  it("asks a known caller to confirm their name and says nothing extra to a new caller", () => {
+    assert.match(greetingInstruction("Hello", "Sumant"), /Am I speaking with Sumant\?/);
+    assert.match(greetingInstruction("Hello", null), /Say nothing before or after it/);
+  });
+});
+
+describe("interruptions", () => {
+  it("flushes the phone leg and tells the model how much the caller heard", () => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    try {
+      const { bridge, sent, handle } = bridgeWithFakeSocket();
+      let flushed = false;
+      bridge.onBargeIn(() => { flushed = true; });
+      handle(audioDelta(2000));
+      mock.timers.tick(700);
+      handle({ type: "input_audio_buffer.speech_started" });
+      assert.equal(flushed, true);
+      assert.deepEqual(sent.find((e) => e.type === "conversation.item.truncate"), {
+        type: "conversation.item.truncate", item_id: "item_1", content_index: 0, audio_end_ms: 700
       });
-      assert.ok(sent.some((e) => e.type === "response.create"), `should nudge for: ${line}`);
+      assert.equal(sent.some((e) => e.type === "response.cancel"), false, "Azure cancels its own reply");
+    } finally {
+      mock.timers.reset();
     }
   });
 
-  it("does not nudge for a plain hold-on while checking availability", () => {
+  it("does not truncate when nothing is playing", () => {
     const { sent, handle } = bridgeWithFakeSocket();
-    handle({
-      type: "response.done",
-      response: {
-        status: "completed",
-        output: [{ type: "message", content: [{ transcript: "Sure, hold on a second while I check the calendar." }] }]
-      }
-    });
-    // No transfer is forced (the lookup nudge may force a tool call, but never transfer_to_staff).
-    assert.doesNotMatch(JSON.stringify(sent), /transfer_to_staff/);
-  });
-
-  it("does not nudge when the transfer tool was called, transfer is unavailable, or after two nudges", () => {
-    const called = bridgeWithFakeSocket();
-    called.handle(holdMessageResponse([{ type: "function_call", name: "transfer_to_staff", call_id: "c1", arguments: "{}" }]));
-    assert.equal(called.sent.filter((e) => e.type === "response.create").length, 0);
-
-    const unavailable = bridgeWithFakeSocket({ transferAvailable: false });
-    unavailable.handle(holdMessageResponse());
-    assert.equal(unavailable.sent.length, 0);
-
-    const capped = bridgeWithFakeSocket();
-    for (let i = 0; i < 4; i += 1) capped.handle(holdMessageResponse());
-    assert.equal(capped.sent.filter((e) => e.type === "response.create").length, 2);
+    handle({ type: "input_audio_buffer.speech_started" });
+    assert.equal(sent.some((e) => e.type === "conversation.item.truncate"), false);
   });
 });
 
-describe("transfer waits for the agent line to finish playing", () => {
-  it("redirects only after the queued audio has played out", () => {
+describe("tool results", () => {
+  it("returns the result and asks for one reply", async () => {
+    const { bridge, sent, callTool, creates } = bridgeWithFakeSocket();
+    bridge.onToolCall(() => ({ slots: [] }));
+    await callTool("check_availability", { date: "2026-10-05" });
+    assert.ok(sent.some((e) => e.type === "conversation.item.create" && (e.item as { type: string }).type === "function_call_output"));
+    assert.equal(creates(), 1);
+  });
+
+  it("waits for a reply in progress to finish instead of colliding with it", async () => {
+    const { bridge, handle, callTool, creates } = bridgeWithFakeSocket();
+    bridge.onToolCall(() => ({ recorded: true }));
+    handle({ type: "response.created" });
+    await callTool("request_callback", { reason: "visa" });
+    assert.equal(creates(), 0);
+    handle({ type: "response.done", response: { status: "completed", output: [] } });
+    assert.equal(creates(), 1);
+  });
+
+  it("retries the follow-up when Azure says a reply is already active", async () => {
+    const { bridge, handle, callTool, creates } = bridgeWithFakeSocket();
+    bridge.onToolCall(() => ({ slots: [] }));
+    await callTool("check_availability", { date: "2026-10-05" });
+    handle({ type: "error", error: { code: "conversation_already_has_active_response" } });
+    handle({ type: "response.done", response: { status: "completed", output: [] } });
+    assert.equal(creates(), 2);
+  });
+
+  it("returns a tool error to the model instead of failing the call", async () => {
+    const { bridge, sent, callTool } = bridgeWithFakeSocket();
+    bridge.onToolCall(() => { throw new Error("calendar down"); });
+    await callTool("create_booking", { serviceId: "s", startsAt: "x" });
+    const output = sent.find((e) => (e.item as { type?: string } | undefined)?.type === "function_call_output");
+    assert.match(String((output?.item as { output: string }).output), /calendar down/);
+  });
+});
+
+describe("transfer", () => {
+  it("refuses an unknown person with the people it can offer, and does not redirect", async () => {
+    const { bridge, sent, callTool, creates } = bridgeWithFakeSocket({
+      resolveTransfer: async () => ({ ok: false, reason: 'no team member matching "Ramlal"', available: ["Gundeep Malhotra"] })
+    });
+    let transferred = false;
+    bridge.onTransferRequested(() => { transferred = true; });
+    await callTool("transfer_to_staff", { staffName: "Ramlal" });
+    const output = JSON.parse(String((sent.find((e) => (e.item as { type?: string } | undefined)?.type === "function_call_output")?.item as { output: string }).output));
+    assert.equal(output.transferring, false);
+    assert.deepEqual(output.teamMembersYouCanOffer, ["Gundeep Malhotra"]);
+    assert.equal(creates(), 1);
+    assert.equal(transferred, false);
+  });
+
+  it("redirects only after the hold line has played", async () => {
     mock.timers.enable({ apis: ["setTimeout", "Date"] });
     try {
-      const { bridge, internals, handle } = bridgeWithFakeSocket();
-      let transferred = false;
-      bridge.onTransferRequested(() => {
-        transferred = true;
-      });
-      // 8000 bytes of mu-law at 8 kHz = exactly 1000 ms of speech.
-      handle({ type: "response.output_audio.delta", delta: Buffer.alloc(8000).toString("base64") });
-      internals.pendingTransfer = {};
+      const { bridge, handle, callTool } = bridgeWithFakeSocket({ resolveTransfer: async () => ({ ok: true }) });
+      let target: unknown;
+      bridge.onTransferRequested((selector) => { target = selector; });
+      handle({ type: "response.created" });
+      handle(audioDelta(1000));
+      await callTool("transfer_to_staff", { staffName: "Gundeep Malhotra" });
       handle({ type: "response.done", response: { status: "completed", output: [] } });
-
       mock.timers.tick(1000);
-      assert.equal(transferred, false, "still playing the last 600 ms of padding");
+      assert.equal(target, undefined, "padding still running");
       mock.timers.tick(600);
+      assert.deepEqual(target, { staffId: undefined, staffName: "Gundeep Malhotra" });
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it("still redirects when the reply finished before the staff check came back", async () => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    try {
+      const { bridge, callTool } = bridgeWithFakeSocket({ resolveTransfer: async () => ({ ok: true }) });
+      let transferred = false;
+      bridge.onTransferRequested(() => { transferred = true; });
+      await callTool("transfer_to_staff", { staffName: "Gundeep Malhotra" });
+      mock.timers.tick(0);
       assert.equal(transferred, true);
     } finally {
       mock.timers.reset();
@@ -238,162 +210,63 @@ describe("transfer waits for the agent line to finish playing", () => {
   });
 });
 
-describe("isJunkTurn", () => {
-  it("treats empty text, lone characters, filler sounds and silence hallucinations as noise", () => {
-    for (const text of ["", " . ", "ए", "आ", "uh", "Um...", "hmm", "हम्म", "Thanks for watching"]) {
-      assert.equal(isJunkTurn(text), true, JSON.stringify(text));
-    }
-  });
-
-  it("keeps real short words and sentences", () => {
-    for (const text of ["yes", "No", "ok", "hi", "haan", "वह", "Can I speak to someone?"]) {
-      assert.equal(isJunkTurn(text), false, text);
-    }
-  });
-});
-
-describe("interruptions tell the model what the caller actually heard", () => {
-  const audioDelta = (ms: number) => ({
-    type: "response.output_audio.delta",
-    item_id: "item_1",
-    content_index: 0,
-    delta: Buffer.alloc(ms * 8).toString("base64")
-  });
-
-  it("truncates the playing item at the point the caller interrupted", () => {
+describe("ending the call", () => {
+  it("hangs up after the goodbye has played", async () => {
     mock.timers.enable({ apis: ["setTimeout", "Date"] });
     try {
-      const { sent, handle } = bridgeWithFakeSocket();
-      handle(audioDelta(2000));
-      mock.timers.tick(700);
-      handle({ type: "input_audio_buffer.speech_started" });
-      mock.timers.tick(300);
-      const truncate = sent.find((e) => e.type === "conversation.item.truncate");
-      assert.deepEqual(truncate, { type: "conversation.item.truncate", item_id: "item_1", content_index: 0, audio_end_ms: 700 });
-    } finally {
-      mock.timers.reset();
-    }
-  });
-
-  it("does not truncate when the agent is not speaking", () => {
-    mock.timers.enable({ apis: ["setTimeout", "Date"] });
-    try {
-      const { sent, handle } = bridgeWithFakeSocket();
-      handle({ type: "input_audio_buffer.speech_started" });
-      mock.timers.tick(300);
-      assert.equal(sent.some((e) => e.type === "conversation.item.truncate"), false);
+      const { bridge, handle, callTool } = bridgeWithFakeSocket();
+      let ended = false;
+      bridge.onEndCall(() => { ended = true; });
+      handle({ type: "response.created" });
+      handle(audioDelta(500));
+      await callTool("end_call");
+      handle({ type: "response.done", response: { status: "completed", output: [] } });
+      mock.timers.tick(1099);
+      assert.equal(ended, false);
+      mock.timers.tick(1);
+      assert.equal(ended, true);
     } finally {
       mock.timers.reset();
     }
   });
 });
 
-describe("very short caller turns", () => {
-  const started = () => {
-    const fake = bridgeWithFakeSocket();
-    fake.internals.ready = true;
-    return fake;
-  };
-  const responses = (sent: Array<Record<string, unknown>>) => sent.filter((e) => e.type === "response.create").length;
-  const transcript = (text: string) => ({ type: "conversation.item.input_audio_transcription.completed", transcript: text });
+describe("rate limits", () => {
+  const rateLimited = { type: "response.done", response: { status: "failed", status_details: { error: { code: "rate_limit_exceeded" } }, output: [] } };
 
-  it("does not answer a short noise-like turn", () => {
+  it("retries with a growing pause, up to six in a row, and resets after a success", () => {
     mock.timers.enable({ apis: ["setTimeout", "Date"] });
     try {
-      const { sent, handle } = started();
-      handle({ type: "input_audio_buffer.speech_started" });
-      mock.timers.tick(400);
-      handle({ type: "input_audio_buffer.speech_stopped" });
-      assert.equal(responses(sent), 0, "waits for the transcript first");
-      handle(transcript("ए"));
-      mock.timers.tick(2000);
-      assert.equal(responses(sent), 0, "noise is never answered");
-    } finally {
-      mock.timers.reset();
-    }
-  });
-
-  it("answers a short real turn as soon as its transcript arrives", () => {
-    mock.timers.enable({ apis: ["setTimeout", "Date"] });
-    try {
-      const { sent, handle } = started();
-      handle({ type: "input_audio_buffer.speech_started" });
-      mock.timers.tick(400);
-      handle({ type: "input_audio_buffer.speech_stopped" });
-      handle(transcript("Yes"));
-      assert.equal(responses(sent), 1);
-    } finally {
-      mock.timers.reset();
-    }
-  });
-
-  it("answers anyway when the transcript is slow, and answers long turns immediately", () => {
-    mock.timers.enable({ apis: ["setTimeout", "Date"] });
-    try {
-      const slow = started();
-      slow.handle({ type: "input_audio_buffer.speech_started" });
-      mock.timers.tick(400);
-      slow.handle({ type: "input_audio_buffer.speech_stopped" });
-      mock.timers.tick(800);
-      assert.equal(responses(slow.sent), 1);
-
-      const long = started();
-      long.handle({ type: "input_audio_buffer.speech_started" });
+      const { handle, creates } = bridgeWithFakeSocket();
+      handle(rateLimited);
       mock.timers.tick(1500);
-      long.handle({ type: "input_audio_buffer.speech_stopped" });
-      assert.equal(responses(long.sent), 1);
+      assert.equal(creates(), 1);
+      for (let i = 0; i < 6; i += 1) { handle(rateLimited); mock.timers.tick(6000); }
+      assert.equal(creates(), 6, "stops after six");
+      handle({ type: "response.done", response: { status: "completed", output: [] } });
+      handle(rateLimited);
+      mock.timers.tick(1500);
+      assert.equal(creates(), 7);
     } finally {
       mock.timers.reset();
     }
   });
 });
 
-describe("rate-limited responses", () => {
-  const rateLimited = {
-    type: "response.done",
-    response: { status: "failed", status_details: { type: "failed", error: { code: "inference_rate_limit_exceeded" } }, output: [] }
-  };
-
-  it("retries a rate-limited response with a growing pause, up to six in a row", () => {
-    mock.timers.enable({ apis: ["setTimeout", "Date"] });
-    try {
-      const { sent, handle } = bridgeWithFakeSocket();
-      for (let i = 0; i < 9; i += 1) {
-        handle(rateLimited);
-        mock.timers.tick(6000);
-      }
-      assert.equal(sent.filter((e) => e.type === "response.create").length, 6);
-    } finally {
-      mock.timers.reset();
-    }
+describe("call history", () => {
+  it("keeps transcriber silence hallucinations out", () => {
+    assert.equal(isTranscriptionArtifact("Thanks for watching!"), true);
+    assert.equal(isTranscriptionArtifact("Thank you very much"), false);
   });
 
-  it("resets the streak after any success, so a long call never runs out of retries", () => {
-    mock.timers.enable({ apis: ["setTimeout", "Date"] });
-    try {
-      const { sent, handle } = bridgeWithFakeSocket();
-      for (let round = 0; round < 3; round += 1) {
-        for (let i = 0; i < 4; i += 1) {
-          handle(rateLimited);
-          mock.timers.tick(6000);
-        }
-        handle({ type: "response.done", response: { status: "completed", output: [] } });
-      }
-      assert.equal(sent.filter((e) => e.type === "response.create").length, 12, "all 12 failures were retried");
-    } finally {
-      mock.timers.reset();
-    }
-  });
-});
-
-describe("transcription switched off", () => {
-  it("sends no transcription settings on either path", () => {
-    const tuning = { transcribeModel: "off" };
-    const ws = buildSessionConfig(session, undefined, tuning) as { audio: { input: Record<string, unknown> } };
-    const sip = buildSipAcceptConfig(session, "m", undefined, tuning) as { audio: { input: Record<string, unknown> } };
-    assert.equal("transcription" in ws.audio.input, false);
-    assert.equal("transcription" in sip.audio.input, false);
-    const on = buildSessionConfig(session, undefined, { transcribeModel: "gpt-4o-mini-transcribe" }) as { audio: { input: { transcription?: { model: string } } } };
-    assert.equal(on.audio.input.transcription?.model, "gpt-4o-mini-transcribe");
+  it("primes the transcriber with business words and the caller's languages", () => {
+    const vocab = transcriptionVocabulary({
+      ...session,
+      transferRoster: [{ name: "Gundeep Malhotra", handles: "" }],
+      agent: { ...session.agent, businessInfo: { receptionistName: "Riya", receptionistGender: "female", about: "", email: "", website: "", offices: [{ name: "Carnegie", address: "", phone: "", notes: "" }], faqs: [], outOfScope: "" } }
+    });
+    assert.deepEqual(vocab, ["Riya", "Carnegie", "Consultation", "Gundeep Malhotra"]);
+    assert.match(transcriptionConfig("m", ["English", "Hindi"], vocab).prompt ?? "", /Hindi in Devanagari/);
+    assert.deepEqual(transcriptionConfig("m", ["English"]), { model: "m", language: "en" });
   });
 });
