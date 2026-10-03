@@ -385,3 +385,15 @@ describe("rate-limited responses", () => {
     }
   });
 });
+
+describe("transcription switched off", () => {
+  it("sends no transcription settings on either path", () => {
+    const tuning = { transcribeModel: "off" };
+    const ws = buildSessionConfig(session, undefined, tuning) as { audio: { input: Record<string, unknown> } };
+    const sip = buildSipAcceptConfig(session, "m", undefined, tuning) as { audio: { input: Record<string, unknown> } };
+    assert.equal("transcription" in ws.audio.input, false);
+    assert.equal("transcription" in sip.audio.input, false);
+    const on = buildSessionConfig(session, undefined, { transcribeModel: "gpt-4o-mini-transcribe" }) as { audio: { input: { transcription?: { model: string } } } };
+    assert.equal(on.audio.input.transcription?.model, "gpt-4o-mini-transcribe");
+  });
+});

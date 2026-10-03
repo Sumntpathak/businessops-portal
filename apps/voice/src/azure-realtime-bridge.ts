@@ -16,7 +16,7 @@ export { buildInstructions };
 export interface RealtimeTuning {
   /** gpt-realtime-2.x only: how much the model reasons per turn. OpenAI suggests starting at "low". */
   reasoningEffort?: "minimal" | "low" | "medium" | "high";
-  /** Input transcription deployment, e.g. "gpt-4o-mini-transcribe". Defaults to whisper-1. */
+  /** Input transcription deployment, e.g. "gpt-4o-mini-transcribe". Defaults to whisper-1; "off" disables it. */
   transcribeModel?: string;
 }
 
@@ -327,6 +327,25 @@ export function transcriptionConfig(
   };
 }
 
+/**
+ * Caller transcription, or nothing when switched off. Off means the model decides
+ * everything (including language) from the audio itself, and the call history only
+ * has the agent's side.
+ */
+export function transcriptionField(
+  session: CallSession,
+  tuning?: RealtimeTuning
+): { transcription?: ReturnType<typeof transcriptionConfig> } {
+  if (tuning?.transcribeModel === "off") return {};
+  return {
+    transcription: transcriptionConfig(
+      tuning?.transcribeModel ?? INPUT_TRANSCRIPTION_MODEL,
+      session.agent.languages,
+      transcriptionVocabulary(session)
+    )
+  };
+}
+
 /** `{ reasoning: { effort } }` for gpt-realtime-2.x, or nothing so older models never see the field. */
 function reasoningField(tuning?: RealtimeTuning): { reasoning?: { effort: string } } {
   return tuning?.reasoningEffort ? { reasoning: { effort: tuning.reasoningEffort } } : {};
@@ -414,13 +433,7 @@ export function buildSessionConfig(
         format: { type: "audio/pcmu" },
         // See buildSipAcceptConfig — same noise-robustness reasoning.
         noise_reduction: { type: "near_field" },
-        // Without this Azure never emits caller transcripts, so call history
-        // only had the agent's side.
-        transcription: transcriptionConfig(
-          tuning?.transcribeModel ?? INPUT_TRANSCRIPTION_MODEL,
-          session.agent.languages,
-          transcriptionVocabulary(session)
-        ),
+        ...transcriptionField(session, tuning),
         turn_detection: {
           type: "server_vad",
           threshold: VAD_THRESHOLD,
@@ -474,11 +487,7 @@ export function buildSipAcceptConfig(
         // background noise. "near_field" fits a caller speaking into their own phone,
         // as opposed to a room/laptop mic picking up the caller from a distance.
         noise_reduction: { type: "near_field" },
-        transcription: transcriptionConfig(
-          tuning?.transcribeModel ?? INPUT_TRANSCRIPTION_MODEL,
-          session.agent.languages,
-          transcriptionVocabulary(session)
-        ),
+        ...transcriptionField(session, tuning),
         turn_detection: {
           type: "server_vad",
           // Raised from 0.5: background noise (traffic, other voices) was crossing
@@ -555,6 +564,11 @@ export class AzureRealtimeBridge implements AIBridge {
   private toolFollowUpPending = false;
 
   constructor(private readonly options: AzureRealtimeBridgeOptions) {}
+
+  /** False when caller transcription is switched off: no transcript will ever arrive to wait for. */
+  private get transcribing(): boolean {
+    return this.options.tuning?.transcribeModel !== "off";
+  }
 
   async start(session: CallSession): Promise<void> {
     this.session = session;
@@ -895,7 +909,7 @@ export class AzureRealtimeBridge implements AIBridge {
   private decideResponseToCaller(): void {
     const spokeMs = this.speechStartedAt === undefined ? Number.POSITIVE_INFINITY : Date.now() - this.speechStartedAt;
     this.speechStartedAt = undefined;
-    if (spokeMs >= SHORT_TURN_MS) {
+    if (spokeMs >= SHORT_TURN_MS || !this.transcribing) {
       this.respondToCaller(replyBudgetWords(spokeMs, this.turnTranscript));
       return;
     }
@@ -1027,7 +1041,7 @@ export class AzureRealtimeBridge implements AIBridge {
             type: "input_text",
             text:
               `REPLY BUDGET for your next reply: at most ${words} words, one sentence if you can. Answer only what the caller just said and add nothing extra.` +
-              ((this.session?.agent.languages.length ?? 0) > 1 ? ` The caller has been speaking ${this.callerLanguage().language}: reply in ${this.callerLanguage().language} unless their latest words are a full sentence in another of your languages.` : "")
+              ((this.session?.agent.languages.length ?? 0) > 1 && this.transcribing ? ` The caller has been speaking ${this.callerLanguage().language}: reply in ${this.callerLanguage().language} unless their latest words are a full sentence in another of your languages.` : "")
           }
         ]
       }
@@ -1128,7 +1142,7 @@ export class AzureRealtimeBridge implements AIBridge {
       this.clearBargeInTimer();
       this.options.logger?.info({ callId: this.session?.callId }, "Caller speech stopped");
       this.speechStopped?.();
-      if (!this.options.attachCallId) this.transcriptPending = true;
+      if (!this.options.attachCallId && this.transcribing) this.transcriptPending = true;
       if (this.options.attachCallId) {
         this.callerTurnsSinceAvailability += 1; // SIP: Azure creates the response itself
         return;
@@ -1518,7 +1532,9 @@ export class AzureRealtimeBridge implements AIBridge {
           content: [
             {
               type: "input_text",
-              text: this.callerLanguage().replyNote()
+              text: this.transcribing
+                ? this.callerLanguage().replyNote()
+                : "The tool result above is data, not a language cue. Reply in the language the caller was just speaking, in the same warm tone."
             }
           ]
         }
