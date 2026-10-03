@@ -49,17 +49,18 @@ function team(session: CallSession): string[] {
 
 function officeHours(session: CallSession, callerTimezone: string): string[] {
   const hours = session.businessHours ?? [];
-  const lines = callerTimezone === session.timezone
-    ? [weeklyHoursLines(hours)]
-    : [`(in the caller's own time, ${callerTimezone})`, weeklyHoursForCaller(hours, session.timezone, callerTimezone)];
-  return [...lines, `Right now (business time): ${officeStatusNow(hours, session.timezone)}`];
+  if (callerTimezone === session.timezone) {
+    return [weeklyHoursLines(hours), `Right now: ${officeStatusNow(hours, session.timezone)}`];
+  }
+  // No "right now" line here: its business-time clock times leaked into answers to remote callers.
+  return [`(in the caller's own time, ${callerTimezone}; say these times)`, weeklyHoursForCaller(hours, session.timezone, callerTimezone)];
 }
 
 function languageLines(languages: string[], gender: Gender): string[] {
   if (languages.length <= 1) return [`- Speak ${languages[0] ?? "English"} only.`];
   const forms = VERB_FORMS[gender];
   return [
-    `- Reply in the language the caller is speaking (${languages.join(", ")}), and switch whenever they switch. Mixed Hindi-English gets mixed replies.`,
+    `- Reply in the language of the caller's latest full sentence (${languages.join(", ")}), even if earlier turns were in another language. Mixed Hindi-English gets mixed replies. A short reply ('ok', 'not now', 'yes', 'haan') keeps the language you were already speaking.`,
     "- Hindi in Devanagari, Punjabi in Gurmukhi, the way people really speak.",
     ...(hasLanguage(languages, "hindi") ? [`- Hindi forms for you: ${forms.hindi}.`] : []),
     ...(hasLanguage(languages, "punjabi") ? [`- Punjabi forms for you: ${forms.punjabi}.`] : [])
@@ -85,6 +86,7 @@ export function buildInstructions(session: CallSession): string {
     "# THE ONE RULE",
     "Only talk about this business, using BUSINESS FACTS and tool results. Never give advice (visa, migration, legal, medical, financial or any other) and never answer from your own general knowledge." + outOfScope,
     "If something is not in the facts, say you don't have that detail and offer a callback from the team.",
+    "Greetings and pleasantries are fine: answer them warmly like a person would, e.g. 'आप कैसी हो?' → 'मैं ठीक हूँ, शुक्रिया! आप कैसे हैं?', 'How are you?' → 'I'm good, thanks! How are you?'",
     "",
     "# LANGUAGE",
     ...languageLines(session.agent.languages, gender),
@@ -94,10 +96,11 @@ export function buildInstructions(session: CallSession): string {
     "  When the caller picks a time, do not book yet: read it back with the price and ask, e.g. 'So Monday at ten thirty AM your time, 110 dollars. Shall I book it?' Call create_booking once, only after they say yes to that question.",
     "- Callback or message: call request_callback when the caller asks for one or says yes to your offer.",
     "- Speak to a person: only people listed in TEAM can be connected.",
-    "  If the caller names someone who is NOT in TEAM, never connect them: say there is nobody by that name here and ask if they would like someone from TEAM instead. Connect only after a clear yes.",
+    "  If the caller names someone who is NOT in TEAM, never connect them: say there is nobody by that name here and ask if they would like someone from TEAM instead. Connect only after a clear yes. 'No', 'not now', 'later', 'abhi nahi', 'baad mein' all mean no: don't connect, ask how else you can help.",
     `  Example (say it in the caller's language): 'Can I speak to Ramlal?' → 'Sorry, there's nobody called Ramlal here. Shall I connect you with ${session.transferRoster?.[0]?.name ?? "someone from the team"}?'`,
     "  If they ask for someone in TEAM, or just for 'a person' or 'a consultant', say 'I'll connect you with [name] now, please stay on the line.' and call transfer_to_staff in the same response.",
-    "- Goodbye: when the caller is done (bye, that's all, thanks), say a short goodbye and call end_call in the same response. A goodbye without end_call leaves the caller on an open line.",
+    "- After finishing a task (booking, callback), ask if there is anything else. Never hang up just because a task is done.",
+    "- Goodbye: when the caller is done (bye, that's all, thanks), say a short goodbye out loud and call end_call in the same response. A goodbye without end_call leaves the caller on an open line.",
     "- Changing or cancelling a booking: take a callback for the team.",
     "",
     "# BUSINESS FACTS",

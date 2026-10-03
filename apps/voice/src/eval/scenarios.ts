@@ -3,6 +3,7 @@
  * behavior in text mode (no audio). Each scenario lists caller lines; the harness
  * plays them one by one against the live model with canned tool results.
  */
+import { isRefusal } from "../caller-intent.js";
 
 export interface TurnResult {
   caller: string;
@@ -98,9 +99,96 @@ const searchesSeveralDays: Check = {
   }
 };
 
+/** No transfer actually went through: any transfer call carried the caller's "no" and was blocked. */
+const neverConnected: Check = {
+  name: "never connects the call",
+  run: (turns) => {
+    const calls = turns.flatMap((t) => (t.toolArgs ?? []).map((args, i) => ({ name: t.tools[i], args, caller: t.caller })));
+    const connected = calls.find((c) => c.name === "transfer_to_staff" && !isRefusal(String(c.args.callerWords ?? "")));
+    return connected ? `transferred after "${connected.caller}"` : null;
+  }
+};
+
+const toolOnlyOn = (name: string, turnIndex: number): Check => ({
+  name: `calls ${name} only on turn ${turnIndex + 1}`,
+  run: (turns) => {
+    const turn = turns.findIndex((t) => t.tools.includes(name));
+    if (turn === -1) return `${name} never called`;
+    return turn === turnIndex ? null : `${name} first called on turn ${turn + 1}`;
+  }
+});
+
 const base = [brief, noFiller, oneVoicePerTurn, neverAsksLanguage];
 
+/**
+ * A full receptionist call of about three minutes, mirrored in apps/voice/CALL_TEST_SCRIPT.md
+ * for testing by phone. Turn numbers in the checks are 1-based in the labels.
+ */
+export const FULL_CALL: string[] = [
+  "हाँ, मैं सुमंत बोल रहा हूँ।",
+  "आप कैसी हो?",
+  "आप लोग क्या काम करते हो?",
+  "आपका ऑफिस कहाँ है और टाइमिंग क्या है?",
+  "Consultation ki fees kitni hai?",
+  "क्या मेरा स्टूडेंट वीज़ा अप्रूव हो जाएगा?",
+  "नहीं, अभी मैसेज नहीं चाहिए।",
+  "Can I speak to Ramlal?",
+  "Not now.",
+  "I want to book a student services consultation, any day next week is fine.",
+  "The first one works.",
+  "Yes, book it. My name is Sumant.",
+  "ਇੱਕ ਗੱਲ ਹੋਰ, ਆਸਟ੍ਰੇਲੀਆ ਵਿੱਚ ਅੱਜ ਮੌਸਮ ਕਿਵੇਂ ਹੈ?",
+  "Please ask Gundeep to call me back tomorrow evening about my documents.",
+  "Bas itna hi, thank you, bye."
+];
+
 export const SCENARIOS: Scenario[] = [
+  {
+    name: "full 3-minute receptionist call",
+    caller: FULL_CALL,
+    checks: [
+      noFiller,
+      replyMatches(1, /ठीक|अच्छी/, "turn 2: answers 'how are you' like a person"),
+      neverAsksLanguage,
+      replyMatches(2, /[ऀ-ॿ]/, "turn 3: answers a Hindi question in Hindi"),
+      replyAvoids(3, /\b9\s?(AM)?\s?(to|-)\s?5\b|nine (AM )?to five|9 बजे|नौ बजे/i, "turn 4: office hours in the caller's (India) time, not Melbourne's"),
+      replyMatches(4, /110|एक सौ दस|one hundred (and )?ten/i, "turn 5: states the 110 dollar price"),
+      replyAvoids(5, /\b(yes|will be approved|हो जाएगा|ज़रूर|guarantee)\b/i, "turn 6: gives no visa advice or promise"),
+      noToolOn("request_callback", 6),
+      replyMatches(7, /(nobody|no one|not .*ramlal|don.t have)/i, "turn 8: says there is nobody called Ramlal (in English)"),
+      replyAvoids(9, /[ऀ-ॿ]/, "turn 10: answers an English request in English"),
+      neverConnected,
+      noToolOn("create_booking", 9),
+      noToolOn("create_booking", 10),
+      replyMatches(10, /book|confirm|\?/i, "turn 11: reads the time back and asks before booking"),
+      toolOnlyOn("create_booking", 11),
+      replyMatches(12, /[਀-੿]/, "turn 13: answers Punjabi in Punjabi"),
+      noToolOn("check_availability", 12),
+      toolOnlyOn("request_callback", 13),
+      replyAvoids(13, /[ऀ-ॿ]/, "turn 14: answers an English request in English"),
+      toolCalledOn("end_call", 14),
+      replyMatches(14, /\S/, "turn 15: says goodbye before hanging up")
+    ]
+  },
+  {
+    name: "Hindi small talk: answers 'how are you' like a person",
+    caller: ["आप कैसी हो?"],
+    checks: [
+      ...base,
+      replyMatches(0, /ठीक|अच्छी/, "says she is fine"),
+      replyMatches(0, /[ऀ-ॿ]/, "in Hindi")
+    ]
+  },
+  {
+    name: "'not now' after a transfer offer does not transfer",
+    caller: ["Can I speak to Ramlal?", "Not now."],
+    checks: [...base, neverConnected, replyAvoids(1, /stay on the line|connecting you/i, "turn 2: does not announce a transfer")]
+  },
+  {
+    name: "Hindi: 'abhi nahi' after a transfer offer does not transfer",
+    caller: ["क्या मैं रामलाल से बात कर सकता हूँ?", "अभी नहीं।"],
+    checks: [...base, neverConnected, replyMatches(1, /[ऀ-ॿ]/, "turn 2: stays in Hindi")]
+  },
   {
     name: "price question",
     caller: ["Hi, how much is a consultation?"],

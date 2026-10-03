@@ -9,8 +9,9 @@
 import fs from "node:fs";
 import { WebSocket } from "ws";
 import { parseBusinessInfo } from "@recepto/shared";
-import { buildInstructions, greetingInstruction, REALTIME_TOOLS } from "../azure-realtime-bridge.js";
+import { buildInstructions, greetingInstruction, REALTIME_TOOLS, toolLanguageNote } from "../azure-realtime-bridge.js";
 import type { CallSession } from "../call-session.js";
+import { isRefusal } from "../caller-intent.js";
 import { SCENARIOS, type Scenario, type TurnResult } from "./scenarios.js";
 
 function loadEnvFile(file: string | undefined): void {
@@ -92,7 +93,11 @@ const TOOL_RESULTS: Record<string, unknown> = {
 /** Mirrors the bridge: refuse unknown names before the agent promises a transfer. */
 function toolResult(name: string, rawArgs: string): unknown {
   if (name === "transfer_to_staff") {
-    const staffName = (() => { try { return String((JSON.parse(rawArgs) as { staffName?: string }).staffName ?? ""); } catch { return ""; } })();
+    const args = (() => { try { return JSON.parse(rawArgs) as { staffName?: string; callerWords?: string }; } catch { return {}; } })();
+    if (isRefusal(String(args.callerWords ?? ""))) {
+      return { transferring: false, reason: `the caller said no ("${args.callerWords}")`, instruction: "Do not connect anyone and do not say you are connecting. Say no problem in one short line and ask how else you can help. Do not offer a transfer again unless the caller asks." };
+    }
+    const staffName = String(args.staffName ?? "");
     if (staffName && !/gundeep|malhotra/i.test(staffName)) {
       return { transferring: false, reason: `there is no team member matching "${staffName}" who can take a call`, teamMembersYouCanOffer: ["Gundeep Malhotra"], instruction: "Do not say you are connecting anyone. In one short sentence say you cannot connect them to that person, then offer one of teamMembersYouCanOffer by name, or a message for the team." };
     }
@@ -111,6 +116,7 @@ function runScenario(scenario: Scenario): Promise<TurnResult[]> {
     let current: TurnResult = { caller: "", messages: [], tools: [] };
     let rounds = 0;
     let rateLimitRetries = 0;
+    let goodbyeThenEnd = false;
     const timer = setTimeout(() => { ws.close(); reject(new Error(`timeout in "${scenario.name}"`)); }, 240_000);
 
     const send = (event: Record<string, unknown>) => ws.send(JSON.stringify(event));
@@ -154,6 +160,7 @@ function runScenario(scenario: Scenario): Promise<TurnResult[]> {
             if (text) current.messages.push(text);
           }
         }
+        if (goodbyeThenEnd) { turns.push(current); clearTimeout(timer); ws.close(); resolve(turns); return; }
         const calls = output.filter((i) => i.type === "function_call");
         if (calls.length === 0 || ++rounds > 6) { turns.push(current); nextCallerTurn(); return; }
         // The live bridge sends no follow-up response after a transfer or end_call, so the call is over here too.
@@ -162,6 +169,14 @@ function runScenario(scenario: Scenario): Promise<TurnResult[]> {
           current.tools.push(name);
           current.toolArgs?.push((() => { try { return JSON.parse(String(call.arguments ?? "{}")) as Record<string, unknown>; } catch { return {}; } })());
         }
+        const spoke = output.some((item) => item.type === "message");
+        if (results.some(({ name }) => name === "end_call") && !spoke) {
+          // Mirrors the bridge: a silent end_call gets one spoken goodbye before hanging up.
+          goodbyeThenEnd = true;
+          send({ type: "conversation.item.create", item: { type: "message", role: "system", content: [{ type: "input_text", text: "Say one short goodbye now, in the caller's language. Do not call any tool." }] } });
+          send({ type: "response.create", response: { tool_choice: "none" } });
+          return;
+        }
         if (results.some(({ name, result }) => name === "end_call" || (name === "transfer_to_staff" && (result as { transferring?: boolean }).transferring))) {
           turns.push(current);
           clearTimeout(timer); ws.close(); resolve(turns);
@@ -169,6 +184,10 @@ function runScenario(scenario: Scenario): Promise<TurnResult[]> {
         }
         for (const { call, result } of results) {
           send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: call.call_id, output: JSON.stringify(result) } });
+        }
+        if (session.agent.languages.length > 1) {
+          const reported = (() => { try { return (JSON.parse(String(calls.at(-1)?.arguments ?? "{}")) as { callerLanguage?: unknown }).callerLanguage; } catch { return undefined; } })();
+          send({ type: "conversation.item.create", item: { type: "message", role: "system", content: [{ type: "input_text", text: toolLanguageNote(reported) }] } });
         }
         send({ type: "response.create" });
       }

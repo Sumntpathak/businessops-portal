@@ -177,6 +177,20 @@ describe("transfer", () => {
     assert.equal(transferred, false);
   });
 
+  it("blocks the transfer when the caller's own words say no, even if the model went ahead", async () => {
+    let checked = false;
+    const { bridge, sent, callTool, creates } = bridgeWithFakeSocket({ resolveTransfer: async () => { checked = true; return { ok: true }; } });
+    let transferred = false;
+    bridge.onTransferRequested(() => { transferred = true; });
+    await callTool("transfer_to_staff", { staffName: "Gundeep Malhotra", callerWords: "not now" });
+    const output = JSON.parse(String((sent.find((e) => (e.item as { type?: string } | undefined)?.type === "function_call_output")?.item as { output: string }).output));
+    assert.equal(output.transferring, false);
+    assert.match(output.reason, /not now/);
+    assert.equal(checked, false);
+    assert.equal(transferred, false);
+    assert.equal(creates(), 1);
+  });
+
   it("redirects only after the hold line has played", async () => {
     mock.timers.enable({ apis: ["setTimeout", "Date"] });
     try {
@@ -221,10 +235,31 @@ describe("ending the call", () => {
       handle({ type: "response.created" });
       handle(audioDelta(500));
       await callTool("end_call");
-      handle({ type: "response.done", response: { status: "completed", output: [] } });
+      handle({ type: "response.done", response: { status: "completed", output: [{ type: "message" }, { type: "function_call" }] } });
       mock.timers.tick(1099);
       assert.equal(ended, false);
       mock.timers.tick(1);
+      assert.equal(ended, true);
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it("asks for a spoken goodbye first when end_call came without one", async () => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    try {
+      const { bridge, sent, handle, callTool, creates } = bridgeWithFakeSocket();
+      let ended = false;
+      bridge.onEndCall(() => { ended = true; });
+      handle({ type: "response.created" });
+      await callTool("end_call");
+      handle({ type: "response.done", response: { status: "completed", output: [{ type: "function_call" }] } });
+      mock.timers.tick(5000);
+      assert.equal(ended, false);
+      assert.equal(creates(), 1);
+      assert.deepEqual(sent.at(-1), { type: "response.create", response: { tool_choice: "none" } });
+      handle({ type: "response.done", response: { status: "completed", output: [{ type: "message" }] } });
+      mock.timers.tick(0);
       assert.equal(ended, true);
     } finally {
       mock.timers.reset();

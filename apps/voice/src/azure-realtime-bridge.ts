@@ -2,6 +2,7 @@ import { WebSocket } from "ws";
 import { z } from "zod";
 import type { AIBridge, StaffSelector, TranscriptEvent } from "./ai-bridge.js";
 import type { CallSession } from "./call-session.js";
+import { isRefusal } from "./caller-intent.js";
 import { buildInstructions } from "./realtime-instructions.js";
 
 export { buildInstructions };
@@ -53,6 +54,7 @@ export const REALTIME_TOOLS = [
     parameters: {
       type: "object",
       properties: {
+        callerLanguage: { type: "string", description: "The language of the caller's latest sentence: English, Hindi or Punjabi." },
         serviceName: { type: "string", description: "The service as the caller said it (fuzzy matched)." },
         serviceId: { type: "string", description: "UUID of the service, if known from an earlier result." },
         staffName: { type: "string", description: "A team member the caller asked for, if any." },
@@ -71,6 +73,7 @@ export const REALTIME_TOOLS = [
     parameters: {
       type: "object",
       properties: {
+        callerLanguage: { type: "string", description: "The language of the caller's latest sentence: English, Hindi or Punjabi." },
         serviceId: { type: "string", description: "UUID of the service from check_availability." },
         staffId: { type: "string", description: "UUID of the staff member from check_availability, if one was requested." },
         startsAt: { type: "string", description: "Slot start, copied exactly from check_availability." },
@@ -87,6 +90,7 @@ export const REALTIME_TOOLS = [
     parameters: {
       type: "object",
       properties: {
+        callerLanguage: { type: "string", description: "The language of the caller's latest sentence: English, Hindi or Punjabi." },
         reason: { type: "string", description: "One sentence: what the caller wants." },
         preferredTime: { type: "string", description: "When they would like the call back, if they said." }
       },
@@ -96,13 +100,17 @@ export const REALTIME_TOOLS = [
   {
     type: "function",
     name: "transfer_to_staff",
-    description: "Connect the call to a team member when the caller asks to speak to a person. Say the hold line in the same response.",
+    description:
+      "Connect the call to a team member when the caller asks to speak to a person, or says yes to your offer. Never after a no or 'not now'. Say the hold line in the same response.",
     parameters: {
       type: "object",
       properties: {
+        callerLanguage: { type: "string", description: "The language of the caller's latest sentence: English, Hindi or Punjabi." },
+        callerWords: { type: "string", description: "The caller's latest words, exactly as they said them, in their language." },
         staffName: { type: "string", description: "The team member to connect to." },
         staffId: { type: "string", description: "UUID of the team member, if known." }
-      }
+      },
+      required: ["callerWords"]
     }
   },
   {
@@ -150,6 +158,14 @@ const PCMU_BYTES_PER_MS = 8;
 const PLAYBACK_DRAIN_PAD_MS = 600;
 /** Upper bound so a bad estimate can never leave a call hanging. */
 const MAX_PLAYBACK_DRAIN_MS = 10_000;
+
+/** Pins the reply language after a tool result, using the language the model reported with the call. */
+export function toolLanguageNote(callerLanguage: unknown): string {
+  const named = typeof callerLanguage === "string" && callerLanguage.trim() ? callerLanguage.trim() : undefined;
+  return named
+    ? `The tool result above is data, not a language cue. The caller is speaking ${named}: reply in ${named}.`
+    : "The tool result above is data, not a language cue. Reply in the language of the caller's latest sentence.";
+}
 
 /** Business words callers are likely to say, so they are spelled right in the call history. */
 export function transcriptionVocabulary(session: CallSession): string[] {
@@ -289,6 +305,8 @@ export class AzureRealtimeBridge implements AIBridge {
   /** A tool result is waiting for the current response to finish before the model speaks about it. */
   private followUpPending = false;
   private endCallRequested = false;
+  /** end_call came without a spoken goodbye: hang up after the goodbye we asked for. */
+  private hangUpAfterNextResponse = false;
   private pendingTransfer?: StaffSelector;
   private rateLimitStreak = 0;
   /** Epoch ms at which everything sent to the phone leg so far will have finished playing. */
@@ -532,9 +550,21 @@ export class AzureRealtimeBridge implements AIBridge {
     }
 
     // Hang up or redirect only once the goodbye / hold line has actually played to the caller.
+    if (this.hangUpAfterNextResponse) {
+      this.hangUpAfterNextResponse = false;
+      this.afterPlayback(() => this.endCall?.());
+    }
     if (this.endCallRequested) {
       this.endCallRequested = false;
-      this.afterPlayback(() => this.endCall?.());
+      if ((response?.output ?? []).some((item) => item.type === "message")) {
+        this.afterPlayback(() => this.endCall?.());
+      } else {
+        // Hanging up in silence feels like a dropped call.
+        this.hangUpAfterNextResponse = true;
+        this.addSystemNote("Say one short goodbye now, in the caller's language. Do not call any tool.");
+        this.send({ type: "response.create", response: { tool_choice: "none" } });
+        this.activeResponse = true;
+      }
     }
     if (this.pendingTransfer) {
       const selector = this.pendingTransfer;
@@ -584,6 +614,18 @@ export class AzureRealtimeBridge implements AIBridge {
         staffId: typeof input.staffId === "string" ? input.staffId : undefined,
         staffName: typeof input.staffName === "string" ? input.staffName : undefined
       };
+      const callerWords = typeof input.callerWords === "string" ? input.callerWords : "";
+      if (isRefusal(callerWords)) {
+        this.sendToolOutput(callId, {
+          transferring: false,
+          reason: `the caller said no ("${callerWords}")`,
+          instruction: "Do not connect anyone and do not say you are connecting. Say no problem in one short line and ask how else you can help. Do not offer a transfer again unless the caller asks."
+        });
+        this.transcript?.({ role: "tool", content: `transfer_to_staff -> blocked: caller said "${callerWords}"`, at: new Date() });
+        this.log("info", { callerWords }, "Blocked a transfer: the caller said no");
+        this.requestResponse();
+        return;
+      }
       const check = (await this.options.resolveTransfer?.(selector)) ?? { ok: true as const };
       if (!check.ok) {
         this.sendToolOutput(callId, {
@@ -618,6 +660,10 @@ export class AzureRealtimeBridge implements AIBridge {
       this.log("error", { tool: name, error: message }, "Realtime tool call failed");
     }
     this.sendToolOutput(callId, output);
+    // Tool results are English JSON, which pulls the next reply into English or Hindi by recency.
+    if ((this.session?.agent.languages.length ?? 0) > 1) {
+      this.addSystemNote(toolLanguageNote(input.callerLanguage));
+    }
     this.requestResponse();
   }
 }

@@ -52,7 +52,8 @@ describe("realtime instructions", () => {
   });
 
   it("follows the caller's language", () => {
-    assert.match(text, /Reply in the language the caller is speaking \(English, Hindi, Punjabi\), and switch whenever they switch/);
+    assert.match(text, /Reply in the language of the caller's latest full sentence \(English, Hindi, Punjabi\)/);
+    assert.match(text, /A short reply \('ok', 'not now', 'yes', 'haan'\) keeps the language/);
     assert.match(text, /Hindi forms for you: सकती हूँ/);
     assert.match(text, /You are Riya, the woman/);
   });
@@ -64,7 +65,7 @@ describe("realtime instructions", () => {
     assert.match(text, /names someone who is NOT in TEAM, never connect them/);
     assert.match(text, /nobody called Ramlal here\. Shall I connect you with Gundeep Malhotra\?/);
     assert.match(text, /say 'I'll connect you with \[name\] now/);
-    assert.match(text, /say a short goodbye and call end_call/);
+    assert.match(text, /say a short goodbye out loud and call end_call/);
   });
 
   it("holds every business fact in one place", () => {
