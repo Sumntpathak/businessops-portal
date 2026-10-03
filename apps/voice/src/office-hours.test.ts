@@ -60,3 +60,31 @@ describe("office hours", () => {
     assert.equal(result.reason, "fully_booked");
   });
 });
+
+describe("weeklyHoursForCaller", () => {
+  const hours: BusinessHour[] = [0, 1, 2, 3, 4, 5, 6].map((weekday) => ({
+    weekday,
+    opens: "09:00:00",
+    closes: "17:00:00",
+    closed: weekday === 0 || weekday === 6
+  }));
+
+  it("says each open day in the caller's own time, honouring daylight saving", async () => {
+    const { weeklyHoursForCaller } = await import("./office-hours.js");
+    // Melbourne is UTC+11 (daylight saving) in January, India is UTC+5:30.
+    const summer = weeklyHoursForCaller(hours, "Australia/Melbourne", "Asia/Kolkata", new Date("2026-01-14T00:00:00Z"));
+    assert.match(summer, /^- Monday 3:30 AM to 11:30 AM$/m);
+    // Melbourne is UTC+10 in July.
+    const winter = weeklyHoursForCaller(hours, "Australia/Melbourne", "Asia/Kolkata", new Date("2026-07-14T00:00:00Z"));
+    assert.match(winter, /^- Monday 4:30 AM to 12:30 PM$/m);
+    assert.match(winter, /^- Saturday: closed$/m);
+    assert.match(winter, /Only if the caller asks for Australia\/Melbourne time:/);
+    assert.match(winter, /^ {2}- Monday: 9 AM to 5 PM$/m);
+  });
+
+  it("shows the caller's weekday when the hours fall on a different day for them", async () => {
+    const { weeklyHoursForCaller } = await import("./office-hours.js");
+    const text = weeklyHoursForCaller(hours, "Australia/Melbourne", "America/Los_Angeles", new Date("2026-07-14T00:00:00Z"));
+    assert.match(text, /^- Sunday 4 PM to Monday 12 AM$/m);
+  });
+});

@@ -7,6 +7,11 @@ export interface BusinessHour {
   closed: boolean;
 }
 
+export interface TeamMember {
+  name: string;
+  handles: string;
+}
+
 export interface CallSession {
   callId: string;
   providerCallSid: string;
@@ -47,8 +52,8 @@ export interface CallSession {
   businessHours?: BusinessHour[];
   /** False when no active staff member has a phone number, i.e. a live transfer cannot succeed. */
   transferAvailable?: boolean;
-  /** Names of active staff who can actually receive a transfer (have a phone, not a business line). */
-  transferRoster?: string[];
+  /** Active staff who can actually receive a transfer (have a phone, not a business line), with what they handle. */
+  transferRoster?: TeamMember[];
   memories: Array<{
     id: string;
     kind: "fact" | "preference" | "summary";

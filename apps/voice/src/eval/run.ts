@@ -76,7 +76,7 @@ const session: CallSession = {
   ],
   businessHours: [0, 1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, opens: "09:00:00", closes: "17:00:00", closed: weekday === 0 || weekday === 6 })),
   transferAvailable: true,
-  transferRoster: ["Gundeep Malhotra"],
+  transferRoster: [{ name: "Gundeep Malhotra", handles: "visa consultations" }],
   memories: [],
   startedAt: new Date().toISOString()
 };

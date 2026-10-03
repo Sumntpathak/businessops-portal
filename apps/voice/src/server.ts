@@ -21,7 +21,7 @@ import {
   type TransferCheck
 } from "./azure-realtime-bridge.js";
 import { GeminiLiveBridge } from "./gemini-live-bridge.js";
-import type { BusinessHour, CallSession } from "./call-session.js";
+import type { BusinessHour, CallSession, TeamMember } from "./call-session.js";
 import { deriveCallerGeo } from "./caller-profile.js";
 import { createCallSummarizer } from "./call-summary-worker.js";
 import { VoiceLatencyTracker } from "./latency-tracker.js";
@@ -108,7 +108,7 @@ function makeTransferResolver(getSession: () => CallSession | undefined) {
     const callSession = getSession();
     if (!callSession) return { ok: true };
     const meta = await getCachedTenantMeta(callSession.tenantId);
-    const available = meta.transferRoster;
+    const available = meta.transferRoster.map((member) => member.name);
     const named = Boolean(selector.staffId || selector.staffName?.trim());
     const match = await toolRepository.findStaffPhoneForTransfer(callSession.tenantId, selector);
 
@@ -249,7 +249,7 @@ interface CachedTenantMeta {
   }[];
   businessHours: BusinessHour[];
   transferAvailable: boolean;
-  transferRoster: string[];
+  transferRoster: TeamMember[];
 }
 
 const CACHE_TTL_MS = 60_000;
@@ -351,7 +351,7 @@ async function getCachedTenantMeta(tenantId: string): Promise<CachedTenantMeta> 
       .from(schema.businessHours)
       .where(scoped.where(schema.businessHours)),
     db
-      .select({ name: schema.staff.name, phoneE164: schema.staff.phoneE164 })
+      .select({ name: schema.staff.name, phoneE164: schema.staff.phoneE164, handles: schema.staff.handles })
       .from(schema.staff)
       .where(
         scoped.where(
@@ -373,7 +373,7 @@ async function getCachedTenantMeta(tenantId: string): Promise<CachedTenantMeta> 
 
   const transferRoster = transferStaff
     .filter((member) => member.phoneE164 !== null && !ownLines.some((line) => line.e164 === member.phoneE164))
-    .map((member) => member.name);
+    .map((member) => ({ name: member.name, handles: member.handles }));
 
   const data: CachedTenantMeta = {
     timezone: tenant.timezone,

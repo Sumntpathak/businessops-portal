@@ -27,224 +27,160 @@ const session: CallSession = {
   startedAt: "2026-07-06T04:00:00.000Z"
 };
 
-describe("realtime instructions: structure and context", () => {
-  it("uses labelled sections and embeds the business profile, services and call context", () => {
-    const text = buildInstructions({ ...session, agent: { ...session.agent, agentMd: "# Holistic AGENT-MD-MARKER" } });
-    for (const heading of ["# ROLE", "# BUSINESS PROFILE", "# SERVICES & PRICING", "# TONE", "# LENGTH", "# TURN-TAKING", "# PREAMBLES", "# LANGUAGE", "# UNCLEAR AUDIO", "# BOOKING", "# TOOLS", "# TRANSFER TO A PERSON"]) {
-      assert.ok(text.includes(heading), heading);
-    }
-    assert.match(text, /AGENT-MD-MARKER/);
-    assert.match(text, /Consultation \(30 min\): 110\.00 dollars/);
-  });
+const info = {
+  receptionistName: "Riya",
+  receptionistGender: "female" as const,
+  about: "Melbourne migration advisers.",
+  email: "enquiry@example.com",
+  website: "",
+  offices: [{ name: "Carnegie", address: "23 Koornang Road", phone: "+61 3 9999 7994", notes: "" }],
+  faqs: [{ question: "Do you guarantee approval?", answer: "No one can guarantee a visa outcome." }],
+  outOfScope: "visa eligibility and timelines"
+};
 
-  it("shows caller-local geo and distinguishes filled from missing intake fields", () => {
+describe("realtime instructions: five jobs and one source of truth", () => {
+  it("lists exactly the five receptionist jobs and declines everything else", () => {
     const text = buildInstructions(session);
-    assert.match(text, /Asia\/Kolkata/);
-    assert.match(text, /service_interest.*Student visa/);
-    assert.match(text, /target_date.*not yet known/);
-    assert.match(text, /at most two missing key-priority fields/);
+    assert.match(text, /# YOUR FIVE JOBS \(nothing else\)/);
+    for (const job of ["1. Answer questions", "2. Tell callers the office", "3. Connect callers", "4. Book, change or cancel", "5. Take a callback"]) {
+      assert.ok(text.includes(job), job);
+    }
+    assert.match(text, /Anything else: decline politely in one short line/);
+    assert.match(text, /personal legal, migration, medical or financial advice/);
   });
 
-  it("tells the agent not to invent a price when a service has none set", () => {
-    const text = buildInstructions({ ...session, services: [{ name: "Mystery Service", durationMinutes: 30, price: null }] });
-    assert.match(text, /Mystery Service \(30 min\): price not set — do not guess a number/);
-  });
-
-  it("gives office hours and the live open/closed status", () => {
+  it("puts every business fact in one section that is the only truth", () => {
     const text = buildInstructions({
       ...session,
+      agent: { ...session.agent, agentMd: "# Holistic AGENT-MD-MARKER", businessInfo: info },
       businessHours: [0, 1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, opens: "09:00:00", closes: "17:00:00", closed: weekday === 0 }))
     });
-    assert.match(text, /# OFFICE HOURS/);
-    assert.match(text, /Monday: 9 AM to 5 PM/);
-    assert.match(text, /Sunday: closed/);
-    assert.match(text, /RIGHT NOW: The office/);
-    assert.match(text, /Never just say 'nothing's available' without the reason/);
-  });
-});
-
-describe("realtime instructions: brevity and turn-taking", () => {
-  const text = buildInstructions(session);
-
-  it("makes brevity the top rule: match the caller, two short sentences, answer then stop", () => {
-    assert.match(text, /Match the caller/);
-    assert.match(text, /Hard limit: two short sentences/);
-    assert.match(text, /No single sentence longer than 20 words/);
-    assert.match(text, /Answer only what was asked, then stop/);
+    const facts = text.slice(text.indexOf("# BUSINESS FACTS"), text.indexOf("# LANGUAGE"));
+    assert.match(facts, /the ONLY things you know/);
+    assert.match(facts, /Do not use your own general knowledge/);
+    assert.match(facts, /Office Carnegie: 23 Koornang Road; phone \+61 3 9999 7994/);
+    assert.match(facts, /Q: Do you guarantee approval\? A: No one can guarantee/);
+    assert.match(facts, /Consultation \(30 min\): 110\.00 dollars/);
+    assert.match(facts, /caller is in Asia\/Kolkata; already converted/);
+    assert.match(facts, /^- Monday \d{1,2}:30 AM to \d{1,2}:30 (AM|PM)$/m);
+    assert.match(facts, /Sunday: closed/);
+    assert.match(facts, /RIGHT NOW \(business time\): The office/);
+    assert.match(facts, /AGENT-MD-MARKER/);
+    assert.match(text, /or discuss visa eligibility and timelines\./);
+    assert.equal(text.match(/# BUSINESS/g)?.length, 1);
   });
 
-  it("bans filler openers and re-introductions", () => {
-    assert.match(text, /never say 'Great question', 'No worries'/);
-    assert.match(text, /Do not introduce yourself or the business again/);
+  it("gives plain business-time hours when the caller is in the business's time zone", () => {
+    const text = buildInstructions({
+      ...session,
+      caller: { ...session.caller, timezone: "Australia/Melbourne" },
+      businessHours: [{ weekday: 1, opens: "09:00:00", closes: "17:00:00", closed: false }]
+    });
+    assert.match(text, /OFFICE HOURS \(business local time\):\n- Monday: 9 AM to 5 PM/);
+    assert.doesNotMatch(text, /Only if the caller asks for/);
   });
 
-  it("allows preambles only before tool calls and never announcing what it is about to say", () => {
-    assert.match(text, /Say a preamble ONLY right before a tool call/);
-    assert.match(text, /Never announce what you are about to say or do/);
-  });
-
-  it("handles interruptions: no resuming a cut-off answer, no repeating after a bare 'okay'", () => {
-    assert.match(text, /do not resume or repeat the cut-off answer/);
-    assert.match(text, /only acknowledges \('okay', 'yeah', 'hmm'\)/);
-    assert.match(text, /Never reply twice in a row/);
-  });
-
-  it("ignores noise and unclear audio instead of guessing, and never treats it as a yes", () => {
-    assert.match(text, /Ignore single sounds, fragments, filler/);
-    assert.match(text, /Noise or unclear audio is never a yes/);
-    assert.match(text, /If it is unclear twice in a row, offer to have the team call them back/);
-  });
-
-  it("includes short sample replies to anchor length and style", () => {
-    assert.match(text, /# SAMPLE REPLIES/);
-    assert.match(text, /Caller just says hi: 'Hi, how can I help\?'/);
+  it("never invents a price that is not set", () => {
+    const text = buildInstructions({ ...session, services: [{ name: "Mystery Service", durationMinutes: 30, price: null }] });
+    assert.match(text, /Mystery Service \(30 min\): price not set, the team will confirm it/);
   });
 });
 
 describe("realtime instructions: language", () => {
-  it("speaks the first language by default and never asks which language", () => {
-    const text = buildInstructions({ ...session, agent: { ...session.agent, languages: ["English", "Hindi"] } });
-    assert.match(text, /Speak English from the first word\. Do not ask which language/);
-    assert.match(text, /A single word, a filler sound or a short phrase is NOT a reason to switch/);
-    assert.match(text, /Only use these languages: English, Hindi/);
+  const text = buildInstructions({ ...session, agent: { ...session.agent, languages: ["English", "Hindi", "Punjabi"], businessInfo: info } });
+
+  it("always replies in the language the caller is speaking", () => {
+    assert.match(text, /Always reply in the language the caller is speaking NOW/);
+    assert.match(text, /If they speak Hindi, reply in Hindi; Punjabi, reply in Punjabi; English, reply in English/);
+    assert.match(text, /A one-word reply .* does not change the language/);
+    assert.match(text, /Tool results are English data\. They never change your language/);
+    assert.match(text, /Never ask which language/);
+  });
+
+  it("keeps the persona's gender forms and native-script samples", () => {
+    assert.match(text, /You are Riya, the woman/);
     assert.match(text, /In Hindi always use the female forms: सकती हूँ/);
-    assert.doesNotMatch(text, /Which language would you like to continue in/);
+    assert.match(text, /In Punjabi always use the female forms: ਸਕਦੀ ਹਾਂ/);
+    assert.match(text, /Punjabi: 'ਜੀ, ਦੱਸੋ/);
+  });
+
+  it("uses male forms for a male receptionist", () => {
+    const male = buildInstructions({
+      ...session,
+      agent: { ...session.agent, languages: ["English", "Hindi"], businessInfo: { ...info, receptionistGender: "male" } }
+    });
+    assert.match(male, /In Hindi always use the male forms: सकता हूँ/);
+    assert.doesNotMatch(male, /सकती हूँ/);
   });
 
   it("locks to a single language when only one is configured", () => {
-    const text = buildInstructions({ ...session, agent: { ...session.agent, languages: ["French"] } });
-    assert.match(text, /Speak French only/);
+    assert.match(buildInstructions({ ...session, agent: { ...session.agent, languages: ["French"] } }), /Speak French only/);
   });
 });
 
-describe("realtime instructions: facts, names and booking", () => {
+describe("realtime instructions: connecting to the right person", () => {
+  const roster = [
+    { name: "Gundeep Malhotra", handles: "student and partner visas" },
+    { name: "Asha Rao", handles: "" }
+  ];
+
+  it("lists who handles what and routes by role", () => {
+    const text = buildInstructions({ ...session, transferRoster: roster });
+    assert.match(text, /- Gundeep Malhotra: student and partner visas/);
+    assert.match(text, /- Asha Rao: general enquiries/);
+    assert.match(text, /the person whose role matches what the caller needs/);
+  });
+
+  it("transfers straight away on a clear request with the hold line, and treats 'No, [name]' as no", () => {
+    const text = buildInstructions({ ...session, transferRoster: roster });
+    assert.match(text, /'I'll connect you with \[name\] now\. Please stay on the line, it may ring for a few seconds\.' and call transfer_to_staff/);
+    assert.match(text, /Asking to book is NOT asking for a person/);
+    assert.match(text, /'No', 'No, \[name\]' or just a name after you offered someone means NO/);
+  });
+
+  it("never promises a transfer when nobody can take a call", () => {
+    const text = buildInstructions({ ...session, transferAvailable: false });
+    assert.match(text, /LIVE TRANSFER IS NOT AVAILABLE/);
+    assert.match(text, /NEVER call transfer_to_staff/);
+    assert.doesNotMatch(buildInstructions({ ...session, transferRoster: roster }), /LIVE TRANSFER IS NOT AVAILABLE/);
+  });
+});
+
+describe("realtime instructions: booking, callbacks, names and ending", () => {
   const text = buildInstructions(session);
 
-  it("states prices up front and requires the price before any booking tool", () => {
-    assert.match(text, /State the exact price when asked/);
-    assert.match(text, /Never call check_availability or create_booking before the caller has heard the price/);
+  it("books only on request, from real slots, after a recap and a yes", () => {
+    assert.match(text, /Only when the caller asks to book\. Never sell/);
+    assert.match(text, /say its price, then check_availability/);
+    assert.match(text, /Offer only times from the latest check_availability/);
+    assert.match(text, /Pass startsAt to create_booking exactly as returned/);
+    assert.match(text, /Say it is booked only after create_booking succeeded/);
   });
 
-  it("forbids guessing facts and gives no medical or personal migration advice", () => {
-    assert.match(text, /GST, payment methods, refunds, visa outcomes, timelines/);
-    assert.match(text, /personal legal, migration, medical or financial advice/);
-    assert.match(text, /Your own general knowledge is not a source/);
-    assert.match(text, /For medical or health talk give no advice/);
-  });
-
-  it("confirms names letter by letter before saving, and never uses a saved name unconfirmed", () => {
-    assert.match(text, /read it back letter by letter/);
-    assert.match(text, /Save it with update_caller_profile only after a clear yes/);
-    assert.match(text, /Never use a saved name before the caller has confirmed it/);
-  });
-
-  it("speaks caller-local times only and explains closing time instead of repeating a slot", () => {
-    assert.match(text, /Speak only callerLocalTime/);
-    assert.match(text, /Never convert times yourself/);
-    assert.match(text, /call check_availability again with after set/);
-    assert.match(text, /Do not offer the same slot again/);
-    assert.match(text, /Only offer times listed in the latest check_availability result/);
-  });
-
-  it("searches availability as soon as a day is known, and only says booked after create_booking succeeded", () => {
-    assert.match(text, /call check_availability right away/);
-    assert.match(text, /only after create_booking succeeded in this call/);
-    assert.match(text, /The service you recap is the service you book/);
-  });
-
-  it("never sells, and offers a booking at most once", () => {
-    assert.match(text, /Never sell\. Do not suggest a consultation or booking unless the caller asks/);
-    assert.match(text, /Offer it at most once/);
-    assert.match(text, /never bring it up again/);
-  });
-
-  it("ends the call on goodbye and never mid-request", () => {
-    assert.match(text, /say one short goodbye AND call end_call in that same response/);
-    assert.match(text, /Never say goodbye without calling end_call/);
-    assert.match(text, /A goodbye outranks everything else/);
-    assert.match(text, /Never end the call mid-request or because of a pause/);
-  });
-});
-
-describe("realtime instructions: transfer", () => {
-  it("transfers straight away when the caller asks for a consultant, naming who it dials", () => {
-    const text = buildInstructions({ ...session, transferRoster: ["Gundeep Malhotra"] });
-    assert.match(text, /clearly asks to speak to a consultant, a person, the team, or a listed team member: transfer straight away, with no confirmation question/);
-    assert.match(text, /'I'll connect you with \[name\] now\. Please stay on the line, it may ring for a few seconds/);
-    assert.match(text, /call transfer_to_staff with staffName set to that same \[name\]/);
-    assert.match(text, /otherwise Gundeep Malhotra\./);
-    assert.match(text, /Asking to book a consultation is NOT asking to speak to someone/);
-    assert.match(text, /'No, \[name\]', 'no' or a name on its own after you offered someone means NO/);
-  });
-
-  it("needs a clear yes only when the agent suggests it or the named person is not on the team", () => {
-    const text = buildInstructions({ ...session, transferRoster: ["Gundeep Malhotra"] });
-    assert.match(text, /Team members who can take a transfer: Gundeep Malhotra\. Nobody else can\./);
-    assert.match(text, /NOT on that list: say in one sentence that you don't have anyone by that name, then ask once: 'Would you like me to connect you with Gundeep Malhotra instead\?'/);
-    assert.match(text, /If YOU suggest a transfer \(the caller did not ask\), ask once and transfer only after a clear yes/);
-    assert.match(text, /If transfer_to_staff comes back with transferring false/);
-  });
-
-  it("takes a message only with consent and never re-asks about connecting after a no", () => {
-    const text = buildInstructions(session);
+  it("takes a callback only with consent", () => {
     assert.match(text, /Call request_callback only when the caller asks for a call back or says yes to leaving a message/);
-    assert.match(text, /If they say no \('nahi', 'no need'\), never take one/);
-    assert.match(text, /On a no, do not ask about connecting again unless the caller asks for a person/);
   });
 
-  it("budgets every reply", () => {
-    const text = buildInstructions(session);
-    assert.match(text, /REPLY BUDGET in words\. Never go over it/);
+  it("confirms names letter by letter and never uses a saved name unconfirmed", () => {
+    assert.match(text, /read it back letter by letter/);
+    assert.match(text, /Use the name only after they say yes/);
+    assert.match(text, /Never ask for the phone number/);
   });
 
-  it("tells the agent not to promise a transfer when no staff phone exists", () => {
-    const unavailable = buildInstructions({ ...session, transferAvailable: false });
-    assert.match(unavailable, /LIVE TRANSFER IS NOT AVAILABLE/);
-    assert.match(unavailable, /NEVER call transfer_to_staff/);
-    assert.doesNotMatch(unavailable, /Would you like me to connect you to a team member/);
-    assert.doesNotMatch(buildInstructions({ ...session, transferAvailable: true }), /LIVE TRANSFER IS NOT AVAILABLE/);
-    assert.doesNotMatch(buildInstructions(session), /LIVE TRANSFER IS NOT AVAILABLE/);
-  });
-});
-
-describe("realtime instructions: business details and persona", () => {
-  const info = {
-    receptionistName: "Riya",
-    receptionistGender: "female" as const,
-    about: "Melbourne migration advisers.",
-    email: "enquiry@example.com",
-    website: "",
-    offices: [{ name: "Carnegie", address: "23 Koornang Road", phone: "+61 3 9999 7994", notes: "" }],
-    faqs: [{ question: "Do you guarantee approval?", answer: "No one can guarantee a visa outcome." }],
-    outOfScope: "visa eligibility and timelines"
-  };
-
-  it("renders offices, FAQs and out-of-scope topics as the only facts", () => {
-    const text = buildInstructions({ ...session, agent: { ...session.agent, businessInfo: info } });
-    assert.match(text, /# BUSINESS DETAILS/);
-    assert.match(text, /Office Carnegie: 23 Koornang Road; phone \+61 3 9999 7994/);
-    assert.match(text, /Q: Do you guarantee approval\? A: No one can guarantee/);
-    assert.match(text, /Never discuss: visa eligibility and timelines\./);
-    assert.match(text, /You are Riya, a woman/);
+  it("keeps replies short and answers the latest words", () => {
+    assert.match(text, /One short sentence; two at most/);
+    assert.match(text, /Always answer the caller's LATEST words/);
+    assert.match(text, /Noise, a cough or unclear audio is never an answer/);
   });
 
-  it("works with no business details entered", () => {
-    assert.match(buildInstructions(session), /none entered yet/);
+  it("hangs up with end_call after a goodbye, never mid-request", () => {
+    assert.match(text, /one short goodbye AND call end_call in the same response/);
+    assert.match(text, /Never end the call mid-request/);
   });
 
-  it("keeps a male persona's Hindi and Punjabi forms and native-script samples", () => {
-    const text = buildInstructions({
-      ...session,
-      agent: { ...session.agent, languages: ["English", "Hindi", "Punjabi"], businessInfo: { ...info, receptionistGender: "male" } }
-    });
-    assert.match(text, /You are Riya, a man/);
-    assert.match(text, /In Hindi always use the male forms: सकता हूँ/);
-    assert.match(text, /In Punjabi always use the male forms: ਸਕਦਾ ਹਾਂ/);
-    assert.match(text, /Punjabi, caller says hi: .*ਸਕਦਾ ਹਾਂ/);
-    assert.doesNotMatch(text, /सकती हूँ/);
-  });
-
-  it("answers the latest question, not an earlier one", () => {
-    assert.match(buildInstructions(session), /Always answer the caller's LATEST words/);
+  it("includes the caller's profile and local time", () => {
+    assert.match(text, /Asia\/Kolkata/);
+    assert.match(text, /service_interest.*Student visa/);
+    assert.match(text, /target_date.*not yet known/);
   });
 });

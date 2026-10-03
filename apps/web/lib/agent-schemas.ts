@@ -34,6 +34,7 @@ export const staffInputSchema = z.object({
     .nullable(),
   isRegisteredAgent: z.boolean(),
   credentialLabel: z.string().trim().max(120),
+  handles: z.string().trim().max(200).default(""),
   active: z.boolean()
 });
 

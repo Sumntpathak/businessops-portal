@@ -302,7 +302,7 @@ export function transcriptionVocabulary(session: CallSession): string[] {
     info?.receptionistName ?? "",
     ...(info?.offices ?? []).map((office) => office.name),
     ...session.services.map((service) => service.name),
-    ...(session.transferRoster ?? [])
+    ...(session.transferRoster ?? []).map((member) => member.name)
   ].map((word) => word.trim()).filter(Boolean);
   return [...new Set(words)].slice(0, 30);
 }

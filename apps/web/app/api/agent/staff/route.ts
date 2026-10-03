@@ -61,6 +61,7 @@ async function saveStaff(request: NextRequest) {
         phoneE164: member.phoneE164,
         isRegisteredAgent: member.isRegisteredAgent,
         credentialLabel: member.credentialLabel,
+        handles: member.handles,
         active: member.active,
         updatedAt: new Date()
       };

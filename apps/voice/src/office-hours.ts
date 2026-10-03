@@ -1,4 +1,5 @@
 import type { BusinessHour } from "./call-session.js";
+import { addDaysIso, zonedTimeToUtc } from "./slot-selection.js";
 
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
@@ -74,6 +75,55 @@ export function weeklyHoursLines(hours: BusinessHour[]): string {
         : `- ${WEEKDAYS[row.weekday]}: ${spokenTime(row.opens)} to ${spokenTime(row.closes)}`
     )
     .join("\n");
+}
+
+function zonedLabel(at: Date, timeZone: string): { weekday: string; time: string } {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", { timeZone, weekday: "long", hour: "numeric", minute: "2-digit", hour12: true })
+      .formatToParts(at)
+      .map((part) => [part.type, part.value])
+  );
+  const minutes = parts.minute === "00" ? "" : `:${parts.minute}`;
+  return { weekday: parts.weekday ?? "", time: `${parts.hour}${minutes} ${parts.dayPeriod}` };
+}
+
+/**
+ * The weekly hours said in the caller's own time, worked out for the coming week so
+ * daylight saving on either side is right. The model must never convert times itself.
+ */
+export function weeklyHoursForCaller(
+  hours: BusinessHour[],
+  businessTimezone: string,
+  callerTimezone: string,
+  at = new Date()
+): string {
+  if (hours.length === 0) return "- Office hours are not configured.";
+  const today = localNow(businessTimezone, at);
+  const lines: Array<{ weekday: number; line: string }> = [];
+  for (let offset = 0; offset < 7; offset += 1) {
+    const date = addDaysIso(today.date, offset);
+    const weekday = (today.weekday + offset) % 7;
+    const row = hoursFor(hours, weekday);
+    if (!row) continue;
+    if (row.closed) {
+      lines.push({ weekday, line: `- ${WEEKDAYS[weekday]}: closed` });
+      continue;
+    }
+    const opens = zonedLabel(zonedTimeToUtc(date, row.opens, businessTimezone), callerTimezone);
+    const closes = zonedLabel(zonedTimeToUtc(date, row.closes, businessTimezone), callerTimezone);
+    const callerSide = opens.weekday === closes.weekday
+      ? `${opens.weekday} ${opens.time} to ${closes.time}`
+      : `${opens.weekday} ${opens.time} to ${closes.weekday} ${closes.time}`;
+    lines.push({
+      weekday,
+      line: `- ${callerSide}`
+    });
+  }
+  return [
+    ...lines.sort((a, b) => a.weekday - b.weekday).map((entry) => entry.line),
+    `Only if the caller asks for ${businessTimezone} time:`,
+    weeklyHoursLines(hours).replace(/^- /gm, "  - ")
+  ].join("\n");
 }
 
 export function officeStatusNow(hours: BusinessHour[], timezone: string, at = new Date()): string {

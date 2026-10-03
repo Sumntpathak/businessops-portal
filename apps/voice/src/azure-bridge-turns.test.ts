@@ -224,7 +224,7 @@ describe("transcription vocabulary", () => {
     const vocab = transcriptionVocabulary({
       ...session,
       services: [{ name: "Student Services Consultation", durationMinutes: 30, price: "110" }],
-      transferRoster: ["Gundeep Malhotra"],
+      transferRoster: [{ name: "Gundeep Malhotra", handles: "visa consultations" }],
       agent: { ...session.agent, businessInfo: { receptionistName: "Riya", receptionistGender: "female", about: "", email: "", website: "", offices: [{ name: "Carnegie", address: "", phone: "", notes: "" }], faqs: [], outOfScope: "" } }
     });
     assert.deepEqual(vocab, ["Riya", "Carnegie", "Student Services Consultation", "Gundeep Malhotra"]);

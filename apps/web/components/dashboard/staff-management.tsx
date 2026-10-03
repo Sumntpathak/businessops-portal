@@ -10,6 +10,7 @@ interface StaffMember {
   phoneE164: string | null;
   isRegisteredAgent: boolean;
   credentialLabel: string;
+  handles: string;
   active: boolean;
 }
 
@@ -72,7 +73,7 @@ export function StaffManagement() {
               onClick={() =>
                 setStaff((current) => [
                   ...current,
-                  { name: "", phoneE164: null, isRegisteredAgent: false, credentialLabel: "", active: true }
+                  { name: "", phoneE164: null, isRegisteredAgent: false, credentialLabel: "", handles: "", active: true }
                 ])
               }
             >
@@ -83,7 +84,8 @@ export function StaffManagement() {
         }
       >
         <p className="mt-2 text-sm text-muted-foreground">
-          Staff the voice agent can book callers with. Leave this empty to have every booking
+          Staff the voice agent can book callers with. Fill in what each person handles so the
+          receptionist puts callers through to the right one. Leave this empty to have every booking
           auto-assigned without naming a specific person.
         </p>
       </PageHeader>
@@ -105,6 +107,12 @@ export function StaffManagement() {
                   onChange={(event) => updateStaff(index, { name: event.target.value })}
                   placeholder="Staff name"
                   className="h-10 rounded-md border bg-background px-3 text-sm"
+                />
+                <input
+                  value={member.handles ?? ""}
+                  onChange={(event) => updateStaff(index, { handles: event.target.value })}
+                  placeholder="Handles, e.g. student and partner visas"
+                  className="h-10 rounded-md border bg-background px-3 text-sm md:col-span-5 md:order-last"
                 />
                 <input
                   value={member.phoneE164 ?? ""}

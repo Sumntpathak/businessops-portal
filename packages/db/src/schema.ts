@@ -393,6 +393,8 @@ export const staff = pgTable(
     // Free text so the credential this flag represents stays business-specific
     // (e.g. "MARA registered") rather than hardcoding one industry's term.
     credentialLabel: text("credential_label").notNull().default(""),
+    // What callers should be put through to this person for, e.g. "student and partner visas".
+    handles: text("handles").notNull().default(""),
     active: boolean("active").notNull().default(true),
     ...auditColumns()
   },
