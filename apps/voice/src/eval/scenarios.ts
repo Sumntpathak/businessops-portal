@@ -134,6 +134,16 @@ export const SCENARIOS: Scenario[] = [
     ]
   },
   {
+    name: "Hindi: asks for a person who is not on the team",
+    caller: ["क्या मैं रामलाल से बात कर सकता हूँ?"],
+    checks: [
+      ...base,
+      toolNeverCalled("transfer_to_staff"),
+      replyMatches(0, /[ऀ-ॿ]/, "answers in Hindi"),
+      replyMatches(0, /(नहीं|कोई नहीं)/, "says there is nobody by that name")
+    ]
+  },
+  {
     name: "asks for a person who is not on the team",
     caller: ["Can you transfer my call to Ramlal?"],
     checks: [

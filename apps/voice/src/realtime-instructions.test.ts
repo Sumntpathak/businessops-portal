@@ -61,7 +61,9 @@ describe("realtime instructions", () => {
     assert.match(text, /When the caller picks a time, do not book yet: read it back with the price/);
     assert.match(text, /Call create_booking once, only after they say yes to that question/);
     assert.match(text, /call request_callback when the caller asks for one or says yes/);
-    assert.match(text, /choose the right person from TEAM, say 'I'll connect you with \[name\] now/);
+    assert.match(text, /names someone who is NOT in TEAM, never connect them/);
+    assert.match(text, /nobody called Ramlal here\. Shall I connect you with Gundeep Malhotra\?/);
+    assert.match(text, /say 'I'll connect you with \[name\] now/);
     assert.match(text, /say a short goodbye and call end_call/);
   });
 

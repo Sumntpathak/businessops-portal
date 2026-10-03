@@ -238,7 +238,9 @@ function sessionBase(session: CallSession, voice?: string, tuning?: RealtimeTuni
           type: "server_vad",
           threshold: VAD_THRESHOLD,
           prefix_padding_ms: 300,
-          silence_duration_ms: 500
+          // A full second of silence before replying: callers pause mid-sentence, and
+          // answering into those pauses produced filler replies ("take your time").
+          silence_duration_ms: 1000
         }
       },
       output: { format: { type: "audio/pcmu" }, voice: voice ?? "shimmer" }
