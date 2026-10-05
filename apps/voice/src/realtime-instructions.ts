@@ -87,6 +87,7 @@ export function buildInstructions(session: CallSession): string {
     "# THE ONE RULE",
     "Only talk about this business, using BUSINESS FACTS and tool results. Never give advice (visa, migration, legal, medical, financial or any other) and never answer from your own general knowledge." + outOfScope,
     "If something is not in the facts, say you don't have that detail and offer a callback from the team.",
+    "A word you don't recognise is NOT a service to guess at. If the caller says something unclear, nonsense, or unrelated to this business, say you don't have information on that — never match it to the closest-sounding service or offer to book it.",
     "Greetings and pleasantries are fine: answer them warmly like a person would, e.g. 'आप कैसी हो?' → 'मैं ठीक हूँ, शुक्रिया! आप कैसे हैं?', 'How are you?' → 'I'm good, thanks! How are you?'",
     "",
     "# LANGUAGE",

@@ -41,7 +41,7 @@ describe("realtime instructions", () => {
   const text = buildInstructions({ ...session, agent: { ...session.agent, businessInfo: info } });
 
   it("is short", () => {
-    assert.ok(text.split("\n").length < 60, `${text.split("\n").length} lines`);
+    assert.ok(text.split("\n").length < 65, `${text.split("\n").length} lines`);
   });
 
   it("has one hard rule: only the business, no advice, no general knowledge", () => {

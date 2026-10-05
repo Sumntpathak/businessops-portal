@@ -271,6 +271,17 @@ export const SCENARIOS: Scenario[] = [
     checks: [...base, replyAvoids(1, /[਀-੿]/, "does not answer in Punjabi after one word")]
   },
   {
+    name: "nonsense term is not matched to the closest service",
+    caller: ["Looking for an help regarding Nvidia service."],
+    checks: [
+      ...base,
+      noToolOn("check_availability", 0),
+      noToolOn("create_booking", 0),
+      replyAvoids(0, /migration consultation|what time works|which day/i, "does not offer to book an unrelated/unclear request"),
+      replyMatches(0, /(don.t have|not sure|could you clarify|not something we|not clear)/i, "says it doesn't recognise the request instead of guessing")
+    ]
+  },
+  {
     name: "fees question (GST) is not invented",
     caller: ["Does the 110 dollars include GST?"],
     checks: [...base, replyAvoids(0, /\b(includes?|inclusive of|plus)\s+GST\b|GST (is|are) (included|extra)/i, "does not invent GST terms")]
