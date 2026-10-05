@@ -15,6 +15,12 @@ services:
     restart: unless-stopped
     init: true
 
+  asterisk:
+    build:
+      context: ./infra/asterisk
+    network_mode: host
+    restart: unless-stopped
+
   postgres:
     ports: !reset []
 
