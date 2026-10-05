@@ -1,6 +1,6 @@
-FROM debian:bookworm-slim
+FROM ubuntu:26.04
 
-# Asterisk from the distro package (no third-party image). openssl: self-signed cert for the TLS
+# Asterisk from Ubuntu's own package (no third-party image; Debian does not ship it). openssl: self-signed cert for the TLS
 # transport (Asterisk wants one even though this relay only makes outbound TLS calls to Azure).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends asterisk asterisk-modules ca-certificates openssl \
