@@ -85,6 +85,13 @@
       "when": 1791011500888,
       "tag": "0011_staff_handles",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1791192457041,
+      "tag": "0012_sip_channel",
+      "breakpoints": true
     }
   ]
 }

@@ -1,0 +1,1 @@
+ALTER TYPE "public"."phone_channel" ADD VALUE 'sip';
