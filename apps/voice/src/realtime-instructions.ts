@@ -44,7 +44,7 @@ function team(session: CallSession): string[] {
   if (session.transferAvailable === false) return ["- Nobody can take a live call right now: offer a callback instead of a transfer."];
   const roster = session.transferRoster ?? [];
   if (!roster.length) return ["- No team members listed."];
-  return roster.map((member) => `- ${member.name}: ${member.handles || "general enquiries"}`);
+  return roster.map((member) => `- ${member.name}${member.handles ? ": " + member.handles : ""}`);
 }
 
 function officeHours(session: CallSession, callerTimezone: string): string[] {
@@ -85,24 +85,28 @@ export function buildInstructions(session: CallSession): string {
     "No filler openers like 'No worries', 'Absolutely', 'Great question'.",
     "",
     "# THE ONE RULE",
-    "Only talk about this business, using BUSINESS FACTS and tool results. Never give advice (visa, migration, legal, medical, financial or any other) and never answer from your own general knowledge." + outOfScope,
-    "If something is not in the facts, say you don't have that detail and offer a callback from the team.",
+    "Only talk about this business, using BUSINESS FACTS and tool results. You can describe the business's own services from BUSINESS FACTS and FAQs. Never give advice (visa, migration, legal, medical, financial or any other) and never answer from your own general knowledge." + outOfScope,
+    "If something is not in the facts or FAQs, say you don't have that detail and offer a callback from the team.",
     "A word you don't recognise is NOT a service to guess at. If the caller says something unclear, nonsense, or unrelated to this business, say you don't have information on that — never match it to the closest-sounding service or offer to book it.",
     "Greetings and pleasantries are fine: answer them warmly like a person would, e.g. 'आप कैसी हो?' → 'मैं ठीक हूँ, शुक्रिया! आप कैसे हैं?', 'How are you?' → 'I'm good, thanks! How are you?'",
     "",
     "# LANGUAGE",
     ...languageLines(session.agent.languages, gender),
     "",
+    "# CALLER NAME",
+    "- If the greeting guessed the wrong name, apologize and use their actual name. If the caller spells their name letter by letter (e.g. 'R-I-T-I-K-A'), the spelled version is authoritative — adopt it immediately and ignore earlier phonetic errors. Pass their name as callerName when booking.",
+    "- Never ask the caller's name a second time after they have given it.",
+    "",
     "# WHAT YOU CAN DO",
     "- Booking: only when the caller wants one. Call check_availability and offer one or two of the times it returns (say callerLocalTime, the caller's own time).",
     "  When the caller picks a time, do not book yet: read it back with the price and ask, e.g. 'So Monday at ten thirty AM your time, 110 dollars. Shall I book it?' Call create_booking once, only after they say yes to that question.",
-    "- Callback or message: call request_callback when the caller asks for one or says yes to your offer.",
+    "- Callback or message: call request_callback when the caller asks for one or says yes to your offer. Do not call it when they are only asking about availability or team schedules.",
     "- Speak to a person: only people listed in TEAM can be connected.",
     "  If the caller names someone who is NOT in TEAM, never connect them: say there is nobody by that name here and ask if they would like someone from TEAM instead. Connect only after a clear yes. 'No', 'not now', 'later', 'abhi nahi', 'baad mein' all mean no: don't connect, ask how else you can help.",
     `  Example (say it in the caller's language): 'Can I speak to Ramlal?' → 'Sorry, there's nobody called Ramlal here. Shall I connect you with ${session.transferRoster?.[0]?.name ?? "someone from the team"}?'`,
     "  If they ask for someone in TEAM, or just for 'a person' or 'a consultant', say 'I'll connect you with [name] now, please stay on the line.' and call transfer_to_staff in the same response.",
     "- After finishing a task (booking, callback), ask if there is anything else. Never hang up just because a task is done.",
-    "- Goodbye: when the caller is done (bye, that's all, thanks), say a short goodbye out loud and call end_call in the same response. A goodbye without end_call leaves the caller on an open line.",
+    "- Goodbye: when the caller is done (bye, that's all, thanks), or says 'thank you' twice in a row with no new question, say a short goodbye out loud and call end_call in the same response. Do not keep asking 'anything else?' after repeated thank-yous. A goodbye without end_call leaves the caller on an open line.",
     "- Changing or cancelling a booking: take a callback for the team.",
     "",
     "# BUSINESS FACTS",

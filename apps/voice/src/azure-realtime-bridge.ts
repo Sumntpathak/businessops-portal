@@ -101,7 +101,7 @@ export const REALTIME_TOOLS = [
     type: "function",
     name: "transfer_to_staff",
     description:
-      "Connect the call to a team member when the caller asks to speak to a person, or says yes to your offer. Never after a no or 'not now'. Say the hold line in the same response.",
+      "Connect the call to a team member when the caller asks to speak to a person, or says yes to your offer. Never after a no or 'not now'. Say 'Let me check if they are available' first, then call this tool. Do NOT say 'connecting you now' until the tool confirms transferring: true.",
     parameters: {
       type: "object",
       properties: {
@@ -313,6 +313,8 @@ export class AzureRealtimeBridge implements AIBridge {
   private playbackEndsAt = 0;
   /** The agent audio item currently playing, so an interruption can tell the model what was heard. */
   private playItem?: { id: string; contentIndex: number; startedAt: number; totalMs: number };
+  /** Blocks duplicate create_booking calls within the same call session. */
+  private confirmedBookingId: string | null = null;
 
   constructor(private readonly options: AzureRealtimeBridgeOptions) {}
 
@@ -649,6 +651,17 @@ export class AzureRealtimeBridge implements AIBridge {
       return;
     }
 
+    if (name === "create_booking" && this.confirmedBookingId) {
+      this.sendToolOutput(callId, {
+        alreadyBooked: true,
+        bookingId: this.confirmedBookingId,
+        instruction: "A booking is already confirmed in this call. Do NOT book again. Tell the caller their existing booking is confirmed and ask if they need anything else."
+      });
+      this.transcript?.({ role: "tool", content: `create_booking -> blocked: already booked ${this.confirmedBookingId}`, at: new Date() });
+      this.requestResponse();
+      return;
+    }
+
     let output: unknown;
     try {
       output = await this.toolCall?.(name, input);
@@ -660,6 +673,9 @@ export class AzureRealtimeBridge implements AIBridge {
       this.log("error", { tool: name, error: message }, "Realtime tool call failed");
     }
     this.sendToolOutput(callId, output);
+    if (name === "create_booking" && output && typeof output === "object" && "bookingId" in output) {
+      this.confirmedBookingId = (output as { bookingId: string }).bookingId;
+    }
     // Tool results are English JSON, which pulls the next reply into English or Hindi by recency.
     if ((this.session?.agent.languages.length ?? 0) > 1) {
       this.addSystemNote(toolLanguageNote(input.callerLanguage));
