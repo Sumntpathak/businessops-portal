@@ -6,16 +6,29 @@ import { Button } from "@/components/ui/button";
 import { PageBody, PageHeader, PageShell } from "@/components/dashboard/page-shell";
 import { mulawToPcm16, pcm16ToMulaw } from "@/lib/mulaw";
 
-const VOICE_SERVER_WS_URL =
-  process.env.NEXT_PUBLIC_VOICE_WS_URL ?? "ws://localhost:3001";
+function getVoiceServerWsUrl(): string {
+  if (process.env.NEXT_PUBLIC_VOICE_WS_URL) return process.env.NEXT_PUBLIC_VOICE_WS_URL;
+  if (typeof window !== "undefined") {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const host = window.location.host;
+    if (host.startsWith("app.")) {
+      return `${proto}//voice.${host.slice(4)}`;
+    }
+    return `${proto}//${window.location.hostname}:3001`;
+  }
+  return "ws://localhost:3001";
+}
+
 const TARGET_SAMPLE_RATE = 8000;
 
 const VOICE_OPTIONS = [
-  "Kore",
-  "Aoede",
-  "Puck",
-  "Charon",
-  "Fenrir"
+  "shimmer",
+  "alloy",
+  "echo",
+  "verse",
+  "ballad",
+  "coral",
+  "sage"
 ] as const;
 
 type CallState = "idle" | "connecting" | "live" | "ended";
@@ -53,7 +66,7 @@ function roleStyle(role: TranscriptRole): string {
 export default function VoiceTestPage() {
   const [state, setState] = useState<CallState>("idle");
   const [errorMessage, setErrorMessage] = useState("");
-  const [voice, setVoice] = useState<(typeof VOICE_OPTIONS)[number]>("Kore");
+  const [voice, setVoice] = useState<(typeof VOICE_OPTIONS)[number]>("shimmer");
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
 
   const socketRef = useRef<WebSocket>();
@@ -103,7 +116,8 @@ export default function VoiceTestPage() {
       const context = new AudioContext();
       audioContextRef.current = context;
 
-      const wsUrl = new URL(VOICE_SERVER_WS_URL.replace(/\/$/, "") + "/browser-test");
+      const wsBase = getVoiceServerWsUrl().replace(/\/$/, "");
+      const wsUrl = new URL(wsBase + "/browser-test");
       wsUrl.searchParams.set("voice", voice);
       const socket = new WebSocket(wsUrl);
       socket.binaryType = "arraybuffer";

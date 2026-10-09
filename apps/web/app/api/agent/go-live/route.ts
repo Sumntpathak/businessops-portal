@@ -11,7 +11,7 @@ async function goLive() {
 
   const { tenantId } = auth.context;
   const scoped = withTenant(db, tenantId);
-  const [profiles, serviceCounts, connections] = await Promise.all([
+  const [profiles, serviceCounts] = await Promise.all([
     db
       .select({ agentMd: schema.agentProfiles.agentMd })
       .from(schema.agentProfiles)
@@ -22,12 +22,7 @@ async function goLive() {
       .from(schema.services)
       .where(
         scoped.where(schema.services, eq(schema.services.active, true))
-      ),
-    db
-      .select({ status: schema.googleConnections.status })
-      .from(schema.googleConnections)
-      .where(scoped.where(schema.googleConnections))
-      .limit(1)
+      )
   ]);
 
   const missing: string[] = [];
@@ -36,9 +31,6 @@ async function goLive() {
   }
   if ((serviceCounts[0]?.value ?? 0) < 1) {
     missing.push("add at least one active service");
-  }
-  if (connections[0]?.status !== "active") {
-    missing.push("connect Google Calendar");
   }
 
   if (missing.length > 0) {

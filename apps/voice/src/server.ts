@@ -1546,6 +1546,10 @@ browserTestStreams.on("connection", (socket, request) => {
     );
     const geminiVoice = matchedGeminiVoice ?? env.GEMINI_LIVE_VOICE ?? "Kore";
 
+    const AZURE_VOICES = ["alloy", "echo", "shimmer", "verse", "ballad", "coral", "sage", "ash"];
+    const matchedAzureVoice = AZURE_VOICES.find((v) => v.toLowerCase() === rawVoice.toLowerCase());
+    const azureVoice = matchedAzureVoice ?? env.AZURE_REALTIME_VOICE ?? "shimmer";
+
     const bridge: AIBridge =
       env.VOICE_PROVIDER === "gemini-live" || !env.AZURE_REALTIME_URL
         ? new GeminiLiveBridge({
@@ -1564,7 +1568,7 @@ browserTestStreams.on("connection", (socket, request) => {
             url: env.AZURE_REALTIME_URL,
             apiKey: env.AZURE_REALTIME_KEY ?? "",
             model: env.AZURE_REALTIME_MODEL,
-            voice: rawVoice || env.AZURE_REALTIME_VOICE,
+            voice: azureVoice,
             tuning: realtimeTuning,
             resolveTransfer: makeTransferResolver(() => session),
             logger: app.log

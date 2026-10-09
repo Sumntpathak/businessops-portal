@@ -333,7 +333,7 @@ export function AgentReview() {
         </div>
       </section>
 
-      {!status?.googleCalendarConnected ? <p className="text-sm text-amber-300">Go Live remains locked until Google Calendar is connected in Settings.</p> : null}
+
       </PageBody>
     </PageShell>
   );

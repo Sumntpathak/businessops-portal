@@ -44,7 +44,28 @@ if (!process.env.AZURE_REALTIME_URL || !apiKey) throw new Error("AZURE_REALTIME_
 
 const agentMd = process.env.EVAL_AGENT_MD
   ? fs.readFileSync(process.env.EVAL_AGENT_MD, "utf8")
-  : "# Holistic Migration Solutions\n- You are Riya, the receptionist. The business gives general migration information; only registered agents give personal advice.\n- Each consultation is 110 dollars.";
+  : fs.existsSync(new URL("../agent.md", import.meta.url))
+    ? fs.readFileSync(new URL("../agent.md", import.meta.url), "utf8")
+    : "# Holistic Migration Solutions\n- You are Riya, the receptionist. The business gives general migration information; only registered agents give personal advice.\n- Each consultation is 110 dollars.";
+
+const defaultHolisticInfo = parseBusinessInfo({
+  receptionistName: "Riya",
+  receptionistGender: "female",
+  about: "Holistic Migration Solutions is an Australian migration advisory practice with 15+ years experience. MARA registered, led by Gagandeep Singh.",
+  email: "enquiry@holisticgroup.com.au",
+  website: "https://holisticmigrationsolutions.com.au/",
+  offices: [
+    { name: "Carnegie, VIC", address: "Level 1, 23 Koornang Road, Carnegie VIC 3163", phone: "+61 3 9999 7994", notes: "" },
+    { name: "Point Cook, VIC", address: "29/22-30 Wallace Ave, Point Cook VIC 3030", phone: "+61 3 9999 7994", notes: "" },
+    { name: "Adelaide, SA", address: "Level 8, 115 King William Street, Adelaide SA 5000", phone: "+61 8 7078 9389", notes: "" }
+  ],
+  faqs: [
+    { question: "Do you guarantee visa approval?", answer: "No one can guarantee a visa outcome; our team prepares the strongest possible compliant application." },
+    { question: "How much is an initial consultation?", answer: "An initial consultation is 110 dollars for up to 45 minutes of detailed case assessment." },
+    { question: "Can consultations be held remotely?", answer: "Yes, consultations are available via phone, video call, or in person at our offices." }
+  ],
+  outOfScope: "binding legal advice, guaranteed visa outcomes, medical or financial advice"
+});
 
 const session: CallSession = {
   callId: "eval-call",
@@ -60,9 +81,9 @@ const session: CallSession = {
     voiceGreeting: "Thanks for calling Holistic Migration Solutions, this is Riya — how can I help you today?",
     languageMode: "english",
     languages: ["English", "Hindi", "Punjabi"],
-    ...(process.env.EVAL_BUSINESS_INFO
-      ? { businessInfo: parseBusinessInfo(JSON.parse(fs.readFileSync(process.env.EVAL_BUSINESS_INFO, "utf8"))) }
-      : {})
+    businessInfo: process.env.EVAL_BUSINESS_INFO
+      ? parseBusinessInfo(JSON.parse(fs.readFileSync(process.env.EVAL_BUSINESS_INFO, "utf8")))
+      : defaultHolisticInfo
   },
   services: [
     { name: "Corporate / Skilled Migration Consultation", durationMinutes: 45, price: "110.00" },

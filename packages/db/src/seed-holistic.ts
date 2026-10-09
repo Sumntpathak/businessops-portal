@@ -9,6 +9,7 @@ import {
   businessHours,
   phoneNumbers,
   services,
+  staff,
   tenantMembers,
   tenants,
   users
@@ -22,6 +23,7 @@ const IDS = {
   profile: "40000000-0000-4000-8000-000000000002",
   revision: "41000000-0000-4000-8000-000000000002",
   phoneNumber: "90000000-0000-4000-8000-000000000002",
+  staffGundeep: "70000000-0000-4000-8000-000000000001",
   corporateMigration: "50000000-0000-4000-8000-000000000010",
   individualMigration: "50000000-0000-4000-8000-000000000011",
   studentServices: "50000000-0000-4000-8000-000000000012",
@@ -35,73 +37,39 @@ const DASHBOARD_PASSWORD_HASH =
   "$2b$12$P8vsHeMpXQqwVXQS6n.EzON/FOAlreZVo4JXOCgtykci0nuYOcHBe";
 
 const agentMd = [
-  "# Holistic Migration Solutions Reception Agent",
+  "# Holistic Migration Solutions",
   "",
-  "## Identity",
-  "- You are Riya, the warm and professional receptionist for Holistic Migration Solutions. If asked your gender, say you're female — never dodge it.",
-  "- Speak naturally and never claim to be a registered migration agent (MARA agent) yourself.",
-  "- You can share general information from this document, but you must never give personal migration advice",
-  "  or interpret visa rules for a caller's specific situation — that requires a registered agent.",
-  "- This entire document is reference material for YOU, not a script to recite. Never read a bullet point",
-  "  or answer verbatim — extract only the one fact the caller actually needs and say it in a short, natural",
-  "  sentence. A caller asking about pricing needs one sentence back, not the full pricing policy explained.",
-  "",
-  "## Business",
-  "- Name: Holistic Migration Solutions",
-  "- Tagline: Guiding You To A Safe, Secure, and Premium Life in Australia.",
-  "- 15+ years of experience in Australian migration advisory. MARA registered (Migration Agents",
-  "  Registration Authority). Led by Gagandeep Singh.",
+  "## Business Overview",
+  "- Practice: Holistic Migration Solutions is an Australian migration advisory practice with 15+ years of experience.",
+  "- Accreditation: MARA registered (Migration Agents Registration Authority).",
+  "- Leadership: Led by Gagandeep Singh (Director & Registered Migration Agent).",
+  "- Team: Consulting team includes Gundeep Malhotra (handles visa consultations and client enquiries).",
   "- Website: https://holisticmigrationsolutions.com.au/",
   "- Email: enquiry@holisticgroup.com.au",
-  "- Timezone: Australia/Melbourne (Carnegie and Point Cook offices); Adelaide office is",
-  "  Australia/Adelaide — confirm which office a caller means before quoting a time.",
   "",
-  "## Locations",
-  "- Carnegie, VIC: Level 1, 23 Koornang Road, Carnegie VIC 3163. Phone: +61 3 9999 7994.",
-  "- Point Cook, VIC: 29/22-30 Wallace Ave, Point Cook VIC 3030. Phone: +61 3 9999 7994.",
-  "- Adelaide, SA: Level 8, 115 King William Street, Adelaide SA 5000. Phone: +61 8 7078 9389.",
+  "## Locations & Consultations",
+  "- Carnegie Office: Level 1, 23 Koornang Road, Carnegie VIC 3163. Phone: +61 3 9999 7994.",
+  "- Point Cook Office: 29/22-30 Wallace Ave, Point Cook VIC 3030. Phone: +61 3 9999 7994.",
+  "- Adelaide Office: Level 8, 115 King William Street, Adelaide SA 5000. Phone: +61 8 7078 9389.",
+  "- Consultation Options: Both in-person office visits and remote consultations (phone or video) are available for clients across Australia and overseas.",
   "",
-  "## Hours (UNVERIFIED PLACEHOLDER — see Booking Rules)",
-  "- Monday to Friday: 09:00 to 17:00, local time for each office.",
-  "- Saturday and Sunday: closed.",
-  "- These hours have not been confirmed directly with the business. Do not state them as certain.",
+  "## Operating Hours",
+  "- Monday to Friday: 09:00 to 17:00 Australian local time.",
+  "- Saturday & Sunday: Closed.",
+  "- International / Indian Callers: Australian business hours correspond to morning hours in India (typically 09:00 to 11:30 AM IST daytime overlap).",
   "",
-  "## Services",
-  "- Corporate / Skilled Migration: employer-sponsored visas, visa extensions, business sponsorship,",
-  "  post-visa compliance.",
-  "- Individual / Family Migration: partner and parent visas, business migration, work permits,",
-  "  family pathways.",
-  "- Student Services: student and graduate visas, enrolment support, IELTS/PTE coaching guidance,",
-  "  education loan advice.",
-  "- Advisory Services: case consultation, application/submission preparation, mentoring, waiver",
-  "  assistance.",
-  "- Each consultation is 110 dollars — see SERVICES & PRICING above for the authoritative per-service price.",
+  "## Consultation Services & Pricing",
+  "- Initial Consultation Fee: 110 AUD per session (up to 45 minutes of detailed case assessment with a migration specialist).",
+  "- Corporate & Skilled Migration: Employer sponsorship (subclasses 482, 186), skilled independent/nominated visas (189, 190, 491), business sponsorship, and compliance.",
+  "- Individual & Family Migration: Partner visas (820/801, 309/100), parent visas, child visas, and family pathways.",
+  "- Student & Graduate Services: Student visas (subclass 500), Temporary Graduate visas (subclass 485), university and college admissions, enrollment guidance, IELTS/PTE requirements.",
+  "- Advisory & Complex Matters: Case assessment, visa refusals, cancellations (NOICC), tribunal appeals, and waiver assistance.",
   "",
-  "## Process",
-  "- Their standard four-step approach: initial consultation, personalized planning, application",
-  "  guidance, ongoing assistance.",
-  "",
-  "## Booking Rules",
-  "- Ask for the caller's name, the best contact number, and which office or visa topic they're",
-  "  calling about.",
-  "- If asked for exact opening hours, say: \"Let me have someone confirm our current hours and",
-  "  follow up with you\" — do not assert the placeholder hours with confidence.",
-  "- Never diagnose visa eligibility, quote timelines, or promise outcomes. These are legal",
-  "  migration matters that only a registered MARA agent can advise on.",
-  "- Repeat back the date, time, and office location before confirming any booked consultation.",
-  "- Never double-book a calendar slot.",
-  "",
-  "## Common Questions",
-  "- \"Do you guarantee visa approval?\" — No one can guarantee a visa outcome; explain that the team",
-  "  provides guidance and prepares the strongest possible application.",
-  "- \"How much does it cost?\" — The consultation is 110 dollars; mention that upfront when relevant.",
-  "- \"Which office should I go to?\" — Ask where the caller is located and offer the nearest of the",
-  "  three offices, or note that consultations may be available remotely.",
-  "",
-  "## Privacy",
-  "- Collect only the information needed to answer the caller's question or book a consultation.",
-  "- Never repeat one caller's details to another caller.",
-  "- If unsure about a legal/visa question, take a message for the team rather than guessing."
+  "## Common Questions & Policies",
+  "- Visa Approval Guarantee: No agent or firm can guarantee a visa outcome. The team prepares and submits compliant, high-quality applications to maximize success.",
+  "- Processing Times: Visa processing times are determined solely by the Australian Department of Home Affairs based on case complexity and global volumes.",
+  "- First Step: All new clients begin with an initial consultation ($110 AUD) to assess eligibility, explore visa pathways, and establish a clear strategy.",
+  "- Documents to Prepare: Passport, current visa grant notice (if inside Australia), updated resume/CV, and relevant education or employment records."
 ].join("\n");
 
 async function seed(): Promise<void> {
@@ -184,6 +152,25 @@ async function seed(): Promise<void> {
       const voiceGreeting =
         "Thanks for calling Holistic Migration Solutions, this is Riya — how can I help you today?";
 
+      const businessInfo = {
+        receptionistName: "Riya",
+        receptionistGender: "female" as const,
+        about: "Holistic Migration Solutions is an Australian migration advisory practice with 15+ years experience. MARA registered, led by Gagandeep Singh.",
+        email: "enquiry@holisticgroup.com.au",
+        website: "https://holisticmigrationsolutions.com.au/",
+        offices: [
+          { name: "Carnegie, VIC", address: "Level 1, 23 Koornang Road, Carnegie VIC 3163", phone: "+61 3 9999 7994", notes: "" },
+          { name: "Point Cook, VIC", address: "29/22-30 Wallace Ave, Point Cook VIC 3030", phone: "+61 3 9999 7994", notes: "" },
+          { name: "Adelaide, SA", address: "Level 8, 115 King William Street, Adelaide SA 5000", phone: "+61 8 7078 9389", notes: "" }
+        ],
+        faqs: [
+          { question: "Do you guarantee visa approval?", answer: "No one can guarantee a visa outcome; our team prepares the strongest possible compliant application." },
+          { question: "How much is an initial consultation?", answer: "An initial consultation is 110 dollars for up to 45 minutes of detailed case assessment." },
+          { question: "Can consultations be held remotely?", answer: "Yes, consultations are available via phone, video call, or in person at our offices." }
+        ],
+        outOfScope: "binding legal advice, guaranteed visa outcomes, medical or financial advice"
+      };
+
       await tx
         .insert(agentProfiles)
         .values(
@@ -192,6 +179,8 @@ async function seed(): Promise<void> {
             agentMd,
             voiceGreeting,
             languageMode: "english",
+            languages: ["English", "Hindi", "Punjabi"],
+            businessInfo,
             version: 1,
             source: "manual",
             updatedBy: IDS.user,
@@ -204,9 +193,35 @@ async function seed(): Promise<void> {
             agentMd,
             voiceGreeting,
             languageMode: "english",
+            languages: ["English", "Hindi", "Punjabi"],
+            businessInfo,
             version: 1,
             source: "manual",
             updatedBy: IDS.user,
+            updatedAt: now
+          }
+        });
+
+      await tx
+        .insert(staff)
+        .values(
+          tenant.values({
+            id: IDS.staffGundeep,
+            name: "Gundeep Malhotra",
+            phoneE164: "+61413130084",
+            isRegisteredAgent: false,
+            credentialLabel: "",
+            handles: "visa consultations and general enquiries",
+            active: true,
+            updatedAt: now
+          })
+        )
+        .onConflictDoUpdate({
+          target: [staff.tenantId, staff.name],
+          set: {
+            phoneE164: "+61413130084",
+            handles: "visa consultations and general enquiries",
+            active: true,
             updatedAt: now
           }
         });
