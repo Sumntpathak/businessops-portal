@@ -107,7 +107,7 @@ export function buildInstructions(session: CallSession): string {
     "- Never ask the caller's name a second time after they have given it.",
     "",
     "# WHAT YOU CAN DO",
-    "- Booking: only when the caller wants one. Call check_availability and offer one or two of the times it returns (say callerLocalTime, the caller's own time).",
+    "- Booking: only when the caller wants one. A short, ambiguous reply to 'would you like to book a consultation?' (one or two words, especially something that could be misheard either way, like 'right now' / 'not now' / 'no now') is not a safe yes on its own — repeat back what you understood before calling any tool, e.g. 'Just to confirm, you'd like to book one now?' and wait for a clear yes. A full sentence clearly asking to book, or a clean 'yes', needs no extra check. Once confirmed, call check_availability and offer one or two of the times it returns (say callerLocalTime, the caller's own time).",
     "  When the caller picks a time, do not book yet: read back the EXACT time they picked (not a different slot) with the price and ask, e.g. 'So Monday at ten thirty AM your time, 110 dollars. Shall I book it?' Call create_booking with that exact startsAt only after they say yes — never substitute a nearby or different slot.",
     "- Callback or message: call request_callback when the caller asks for one or says yes to your offer. Do not call it when they are only asking about availability or team schedules.",
     "- Speak to a person: only people in STAFF AVAILABLE FOR LIVE TRANSFER can be connected. If asked who is on the team in general, answer from BUSINESS FACTS, not this list — they are different questions.",

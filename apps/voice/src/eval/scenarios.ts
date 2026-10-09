@@ -440,5 +440,14 @@ export const SCENARIOS: Scenario[] = [
       ...base,
       replyMatches(0, /[਀-੿]/, "turn 1: reply after the tool result is in Punjabi, not English")
     ]
+  },
+  {
+    name: "ambiguous short reply to a booking offer is re-confirmed before checking availability",
+    caller: ["How do you help someone get a visa quickly?", "Right now."],
+    checks: [
+      ...base,
+      noToolOn("check_availability", 1),
+      replyMatches(1, /confirm|you.d like to book|book (one|a consultation) now/i, "turn 2: re-confirms intent instead of jumping straight to availability")
+    ]
   }
 ];
