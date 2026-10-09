@@ -62,7 +62,7 @@ export const REALTIME_TOOLS = [
         days: { type: "integer", description: "Days to search from date (1 to 7). Default 1." },
         after: { type: "string", description: "Optional HH:MM (24h) in the caller's time: only slots at or after it." }
       },
-      required: ["date"]
+      required: ["date", "callerLanguage"]
     }
   },
   {
@@ -79,7 +79,7 @@ export const REALTIME_TOOLS = [
         startsAt: { type: "string", description: "Slot start, copied exactly from check_availability." },
         callerName: { type: "string", description: "The caller's name, if they gave it." }
       },
-      required: ["serviceId", "startsAt"]
+      required: ["serviceId", "startsAt", "callerLanguage"]
     }
   },
   {
@@ -94,7 +94,7 @@ export const REALTIME_TOOLS = [
         reason: { type: "string", description: "One sentence: what the caller wants." },
         preferredTime: { type: "string", description: "When they would like the call back, if they said." }
       },
-      required: ["reason"]
+      required: ["reason", "callerLanguage"]
     }
   },
   {
@@ -110,7 +110,7 @@ export const REALTIME_TOOLS = [
         staffName: { type: "string", description: "The team member to connect to." },
         staffId: { type: "string", description: "UUID of the team member, if known." }
       },
-      required: ["callerWords"]
+      required: ["callerWords", "callerLanguage"]
     }
   },
   {

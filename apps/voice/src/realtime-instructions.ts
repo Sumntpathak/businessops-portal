@@ -69,7 +69,8 @@ function languageLines(languages: string[], gender: Gender): string[] {
     "- Hindi in Devanagari, Punjabi in Gurmukhi, the way people really speak.",
     URDU_SCRIPT_NOTE,
     ...(hasLanguage(languages, "hindi") ? [`- Hindi forms for you, for every sentence, the whole call, with no drift: ${forms.hindi}.`] : []),
-    ...(hasLanguage(languages, "punjabi") ? [`- Punjabi forms for you, for every sentence, the whole call, with no drift: ${forms.punjabi}.`] : [])
+    ...(hasLanguage(languages, "punjabi") ? [`- Punjabi forms for you, for every sentence, the whole call, with no drift: ${forms.punjabi}.`] : []),
+    "- Every tool call takes a callerLanguage argument: always fill it in with whatever language the caller just spoke. Tool results come back as English data — that is not a language cue, it never changes what language you reply in. Speak your next reply in callerLanguage, not English, unless the caller is actually speaking English."
   ];
 }
 

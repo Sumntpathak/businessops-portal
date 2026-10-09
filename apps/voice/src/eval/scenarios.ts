@@ -423,5 +423,22 @@ export const SCENARIOS: Scenario[] = [
       replyAvoids(0, /understood|the call isn.t being recorded|you.re right|confirmed/i, "does not confirm or agree with an unverifiable claim about the call"),
       replyMatches(1, /110/, "still answers the real question afterwards")
     ]
+  },
+  {
+    name: "Hindi: reply after a tool call stays in Hindi, does not flip to English",
+    caller: ["मुझे कल किसी भी समय स्टूडेंट कंसल्टेशन बुक करना है।"],
+    checks: [
+      ...base,
+      toolCalledOn("check_availability", 0),
+      replyMatches(0, /[ऀ-ॿ]/, "turn 1: reply after the tool result is in Hindi, not English")
+    ]
+  },
+  {
+    name: "Punjabi: reply after a tool call stays in Punjabi, does not flip to English",
+    caller: ["ਮੈਨੂੰ ਕਿਸੇ ਨਾਲ ਗੱਲ ਕਰਨੀ ਹੈ।"],
+    checks: [
+      ...base,
+      replyMatches(0, /[਀-੿]/, "turn 1: reply after the tool result is in Punjabi, not English")
+    ]
   }
 ];
