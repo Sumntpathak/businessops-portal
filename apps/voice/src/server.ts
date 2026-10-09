@@ -27,6 +27,7 @@ import { createCallSummarizer } from "./call-summary-worker.js";
 import { VoiceLatencyTracker } from "./latency-tracker.js";
 import {
   AzureSipClient,
+  hostFromSipHeader,
   incomingCallEventSchema,
   phoneFromSipHeader,
   sipHeader,
@@ -851,9 +852,11 @@ app.post("/azure/incoming", async (request, reply) => {
     phoneFromSipHeader(sipHeader(event, "X-Called")) ??
     env.TWILIO_NUMBER;
 
+  const contactHost = hostFromSipHeader(sipHeader(event, "Contact"));
+
   // Acknowledge within the webhook timeout; accept/attach continues in background.
   setImmediate(() => {
-    void handleAzureSipCall(providerCallId, from, to).catch((error) => {
+    void handleAzureSipCall(providerCallId, from, to, contactHost).catch((error) => {
       app.log.error({ err: error, providerCallId }, "Azure SIP call handling failed");
       void azureSip?.reject(providerCallId, 480).catch(() => undefined);
     });
@@ -864,7 +867,8 @@ app.post("/azure/incoming", async (request, reply) => {
 async function handleAzureSipCall(
   providerCallId: string,
   from: string | null,
-  to: string | null
+  to: string | null,
+  contactHost?: string | null
 ): Promise<void> {
   if (!azureSip) return;
   if (!from || !to) {
@@ -1104,11 +1108,25 @@ async function handleAzureSipCall(
           return;
         }
 
+        const relayHost = contactHost ?? "72.62.6.249:5062";
+        const targetUri = `sip:${staffMember.phoneE164}@${relayHost}`;
+
         app.log.info(
-          { callId: session.callId, tenantId: session.tenantId, targetPhone: staffMember.phoneE164 },
+          { callId: session.callId, tenantId: session.tenantId, targetPhone: staffMember.phoneE164, targetUri },
           "Executing Azure SIP refer for call transfer"
         );
-        await azureSip?.refer(providerCallId, "tel:" + staffMember.phoneE164);
+        try {
+          await azureSip?.refer(providerCallId, targetUri);
+        } catch (referErr) {
+          const bareHost = relayHost.replace(/:\d+$/, "");
+          if (bareHost !== relayHost) {
+            const fallbackUri = `sip:${staffMember.phoneE164}@${bareHost}`;
+            app.log.warn({ err: referErr, fallbackUri }, "Retrying Azure SIP refer with bare host");
+            await azureSip?.refer(providerCallId, fallbackUri);
+          } else {
+            throw referErr;
+          }
+        }
 
         await db
           .update(schema.calls)

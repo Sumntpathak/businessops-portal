@@ -83,6 +83,15 @@ export function phoneFromSipHeader(value: string | undefined): string | null {
   return match?.[1] ?? null;
 }
 
+/** Extracts host (and optional port) from a SIP header value like "<sip:asterisk@72.62.6.249:5062;transport=TLS>". */
+export function hostFromSipHeader(value: string | undefined): string | null {
+  if (!value) return null;
+  const atMatch = /@([^;:>]+(?::\d+)?)/.exec(value);
+  if (atMatch?.[1]) return atMatch[1];
+  const sipMatch = /(?:sips?:)([^;:>]+(?::\d+)?)/.exec(value);
+  return sipMatch?.[1] ?? null;
+}
+
 export function sipHeader(
   event: IncomingCallEvent,
   name: string
