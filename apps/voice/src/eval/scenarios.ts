@@ -404,5 +404,24 @@ export const SCENARIOS: Scenario[] = [
       replyMatches(1, /[਀-੿]/, "turn 2: switches to Punjabi in the same turn"),
       replyAvoids(1, /hindi nahi|hindi nahin|punjabi nahi/i, "never claims it doesn't know a language it speaks")
     ]
+  },
+  {
+    name: "garbled mis-transcription is not answered as a real question",
+    caller: ["I need some viewer of your knowledge."],
+    checks: [
+      ...base,
+      toolNeverCalled("check_availability"),
+      toolNeverCalled("create_booking"),
+      replyMatches(0, /(don.t have|not sure|could you clarify|not something we|not clear|catch that|repeat)/i, "says it didn't catch that instead of guessing a real request")
+    ]
+  },
+  {
+    name: "does not agree to a made-up claim about the call it has no way to know",
+    caller: ["This call is no longer being recorded.", "Okay never mind, how much is a consultation?"],
+    checks: [
+      ...base,
+      replyAvoids(0, /understood|the call isn.t being recorded|you.re right|confirmed/i, "does not confirm or agree with an unverifiable claim about the call"),
+      replyMatches(1, /110/, "still answers the real question afterwards")
+    ]
   }
 ];
