@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Mic, PhoneOff, Wrench } from "lucide-react";
+import { Download, Mic, PhoneOff, Wrench } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { PageBody, PageHeader, PageShell } from "@/components/dashboard/page-shell";
 import { mulawToPcm16, pcm16ToMulaw } from "@/lib/mulaw";
@@ -68,6 +68,7 @@ export default function VoiceTestPage() {
   const [errorMessage, setErrorMessage] = useState("");
   const [voice, setVoice] = useState<(typeof VOICE_OPTIONS)[number]>("shimmer");
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
+  const [recordingUrl, setRecordingUrl] = useState("");
 
   const socketRef = useRef<WebSocket>();
   const audioContextRef = useRef<AudioContext>();
@@ -75,6 +76,9 @@ export default function VoiceTestPage() {
   const processorRef = useRef<ScriptProcessorNode>();
   const playbackTimeRef = useRef(0);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
+  const recorderRef = useRef<MediaRecorder>();
+  const recordedChunksRef = useRef<Blob[]>([]);
+  const recordingDestRef = useRef<MediaStreamAudioDestinationNode>();
 
   const playMulawFrame = useCallback((bytes: Uint8Array) => {
     const context = audioContextRef.current;
@@ -87,6 +91,7 @@ export default function VoiceTestPage() {
     const source = context.createBufferSource();
     source.buffer = buffer;
     source.connect(context.destination);
+    recordingDestRef.current && source.connect(recordingDestRef.current);
     const startAt = Math.max(context.currentTime, playbackTimeRef.current);
     source.start(startAt);
     playbackTimeRef.current = startAt + buffer.duration;
@@ -99,6 +104,9 @@ export default function VoiceTestPage() {
     mediaStreamRef.current = undefined;
     socketRef.current?.close(1000, "User ended test call");
     socketRef.current = undefined;
+    if (recorderRef.current && recorderRef.current.state !== "inactive") recorderRef.current.stop();
+    recorderRef.current = undefined;
+    recordingDestRef.current = undefined;
     void audioContextRef.current?.close();
     audioContextRef.current = undefined;
     playbackTimeRef.current = 0;
@@ -108,6 +116,8 @@ export default function VoiceTestPage() {
   const startCall = useCallback(async () => {
     setErrorMessage("");
     setTranscript([]);
+    if (recordingUrl) URL.revokeObjectURL(recordingUrl);
+    setRecordingUrl("");
     setState("connecting");
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -115,6 +125,21 @@ export default function VoiceTestPage() {
 
       const context = new AudioContext();
       audioContextRef.current = context;
+
+      const recordingDest = context.createMediaStreamDestination();
+      recordingDestRef.current = recordingDest;
+      context.createMediaStreamSource(stream).connect(recordingDest);
+      recordedChunksRef.current = [];
+      const recorder = new MediaRecorder(recordingDest.stream);
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) recordedChunksRef.current.push(event.data);
+      };
+      recorder.onstop = () => {
+        const blob = new Blob(recordedChunksRef.current, { type: recorder.mimeType || "audio/webm" });
+        setRecordingUrl(URL.createObjectURL(blob));
+      };
+      recorder.start();
+      recorderRef.current = recorder;
 
       const wsBase = getVoiceServerWsUrl().replace(/\/$/, "");
       const wsUrl = new URL(wsBase + "/browser-test");
@@ -171,13 +196,17 @@ export default function VoiceTestPage() {
       setErrorMessage(error instanceof Error ? error.message : "Could not start the test call.");
       setState("idle");
     }
-  }, [playMulawFrame, voice]);
+  }, [playMulawFrame, voice, recordingUrl]);
 
   useEffect(() => () => stopCall(), [stopCall]);
 
   useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [transcript]);
+
+  useEffect(() => () => {
+    if (recordingUrl) URL.revokeObjectURL(recordingUrl);
+  }, [recordingUrl]);
 
   const callActive = state === "live" || state === "connecting";
 
@@ -225,6 +254,15 @@ export default function VoiceTestPage() {
             <Mic className="h-4 w-4" />
             Start test call
           </Button>
+        )}
+
+        {!callActive && recordingUrl && (
+          <a href={recordingUrl} download={`voice-test-${Date.now()}.webm`}>
+            <Button variant="outline" className="gap-2">
+              <Download className="h-4 w-4" />
+              Download recording
+            </Button>
+          </a>
         )}
       </div>
 

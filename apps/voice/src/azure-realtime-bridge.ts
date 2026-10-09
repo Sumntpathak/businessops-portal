@@ -194,7 +194,9 @@ export function transcriptionConfig(
     prompt:
       `The speaker uses only these languages, often mixed in one sentence: ${languages.join(", ")}. ` +
       "Always transcribe in the language actually spoken, using its standard script " +
-      "(Hindi in Devanagari, Punjabi in Gurmukhi). Never transcribe into any other language." +
+      "(Hindi in Devanagari, Punjabi in Gurmukhi). Hindi and Urdu sound almost identical: this speaker is " +
+      "never speaking Urdu, so never transcribe in Arabic/Urdu script, even if the audio sounds like it could be Urdu — " +
+      "write it as Hindi in Devanagari instead. Never transcribe into any other language." +
       (terms ? ` ${terms}` : "")
   };
 }
