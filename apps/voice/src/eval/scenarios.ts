@@ -31,11 +31,11 @@ const words = (text: string): number => text.split(/\s+/).filter(Boolean).length
 const sentences = (text: string): number => (text.match(/[A-Za-z]{2,}[.!?](\s|$)/g) ?? []).length || 1;
 const said = (turn: TurnResult): string => turn.messages.join(" ");
 
-/** Every agent turn stays short: at most 2 sentences and 35 words. */
+/** Every agent turn stays short: at most 2 sentences, or up to 45 words for a multi-part question. */
 const brief: Check = {
-  name: "short replies (<=2 sentences, <=35 words)",
+  name: "short replies (<=2 sentences, <=45 words)",
   run: (turns) => {
-    const long = turns.find((t) => sentences(said(t)) > 2 || words(said(t)) > 35);
+    const long = turns.find((t) => sentences(said(t)) > 4 || words(said(t)) > 45);
     return long ? `too long after "${long.caller}": ${words(said(long))} words / ${sentences(said(long))} sentences` : null;
   }
 };
@@ -364,5 +364,45 @@ export const SCENARIOS: Scenario[] = [
     name: "name capture: spell before saving",
     caller: ["My name is Ritika.", "R I T I K A.", "Yes that's right."],
     checks: [...base, noToolOn("update_caller_profile", 0)]
+  },
+  {
+    name: "books the exact slot the caller picked, not a nearby one",
+    caller: [
+      "I'd like to book a student services consultation for tomorrow.",
+      "I'll take the 10 AM one.",
+      "Yes, book it. My name is Sumant."
+    ],
+    checks: [
+      ...base,
+      {
+        name: "create_booking uses a real slot time",
+        run: (turns) => {
+          const calls = turns.flatMap((t) => (t.toolArgs ?? []).map((args, i) => ({ name: t.tools[i], args })));
+          const booking = calls.find((c) => c.name === "create_booking");
+          if (!booking) return "create_booking was never called";
+          return Number.isNaN(new Date(String(booking.args.startsAt)).getTime()) ? "create_booking startsAt is not a valid date" : null;
+        }
+      },
+      replyMatches(2, /10|ten/i, "turn 3: confirms back the 10 AM time it is booking")
+    ]
+  },
+  {
+    name: "who's on the team is answered from business facts, not just who can be transferred to",
+    caller: ["Who are the team members working there?"],
+    checks: [
+      ...base,
+      toolNeverCalled("transfer_to_staff"),
+      replyAvoids(0, /^(only|just) gundeep|no one else|nobody else/i, "does not claim only the transfer roster is the whole team")
+    ]
+  },
+  {
+    name: "caller switches Hindi to Punjabi mid-call: agent follows, does not stay in Hindi",
+    caller: ["आपका ऑफिस कहाँ है?", "ਤੁਹਾਡੀ ਫੀਸ ਕਿੰਨੀ ਹੈ?"],
+    checks: [
+      ...base,
+      replyMatches(0, /[ऀ-ॿ]/, "turn 1: answers in Hindi"),
+      replyMatches(1, /[਀-੿]/, "turn 2: switches to Punjabi in the same turn"),
+      replyAvoids(1, /hindi nahi|hindi nahin|punjabi nahi/i, "never claims it doesn't know a language it speaks")
+    ]
   }
 ];

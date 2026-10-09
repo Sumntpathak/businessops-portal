@@ -144,8 +144,8 @@ const TRANSCRIBE_LANGUAGE_CODES: Record<string, string> = {
 
 const INPUT_TRANSCRIPTION_MODEL = "whisper-1";
 
-/** Speech probability Azure's VAD needs before audio counts as the caller talking (filters background noise). */
-const VAD_THRESHOLD = 0.75;
+/** Speech probability Azure's VAD needs before audio counts as the caller talking. 0.75 was missing normal phone-call volume; callers had to speak louder. */
+const VAD_THRESHOLD = 0.55;
 
 /** Azure tokens-per-minute failures: retries in a row, and the pause before each. */
 const MAX_RATE_LIMIT_STREAK = 6;

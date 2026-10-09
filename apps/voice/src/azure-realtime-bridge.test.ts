@@ -64,7 +64,7 @@ describe("session config", () => {
   it("lets Azure run turn-taking: server VAD with its default reply and interruption handling", () => {
     const input = inputOf(buildSessionConfig(session));
     assert.equal(input.turn_detection.type, "server_vad");
-    assert.equal(input.turn_detection.threshold, 0.75);
+    assert.equal(input.turn_detection.threshold, 0.55);
     assert.equal(input.turn_detection.silence_duration_ms, 1000);
     assert.equal("create_response" in input.turn_detection, false);
     assert.equal("interrupt_response" in input.turn_detection, false);

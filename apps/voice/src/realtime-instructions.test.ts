@@ -41,7 +41,7 @@ describe("realtime instructions", () => {
   const text = buildInstructions({ ...session, agent: { ...session.agent, businessInfo: info } });
 
   it("is short", () => {
-    assert.ok(text.split("\n").length < 65, `${text.split("\n").length} lines`);
+    assert.ok(text.split("\n").length < 70, `${text.split("\n").length} lines`);
   });
 
   it("has one hard rule: only the business, no advice, no general knowledge", () => {
@@ -54,15 +54,16 @@ describe("realtime instructions", () => {
   it("follows the caller's language", () => {
     assert.match(text, /Reply in the language of the caller's latest full sentence \(English, Hindi, Punjabi\)/);
     assert.match(text, /A short reply \('ok', 'not now', 'yes', 'haan'\) keeps the language/);
-    assert.match(text, /Hindi forms for you: सकती हूँ/);
+    assert.match(text, /Hindi forms for you.*सकती हूँ/);
     assert.match(text, /You are Riya, the woman/);
   });
 
   it("describes only booking, callback, transfer and goodbye", () => {
-    assert.match(text, /When the caller picks a time, do not book yet: read it back with the price/);
-    assert.match(text, /Call create_booking once, only after they say yes to that question/);
+    assert.match(text, /When the caller picks a time, do not book yet: read back the EXACT time they picked/);
+    assert.match(text, /Call create_booking with that exact startsAt only after they say yes/);
     assert.match(text, /call request_callback when the caller asks for one or says yes/);
-    assert.match(text, /names someone who is NOT in TEAM, never connect them/);
+    assert.match(text, /named a specific person who is NOT in that list/);
+    assert.match(text, /Never respond to a transfer request with a plain no/);
     assert.match(text, /nobody called Ramlal here\. Shall I connect you with Gundeep Malhotra\?/);
     assert.match(text, /say 'I'll connect you with \[name\] now/);
     assert.match(text, /say a short goodbye out loud and call end_call/);
