@@ -1554,9 +1554,20 @@ app.server.on("upgrade", (request, socket, head) => {
 
 const browserTestVoiceSchema = z.string().regex(/^[a-z-]{1,32}$/).optional();
 
+function isValidTimezone(timezone: string): boolean {
+  try {
+    Intl.DateTimeFormat(undefined, { timeZone: timezone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 browserTestStreams.on("connection", (socket, request) => {
   void (async () => {
     const url = new URL(request.url ?? "/", "http://localhost");
+    const rawTimezone = url.searchParams.get("timezone")?.trim() ?? "";
+    const callerTestTimezone = rawTimezone && isValidTimezone(rawTimezone) ? rawTimezone : null;
     const VALID_GEMINI_VOICES = ["Kore", "Aoede", "Charon", "Fenrir", "Puck"];
     const rawVoice = url.searchParams.get("voice")?.trim() ?? "";
     const matchedGeminiVoice = VALID_GEMINI_VOICES.find(
@@ -1607,7 +1618,7 @@ browserTestStreams.on("connection", (socket, request) => {
             phoneE164: testPhone,
             displayName: null,
             country: null,
-            timezone: null
+            timezone: callerTestTimezone
           })
         )
         .returning({ id: schema.callers.id });

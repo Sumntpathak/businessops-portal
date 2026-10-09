@@ -196,7 +196,9 @@ export function transcriptionConfig(
       "Always transcribe in the language actually spoken, using its standard script " +
       "(Hindi in Devanagari, Punjabi in Gurmukhi). Hindi and Urdu sound almost identical: this speaker is " +
       "never speaking Urdu, so never transcribe in Arabic/Urdu script, even if the audio sounds like it could be Urdu — " +
-      "write it as Hindi in Devanagari instead. Never transcribe into any other language." +
+      "write it as Hindi in Devanagari instead. Numbers, times (e.g. '10:30', 'nine AM') and English words said as-is " +
+      "stay as digits or Latin script exactly as spoken — never force them into a Devanagari or Gurmukhi word that " +
+      "merely sounds similar. Never transcribe into any other language." +
       (terms ? ` ${terms}` : "")
   };
 }

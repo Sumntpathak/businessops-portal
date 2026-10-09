@@ -31,6 +31,15 @@ const VOICE_OPTIONS = [
   "sage"
 ] as const;
 
+const TIMEZONE_OPTIONS = [
+  { label: "Business default", value: "" },
+  { label: "India (Kolkata)", value: "Asia/Kolkata" },
+  { label: "Melbourne", value: "Australia/Melbourne" },
+  { label: "Sydney", value: "Australia/Sydney" },
+  { label: "London", value: "Europe/London" },
+  { label: "New York", value: "America/New_York" }
+] as const;
+
 type CallState = "idle" | "connecting" | "live" | "ended";
 type TranscriptRole = "caller" | "agent" | "tool" | "system";
 interface TranscriptLine {
@@ -67,6 +76,7 @@ export default function VoiceTestPage() {
   const [state, setState] = useState<CallState>("idle");
   const [errorMessage, setErrorMessage] = useState("");
   const [voice, setVoice] = useState<(typeof VOICE_OPTIONS)[number]>("shimmer");
+  const [callerTimezone, setCallerTimezone] = useState<string>("");
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
   const [recordingUrl, setRecordingUrl] = useState("");
 
@@ -79,6 +89,7 @@ export default function VoiceTestPage() {
   const recorderRef = useRef<MediaRecorder>();
   const recordedChunksRef = useRef<Blob[]>([]);
   const recordingDestRef = useRef<MediaStreamAudioDestinationNode>();
+  const agentGainRef = useRef<GainNode>();
 
   const playMulawFrame = useCallback((bytes: Uint8Array) => {
     const context = audioContextRef.current;
@@ -90,10 +101,14 @@ export default function VoiceTestPage() {
 
     const source = context.createBufferSource();
     source.buffer = buffer;
+    // Route through one persistent gain node (never disconnected) rather than connecting each
+    // short-lived buffer source straight to the recorder's destination: MediaRecorder can drop
+    // or mute a track that only ever receives brief, separately-wired bursts of audio.
     source.connect(context.destination);
-    recordingDestRef.current && source.connect(recordingDestRef.current);
+    source.connect(agentGainRef.current ?? context.destination);
     const startAt = Math.max(context.currentTime, playbackTimeRef.current);
     source.start(startAt);
+    source.onended = () => source.disconnect();
     playbackTimeRef.current = startAt + buffer.duration;
   }, []);
 
@@ -107,6 +122,7 @@ export default function VoiceTestPage() {
     if (recorderRef.current && recorderRef.current.state !== "inactive") recorderRef.current.stop();
     recorderRef.current = undefined;
     recordingDestRef.current = undefined;
+    agentGainRef.current = undefined;
     void audioContextRef.current?.close();
     audioContextRef.current = undefined;
     playbackTimeRef.current = 0;
@@ -129,6 +145,10 @@ export default function VoiceTestPage() {
       const recordingDest = context.createMediaStreamDestination();
       recordingDestRef.current = recordingDest;
       context.createMediaStreamSource(stream).connect(recordingDest);
+      const agentGain = context.createGain();
+      agentGain.gain.value = 1;
+      agentGain.connect(recordingDest);
+      agentGainRef.current = agentGain;
       recordedChunksRef.current = [];
       const recorder = new MediaRecorder(recordingDest.stream);
       recorder.ondataavailable = (event) => {
@@ -144,6 +164,7 @@ export default function VoiceTestPage() {
       const wsBase = getVoiceServerWsUrl().replace(/\/$/, "");
       const wsUrl = new URL(wsBase + "/browser-test");
       wsUrl.searchParams.set("voice", voice);
+      if (callerTimezone) wsUrl.searchParams.set("timezone", callerTimezone);
       const socket = new WebSocket(wsUrl);
       socket.binaryType = "arraybuffer";
       socketRef.current = socket;
@@ -196,7 +217,7 @@ export default function VoiceTestPage() {
       setErrorMessage(error instanceof Error ? error.message : "Could not start the test call.");
       setState("idle");
     }
-  }, [playMulawFrame, voice, recordingUrl]);
+  }, [playMulawFrame, voice, callerTimezone, recordingUrl]);
 
   useEffect(() => () => stopCall(), [stopCall]);
 
@@ -240,6 +261,20 @@ export default function VoiceTestPage() {
           >
             {VOICE_OPTIONS.map((option) => (
               <option key={option} value={option}>{option}</option>
+            ))}
+          </select>
+        </label>
+
+        <label className="flex items-center gap-2 text-sm">
+          <span className="text-xs font-medium text-muted-foreground">Caller location</span>
+          <select
+            value={callerTimezone}
+            onChange={(event) => setCallerTimezone(event.target.value)}
+            disabled={callActive}
+            className="h-9 rounded-md border bg-background px-3 text-sm appearance-auto disabled:opacity-50"
+          >
+            {TIMEZONE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
             ))}
           </select>
         </label>
