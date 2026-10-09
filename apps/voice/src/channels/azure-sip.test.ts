@@ -21,6 +21,8 @@ describe("Azure SIP header utilities", () => {
 
   it("finds case-insensitive header values from incoming call event", () => {
     const event = {
+      object: "event" as const,
+      type: "realtime.call.incoming",
       id: "evt-1",
       data: {
         call_id: "c-1",
