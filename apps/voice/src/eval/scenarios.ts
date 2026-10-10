@@ -449,5 +449,14 @@ export const SCENARIOS: Scenario[] = [
       noToolOn("check_availability", 1),
       replyMatches(1, /confirm|you.d like to book|book (one|a consultation) now/i, "turn 2: re-confirms intent instead of jumping straight to availability")
     ]
+  },
+  {
+    name: "visa lodgement fee is not in the facts: routes to a consultant, doesn't invent a number",
+    caller: ["What is the visa lodgement fee?"],
+    checks: [
+      ...base,
+      replyAvoids(0, /\$\d|\d+\s?(dollars|AUD)/i, "does not invent a government lodgement fee figure"),
+      replyMatches(0, /consultant|consultation|specific case|confirm/i, "says a consultant would need to confirm this case-specific detail")
+    ]
   }
 ];
