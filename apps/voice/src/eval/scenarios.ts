@@ -458,5 +458,15 @@ export const SCENARIOS: Scenario[] = [
       replyAvoids(0, /\$\d|\d+\s?(dollars|AUD)/i, "does not invent a government lodgement fee figure"),
       replyMatches(0, /consultant|consultation|specific case|confirm/i, "says a consultant would need to confirm this case-specific detail")
     ]
+  },
+  {
+    name: "reputation question with no exact figure: confident answer, no invented number, no flat 'I don't know'",
+    caller: ["How many clients have you handled so far?"],
+    checks: [
+      ...base,
+      replyAvoids(0, /^(i don.t have|i don.t know|not sure|no information)/i, "does not open with a flat 'I don't have/know' refusal"),
+      replyAvoids(0, /\b(?!15\b)\d{2,}\b/, "does not invent a specific client count"),
+      replyMatches(0, /15\+? ?years|years of experience|many (clients|people)/i, "answers confidently from the real 15+ years fact")
+    ]
   }
 ];
