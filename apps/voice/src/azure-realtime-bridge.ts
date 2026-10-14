@@ -363,6 +363,8 @@ export class AzureRealtimeBridge implements AIBridge {
   private offerMade = false;
   /** Whether the person on the line is the caller on file (see caller-identity.ts). */
   private callerIdentity: "unknown" | "confirmed" | "someone-else" = "unknown";
+  /** The caller's first words after the greeting have been checked for who they are. */
+  private identityAnswerSeen = false;
 
   constructor(private readonly options: AzureRealtimeBridgeOptions) {}
 
@@ -518,7 +520,10 @@ export class AzureRealtimeBridge implements AIBridge {
         return;
       case "conversation.item.input_audio_transcription.completed": {
         const text = typeof event.transcript === "string" ? event.transcript.trim() : "";
-        if (text && !isTranscriptionArtifact(text)) this.transcript?.({ role: "caller", content: text, at: new Date() });
+        if (text && !isTranscriptionArtifact(text)) {
+          this.transcript?.({ role: "caller", content: text, at: new Date() });
+          this.settleIdentityFromAnswer(text);
+        }
         return;
       }
       case "response.output_audio_transcript.done":
@@ -725,7 +730,7 @@ export class AzureRealtimeBridge implements AIBridge {
         reason: this.callerIdentity === "someone-else" ? `the person on the line is not ${owner}` : `they have not confirmed they are ${owner}`,
         instruction: this.callerIdentity === "someone-else"
           ? "Don't save anything for this caller. Keep helping them as a new caller."
-          : `If they confirmed they are ${owner}, call confirm_caller first. If they are someone else, don't save anything.`
+          : `If they said yes to being ${owner}, call confirm_caller with that answer (don't ask their name). If they are someone else, don't save anything.`
       });
       this.transcript?.({ role: "tool", content: "update_caller_profile -> blocked: caller identity not confirmed", at: new Date() });
       this.followUpAfterSilentSave();
@@ -767,6 +772,28 @@ export class AzureRealtimeBridge implements AIBridge {
       return;
     }
     this.requestResponse();
+  }
+
+  /**
+   * The caller's first answer to "Am I speaking with X?" settles who is on the line, in code.
+   * Waiting for the model to call confirm_caller left it unsure, so it asked the name again.
+   * Only a clear answer counts; an unclear one leaves confirm_caller to the model.
+   */
+  private settleIdentityFromAnswer(text: string): void {
+    const session = this.session;
+    const name = session?.caller.displayName;
+    if (!session || !name || this.identityAnswerSeen || this.callerIdentity !== "unknown") return;
+    this.identityAnswerSeen = true;
+    const result = confirmCaller(session, text, session.caller.timezone ?? session.timezone);
+    if (result.confirmed) {
+      this.callerIdentity = "confirmed";
+      this.addSystemNote(
+        [`The caller confirmed they are ${name}. Don't ask their name and don't call confirm_caller. ${result.instruction}`, ...result.history].join("\n")
+      );
+    } else if (result.answer === "someone-else") {
+      this.callerIdentity = "someone-else";
+      this.addSystemNote(`The person on the line is not ${name}. ${result.instruction}`);
+    }
   }
 
   /** confirm_caller runs here, not in the tool executor: the history is already in the session. */

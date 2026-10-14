@@ -83,9 +83,12 @@ const END = "(?=\\s|$)";
 
 /** A short yes to "Am I speaking with X?". */
 const AFFIRMATIVE = new RegExp(
-  `^(yes|yeah|yep|yup|ya|yah|sure|correct|right|speaking|that'?s me|it'?s me|this is me|haan|han|haa|ha|ji|haanji|ha ji|bilkul|हाँ|हां|हा|जी|ਹਾਂ|ਜੀ|ਹਾਂਜੀ)${END}`,
+  `^(yes|yeah|yep|yup|ya|yah|sure|ok|okay|correct|right|absolutely|of course|speaking|that'?s me|it'?s me|this is me|tell me|go ahead|haan|han|haa|ha|ji|haanji|ha ji|bilkul|bolo|boliye|हाँ|हां|हा|जी|बोलो|बोलिए|ਹਾਂ|ਜੀ|ਹਾਂਜੀ|ਦੱਸੋ)${END}`,
   "iu"
 );
+
+/** Greetings people put before their answer: "Hello, yes", "Hi, it's me", "Namaste ji". */
+const LEADING_GREETING = /^((hello|hallo|hi|hey|namaste|namaskar|sat sri akal|नमस्ते|ਸਤ ਸ੍ਰੀ ਅਕਾਲ)\s*)+/iu;
 
 /** A "no" that answers the question, not "no problem" / "no worries". */
 const NEGATIVE = new RegExp(`^(no|nope|nah|not me|wrong number|nahi|nahin|नहीं|नही|ਨਹੀਂ)${END}(?!\\s+(problem|worries|issue|tension))`, "iu");
@@ -102,7 +105,7 @@ const NOT_NAMES = new Set(["yes", "yeah", "yep", "yup", "haan", "han", "ji", "he
 export type IdentityAnswer = "confirmed" | "someone-else" | "unclear";
 
 function normalise(text: string): string {
-  return text.trim().replace(/[.,!?;:"“”‘’…।]+/g, " ").replace(/\s+/g, " ").trim();
+  return text.trim().replace(/[.,!?;:"“”‘’…।]+/g, " ").replace(/\s+/g, " ").trim().replace(LEADING_GREETING, "").trim();
 }
 
 /** Classifies the caller's answer to "Am I speaking with {name}?". Needs positive evidence to confirm. */

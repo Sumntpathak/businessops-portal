@@ -21,7 +21,13 @@ describe("identityAnswer: who is on the line when we asked 'Am I speaking with R
       "हाँ जी, बोल रहा हूँ",
       "जी",
       "ਹਾਂ ਜੀ",
-      "haan ji"
+      "haan ji",
+      "Okay",
+      "Hello, yes, I wanted to ask about fees",
+      "Hi, it's me",
+      "Haan ji bolo",
+      "Tell me",
+      "Namaste ji"
     ]);
   });
 

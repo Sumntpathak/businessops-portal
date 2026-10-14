@@ -128,7 +128,7 @@ describe("CALLER section", () => {
 
   it("keeps a returning caller's history out of the prompt: only the name and that history exists", () => {
     const text = buildInstructions(returning);
-    assert.match(text, /This number belongs to Sumant\. Anything else we know about them is private/);
+    assert.match(text, /This number belongs to Sumant\. You know their name: never ask for it\. Anything else we know about them is private/);
     assert.doesNotMatch(text, /history with us/, "doesn't even hint that history exists");
     assert.match(text, /call confirm_caller with their exact words/);
     assert.doesNotMatch(text, /Upcoming booking|Oct 20|482 visa|Asked about a partner visa|Last enquiry|\[visa_type\]: Partner/);

@@ -235,6 +235,30 @@ describe("tool results", () => {
     assert.equal(saves.length, 1, "saves once confirmed");
   });
 
+  it("confirms a known caller from their first answer to the greeting, without waiting for the model", async () => {
+    const { bridge, sent, handle, callTool } = bridgeWithFakeSocket();
+    const saves: unknown[] = [];
+    bridge.onToolCall((name, input) => { saves.push(input); return { updated: ["enquiry"], rejected: [] }; });
+    handle({ type: "conversation.item.input_audio_transcription.completed", transcript: "Yes, I wanted to ask about my visa." });
+    const note = sent.find((e) => JSON.stringify(e).includes("The caller confirmed they are Sumant"));
+    assert.ok(note, "history note sent");
+    assert.match(JSON.stringify(note), /Don't ask their name/);
+    await callTool("update_caller_profile", { fields: { enquiry: "visa" } }, "c1");
+    assert.equal(saves.length, 1, "saves straight away once confirmed");
+    handle({ type: "conversation.item.input_audio_transcription.completed", transcript: "No, this is his wife" });
+    assert.equal(sent.filter((e) => JSON.stringify(e).includes("is not Sumant")).length, 0, "only the first answer settles it");
+  });
+
+  it("locks out someone else from their first answer, and leaves an unclear answer to the model", () => {
+    const wife = bridgeWithFakeSocket();
+    wife.handle({ type: "conversation.item.input_audio_transcription.completed", transcript: "This is his wife, Meena." });
+    assert.ok(wife.sent.some((e) => JSON.stringify(e).includes("The person on the line is not Sumant")));
+    assert.ok(!wife.sent.some((e) => JSON.stringify(e).includes("confirmed they are")));
+    const unclear = bridgeWithFakeSocket();
+    unclear.handle({ type: "conversation.item.input_audio_transcription.completed", transcript: "Hello?" });
+    assert.equal(unclear.sent.length, 0, "no note, nothing locked");
+  });
+
   it("gives someone else on the number nothing, and saves nothing for them", async () => {
     const { bridge, sent, callTool } = bridgeWithFakeSocket();
     const saves: unknown[] = [];

@@ -700,6 +700,26 @@ export const SCENARIOS: Scenario[] = [
     ]
   },
   {
+    name: "returning caller says yes and asks straight away: never asked for their name",
+    session: returning("Sumant", {
+      caller: { profile: { enquiry: "skilled visa from India" } },
+      memories: [{ id: "m1", kind: "summary", content: "Sumant asked about moving from India on a skilled visa." }]
+    }),
+    caller: ["Hello, yes. I wanted to know the consultation fee.", "Okay. And can it be done on video?", "Thanks, that's all."],
+    checks: [
+      ...base,
+      noReplyMatches(/your name|may i (know|have) (who|your)|who (am i|i.m) speaking|confirm (your|who)/i, "never asks for the name of a confirmed caller"),
+      replyMatches(0, /110/, "turn 1: goes straight to the question"),
+      toolNeverCalled("confirm_caller")
+    ]
+  },
+  {
+    name: "returning caller answers the greeting with 'Okay': treated as a yes",
+    session: returning("Sumant"),
+    caller: ["Okay.", "I want to ask about a partner visa."],
+    checks: [...base, noReplyMatches(/your name|who (am i|i.m) speaking|is this sumant|am i speaking/i, "doesn't ask the name or re-check who it is")]
+  },
+  {
     name: "returning caller chasing a pending callback: offers the team or logs a FOLLOW-UP, never a plain duplicate",
     session: returning("Anita", {
       history: { upcomingBookings: [], pendingCallbacks: [{ reason: "Wants fees for an employer-sponsored 482 visa", createdAt: isoInDays(-3) }], lastCallAt: isoInDays(-3) }

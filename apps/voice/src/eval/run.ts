@@ -195,6 +195,17 @@ function runScenario(scenario: Scenario): Promise<TurnResult[]> {
       current = { caller: scenario.caller[turnIndex++]!, messages: [], tools: [], toolArgs: [] };
       rounds = 0;
       send({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: current.caller }] } });
+      // Mirrors the bridge: the first answer to "Am I speaking with X?" settles who is calling.
+      if (turnIndex === 1 && session.caller.displayName && identity === "unknown") {
+        const name = session.caller.displayName;
+        const result = confirmCaller(session, current.caller, session.caller.timezone ?? session.timezone);
+        const note = result.confirmed
+          ? [`The caller confirmed they are ${name}. Don't ask their name and don't call confirm_caller. ${result.instruction}`, ...result.history].join("\n")
+          : result.answer === "someone-else" ? `The person on the line is not ${name}. ${result.instruction}` : null;
+        if (result.confirmed) identity = "confirmed";
+        else if (result.answer === "someone-else") identity = "someone-else";
+        if (note) send({ type: "conversation.item.create", item: { type: "message", role: "system", content: [{ type: "input_text", text: note }] } });
+      }
       send({ type: "response.create" });
     };
 
