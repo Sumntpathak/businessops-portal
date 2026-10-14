@@ -3,7 +3,7 @@ import formbody from "@fastify/formbody";
 import Fastify from "fastify";
 import { Redis } from "ioredis";
 import { WebSocket, WebSocketServer } from "ws";
-import { and, desc, eq, isNotNull, isNull } from "drizzle-orm";
+import { and, eq, isNotNull, isNull } from "drizzle-orm";
 import { z } from "zod";
 import {
   AvailabilityService,
@@ -21,6 +21,7 @@ import {
 } from "./azure-realtime-bridge.js";
 import type { BusinessHour, CallSession, TeamMember } from "./call-session.js";
 import { deriveCallerGeo } from "./caller-profile.js";
+import { EMPTY_HISTORY, loadCallerContext } from "./caller-history.js";
 import { createCallSummarizer } from "./call-summary-worker.js";
 import { VoiceLatencyTracker } from "./latency-tracker.js";
 import {
@@ -926,8 +927,8 @@ async function handleAzureSipCall(
   const caller = callerResult[0];
   if (!caller) throw new Error("Caller upsert returned no row");
 
-  // In parallel: insert call record and fetch caller memories
-  const [callResult, memories] = await Promise.all([
+  // In parallel: insert call record and load what we already know about the caller
+  const [callResult, callerContext] = await Promise.all([
     db
       .insert(schema.calls)
       .values(
@@ -941,21 +942,7 @@ async function handleAzureSipCall(
       )
       .onConflictDoNothing({ target: schema.calls.providerCallSid })
       .returning({ id: schema.calls.id, startedAt: schema.calls.startedAt }),
-    db
-      .select({
-        id: schema.callerMemories.id,
-        kind: schema.callerMemories.kind,
-        content: schema.callerMemories.content
-      })
-      .from(schema.callerMemories)
-      .where(
-        scoped.where(
-          schema.callerMemories,
-          eq(schema.callerMemories.callerId, caller.id)
-        )
-      )
-      .orderBy(desc(schema.callerMemories.createdAt))
-      .limit(5)
+    loadCallerContext(db, destination.tenantId, caller.id, providerCallId)
   ]);
 
   let call = callResult[0];
@@ -982,7 +969,8 @@ async function handleAzureSipCall(
     businessHours: tenantMeta.businessHours,
     transferAvailable: tenantMeta.transferAvailable,
     transferRoster: tenantMeta.transferRoster,
-    memories,
+    memories: callerContext.memories,
+    history: callerContext.history,
     startedAt: (call.startedAt ?? new Date()).toISOString()
   };
 
@@ -1195,7 +1183,7 @@ async function loadCallSession(callId: string): Promise<CallSession> {
     }
     const scoped = withTenant(db, call.tenantId);
 
-    const [tenantMeta, callerRows, memories] = await Promise.all([
+    const [tenantMeta, callerRows, callerContext] = await Promise.all([
       getCachedTenantMeta(call.tenantId),
       db
         .select({
@@ -1210,21 +1198,7 @@ async function loadCallSession(callId: string): Promise<CallSession> {
         .from(schema.callers)
         .where(scoped.where(schema.callers, eq(schema.callers.id, call.callerId)))
         .limit(1),
-      db
-        .select({
-          id: schema.callerMemories.id,
-          kind: schema.callerMemories.kind,
-          content: schema.callerMemories.content
-        })
-        .from(schema.callerMemories)
-        .where(
-          scoped.where(
-            schema.callerMemories,
-            eq(schema.callerMemories.callerId, call.callerId)
-          )
-        )
-        .orderBy(desc(schema.callerMemories.createdAt))
-        .limit(5)
+      loadCallerContext(db, call.tenantId, call.callerId, call.providerCallSid)
     ]);
 
     const caller = callerRows[0];
@@ -1242,7 +1216,8 @@ async function loadCallSession(callId: string): Promise<CallSession> {
       businessHours: tenantMeta.businessHours,
       transferAvailable: tenantMeta.transferAvailable,
       transferRoster: tenantMeta.transferRoster,
-      memories,
+      memories: callerContext.memories,
+      history: callerContext.history,
       startedAt: call.startedAt.toISOString()
     };
     return session;
@@ -1271,6 +1246,7 @@ async function loadCallSession(callId: string): Promise<CallSession> {
       },
       services: [],
       memories: [],
+      history: EMPTY_HISTORY,
       startedAt: new Date().toISOString()
     };
   }

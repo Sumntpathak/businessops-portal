@@ -21,6 +21,7 @@ const session: CallSession = {
   agent: { agentMd: "# Clinic", voiceGreeting: "Hello", languageMode: "hinglish", languages: ["English", "Hindi"] },
   services: [],
   memories: [],
+  history: { upcomingBookings: [], pendingCallbacks: [], lastCallAt: null },
   startedAt: "2026-07-06T04:00:00.000Z"
 };
 

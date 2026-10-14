@@ -4,6 +4,7 @@ import type { AIBridge, StaffSelector, TranscriptEvent } from "./ai-bridge.js";
 import type { CallSession } from "./call-session.js";
 import { isRefusal } from "./caller-intent.js";
 import { buildInstructions } from "./realtime-instructions.js";
+import { ladderNote, ladderStepAfterTool, type LadderStep } from "./call-ladder.js";
 
 export { buildInstructions };
 
@@ -95,6 +96,24 @@ export const REALTIME_TOOLS = [
         preferredTime: { type: "string", description: "When they would like the call back, if they said." }
       },
       required: ["reason", "callerLanguage"]
+    }
+  },
+  {
+    type: "function",
+    name: "update_caller_profile",
+    description:
+      "Save what the caller just told you about themselves: their name, what they are calling about (enquiry), or a CALLER DETAILS field. Call it in the same response you hear it, while you keep talking. Send only new or corrected values.",
+    parameters: {
+      type: "object",
+      properties: {
+        callerLanguage: { type: "string", description: "The language of the caller's latest sentence: English, Hindi or Punjabi." },
+        fields: {
+          type: "object",
+          description: "e.g. {\"name\": \"Ravi\"} or {\"enquiry\": \"partner visa, onshore\"}. Keys: name, enquiry, or a key listed in CALLER DETAILS.",
+          additionalProperties: { type: ["string", "number", "boolean"] }
+        }
+      },
+      required: ["fields", "callerLanguage"]
     }
   },
   {
@@ -319,6 +338,12 @@ export class AzureRealtimeBridge implements AIBridge {
   private playItem?: { id: string; contentIndex: number; startedAt: number; totalMs: number };
   /** Blocks duplicate create_booking calls within the same call session. */
   private confirmedBookingId: string | null = null;
+  /** How far the call has got through the receptionist's 5 steps (see call-ladder.ts). */
+  private ladderStep: LadderStep = 1;
+  /** A profile save finished mid-reply: speak again only if that reply said nothing. */
+  private followUpIfSilent = false;
+  /** Whether the last finished reply said anything out loud. */
+  private lastResponseSpoke = false;
 
   constructor(private readonly options: AzureRealtimeBridgeOptions) {}
 
@@ -537,7 +562,10 @@ export class AzureRealtimeBridge implements AIBridge {
       this.rateLimitStreak += 1;
       const waitMs = Math.min(MAX_RATE_LIMIT_WAIT_MS, RATE_LIMIT_RETRY_MS * this.rateLimitStreak);
       this.log("error", { attempt: this.rateLimitStreak, waitMs }, "Azure realtime rate limit hit; retrying the response");
+      // The retry is the follow-up: nothing else may queue another reply behind it.
       this.followUpPending = false;
+      this.followUpIfSilent = false;
+      this.lastResponseSpoke = false;
       this.activeResponse = true;
       setTimeout(() => { if (!this.stopped) this.send({ type: "response.create" }); }, waitMs);
       return;
@@ -550,10 +578,13 @@ export class AzureRealtimeBridge implements AIBridge {
       }
     }
 
-    if (this.followUpPending) {
-      this.followUpPending = false;
-      this.requestResponse();
-    }
+    const spoke = (response?.output ?? []).some((item) => item.type === "message");
+    this.lastResponseSpoke = spoke;
+    // At most one reply follows this one: a tool result waiting to be spoken, or a
+    // profile save from a reply that said nothing. end_call's goodbye takes priority.
+    const wantFollowUp = this.followUpPending || (this.followUpIfSilent && !spoke);
+    this.followUpPending = false;
+    this.followUpIfSilent = false;
 
     // Hang up or redirect only once the goodbye / hold line has actually played to the caller.
     if (this.hangUpAfterNextResponse) {
@@ -562,7 +593,7 @@ export class AzureRealtimeBridge implements AIBridge {
     }
     if (this.endCallRequested) {
       this.endCallRequested = false;
-      if ((response?.output ?? []).some((item) => item.type === "message")) {
+      if (spoke) {
         this.afterPlayback(() => this.endCall?.());
       } else {
         // Hanging up in silence feels like a dropped call.
@@ -571,6 +602,8 @@ export class AzureRealtimeBridge implements AIBridge {
         this.send({ type: "response.create", response: { tool_choice: "none" } });
         this.activeResponse = true;
       }
+    } else if (wantFollowUp) {
+      this.requestResponse();
     }
     if (this.pendingTransfer) {
       const selector = this.pendingTransfer;
@@ -680,10 +713,36 @@ export class AzureRealtimeBridge implements AIBridge {
     if (name === "create_booking" && output && typeof output === "object" && "bookingId" in output) {
       this.confirmedBookingId = (output as { bookingId: string }).bookingId;
     }
+    this.advanceLadder(name, output);
     // Tool results are English JSON, which pulls the next reply into English or Hindi by recency.
     if ((this.session?.agent.languages.length ?? 0) > 1) {
       this.addSystemNote(toolLanguageNote(input.callerLanguage));
     }
+    if (name === "update_caller_profile") {
+      this.followUpAfterSilentSave();
+      return;
+    }
     this.requestResponse();
+  }
+
+  private advanceLadder(name: string, output: unknown): void {
+    const next = ladderStepAfterTool(this.ladderStep, name, output);
+    if (next === this.ladderStep) return;
+    this.ladderStep = next;
+    const note = ladderNote(next, (this.session?.transferRoster?.length ?? 0) > 0 && this.session?.transferAvailable !== false);
+    if (note) this.addSystemNote(note);
+  }
+
+  /**
+   * Saving a detail happens while the agent is already talking ("Nice to meet you, Ravi —
+   * how can I help?"). Asking for another reply would make it speak twice, so only do it
+   * when the reply that saved the detail said nothing.
+   */
+  private followUpAfterSilentSave(): void {
+    if (this.activeResponse) {
+      this.followUpIfSilent = true;
+    } else if (!this.lastResponseSpoke) {
+      this.requestResponse();
+    }
   }
 }

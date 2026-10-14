@@ -12,6 +12,13 @@ export interface TeamMember {
   handles: string;
 }
 
+/** What a returning caller already has with the business, loaded at call start. Times are ISO strings. */
+export interface CallerHistory {
+  upcomingBookings: Array<{ serviceName: string; startsAt: string }>;
+  pendingCallbacks: Array<{ reason: string; createdAt: string }>;
+  lastCallAt: string | null;
+}
+
 export interface CallSession {
   callId: string;
   providerCallSid: string;
@@ -59,6 +66,7 @@ export interface CallSession {
     kind: "fact" | "preference" | "summary";
     content: string;
   }>;
+  history: CallerHistory;
   startedAt: string;
 }
 

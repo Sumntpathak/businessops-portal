@@ -76,6 +76,20 @@ describe("caller profile validation", () => {
     assert.deepEqual(result.rejected, []);
   });
 
+  it("accepts the built-in enquiry key for every tenant, with no intake field defined", () => {
+    const result = validateProfileFields({ enquiry: " Partner visa, onshore " }, []);
+    assert.deepEqual(result.accepted, { enquiry: "Partner visa, onshore" });
+    assert.deepEqual(result.rejected, []);
+  });
+
+  it("rejects an enquiry that is empty, too long or not text", () => {
+    for (const enquiry of ["  ", "x".repeat(501), 42]) {
+      const result = validateProfileFields({ enquiry }, []);
+      assert.deepEqual(result.accepted, {});
+      assert.deepEqual(result.rejected, [{ key: "enquiry", code: "wrong_type" }]);
+    }
+  });
+
   it("keeps valid values while returning terse rejection codes", () => {
     const result = validateProfileFields(
       {

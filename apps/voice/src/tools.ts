@@ -658,9 +658,10 @@ export class DrizzleToolRepository implements ToolRepository {
 
     const { accepted, rejected } = validateProfileFields(fields, definitions);
     const name = typeof accepted.name === "string" ? accepted.name : undefined;
-    const phone = typeof accepted.phone === "string" ? accepted.phone : undefined;
+    // A number the caller says aloud is kept as a profile note (as the call summary does);
+    // it never replaces phoneE164, which identifies the caller.
     const profileUpdates = Object.fromEntries(
-      Object.entries(accepted).filter(([key]) => key !== "name" && key !== "phone")
+      Object.entries(accepted).filter(([key]) => key !== "name")
     ) as Record<string, ProfileValue>;
     const updated = Object.keys(accepted);
 
@@ -681,7 +682,6 @@ export class DrizzleToolRepository implements ToolRepository {
       .update(schema.callers)
       .set({
         ...(name ? { displayName: name } : {}),
-        ...(phone ? { phoneE164: phone } : {}),
         ...(Object.keys(profileUpdates).length > 0
           ? { profile: sql`${schema.callers.profile} || ${JSON.stringify(profileUpdates)}::jsonb` }
           : {}),

@@ -19,6 +19,7 @@ function makeSession(callerTimezone: string): CallSession {
     agent: { agentMd: "# T", voiceGreeting: "Hello", languageMode: "english", languages: ["English"] },
     services: [],
     memories: [],
+    history: { upcomingBookings: [], pendingCallbacks: [], lastCallAt: null },
     startedAt: "2026-10-01T04:00:00.000Z"
   };
 }

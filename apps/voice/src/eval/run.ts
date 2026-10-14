@@ -12,6 +12,7 @@ import { parseBusinessInfo } from "@recepto/shared";
 import { buildInstructions, greetingInstruction, REALTIME_TOOLS, toolLanguageNote } from "../azure-realtime-bridge.js";
 import type { CallSession } from "../call-session.js";
 import { isRefusal } from "../caller-intent.js";
+import { ladderNote, ladderStepAfterTool, type LadderStep } from "../call-ladder.js";
 import { SCENARIOS, type Scenario, type TurnResult } from "./scenarios.js";
 
 function loadEnvFile(file: string | undefined): void {
@@ -95,6 +96,7 @@ const session: CallSession = {
   transferAvailable: true,
   transferRoster: [{ name: "Gundeep Malhotra", handles: "visa consultations" }],
   memories: [],
+  history: { upcomingBookings: [], pendingCallbacks: [], lastCallAt: null },
   startedAt: new Date().toISOString()
 };
 
@@ -103,7 +105,6 @@ const TOOL_RESULTS: Record<string, unknown> = {
   check_availability: { serviceId: "svc-student", serviceName: "Student Services Consultation", price: "110.00", staffId: null, callerTimezone: "Australia/Melbourne", slots: [SLOT("2026-10-02T00:30:00.000+00:00", "Oct 2, 2026, 10:30 AM"), SLOT("2026-10-02T01:15:00.000+00:00", "Oct 2, 2026, 11:15 AM")] },
   create_booking: { bookingId: "b-1", startsAt: "2026-10-02T00:30:00.000+00:00", callerLocalTime: "Oct 2, 2026, 10:30 AM", businessLocalTime: "Oct 2, 2026, 10:30 AM", serviceName: "Student Services Consultation", price: "110.00", staffId: null },
   request_callback: { callbackRequestId: "cb-1", recorded: true },
-  update_caller_profile: { updated: ["name"], rejected: [], profile: {} },
   end_call: { ended: true }
 };
 
@@ -120,12 +121,32 @@ function toolResult(name: string, rawArgs: string): unknown {
     }
     return { transferring: true };
   }
+  if (name === "update_caller_profile") {
+    // Mirrors the repository: every key the model sends comes back as saved.
+    const args = (() => { try { return JSON.parse(rawArgs) as { fields?: Record<string, unknown> }; } catch { return {}; } })();
+    return { updated: Object.keys(args.fields ?? {}), rejected: [], profile: {} };
+  }
   return TOOL_RESULTS[name] ?? { ok: true };
 }
 
 type Item = Record<string, unknown>;
 
+/** The shared eval session with this scenario's caller (name, history, memories) laid over it. */
+function sessionFor(scenario: Scenario): CallSession {
+  const overrides = scenario.session ?? {};
+  return { ...session, ...overrides, caller: { ...session.caller, ...overrides.caller } };
+}
+
+/** What the caller hears first: the greeting, plus the bridge's name check for a known caller. */
+function spokenGreeting(callSession: CallSession): string {
+  const name = callSession.caller.displayName;
+  return name ? `${callSession.agent.voiceGreeting} Am I speaking with ${name}?` : callSession.agent.voiceGreeting;
+}
+
 function runScenario(scenario: Scenario): Promise<TurnResult[]> {
+  const session = sessionFor(scenario);
+  const canTransfer = (session.transferRoster?.length ?? 0) > 0 && session.transferAvailable !== false;
+  let ladderStep: LadderStep = 1;
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(url.toString(), { headers: { "api-key": apiKey, authorization: `Bearer ${apiKey}` } });
     const turns: TurnResult[] = [];
@@ -155,7 +176,7 @@ function runScenario(scenario: Scenario): Promise<TurnResult[]> {
           session: { type: "realtime", output_modalities: ["text"], instructions: buildInstructions(session), tools: REALTIME_TOOLS, tool_choice: "auto", ...(EFFORT === "none" ? {} : { reasoning: { effort: EFFORT } }) }
         });
       } else if (e.type === "session.updated") {
-        send({ type: "conversation.item.create", item: { type: "message", role: "assistant", content: [{ type: "output_text", text: session.agent.voiceGreeting }] } });
+        send({ type: "conversation.item.create", item: { type: "message", role: "assistant", content: [{ type: "output_text", text: spokenGreeting(session) }] } });
         nextCallerTurn();
       } else if (e.type === "error") {
         clearTimeout(timer); ws.close(); reject(new Error(e.error?.message ?? "realtime error"));
@@ -199,13 +220,20 @@ function runScenario(scenario: Scenario): Promise<TurnResult[]> {
           clearTimeout(timer); ws.close(); resolve(turns);
           return;
         }
-        for (const { call, result } of results) {
+        for (const { call, name, result } of results) {
           send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: call.call_id, output: JSON.stringify(result) } });
+          // Mirrors the bridge: a one-line "Call progress" note each time the call reaches a new step.
+          const next = ladderStepAfterTool(ladderStep, name, result);
+          const note = next === ladderStep ? null : ladderNote(next, canTransfer);
+          ladderStep = next;
+          if (note) send({ type: "conversation.item.create", item: { type: "message", role: "system", content: [{ type: "input_text", text: note }] } });
         }
         if (session.agent.languages.length > 1) {
           const reported = (() => { try { return (JSON.parse(String(calls.at(-1)?.arguments ?? "{}")) as { callerLanguage?: unknown }).callerLanguage; } catch { return undefined; } })();
           send({ type: "conversation.item.create", item: { type: "message", role: "system", content: [{ type: "input_text", text: toolLanguageNote(reported) }] } });
         }
+        // Mirrors the bridge: a detail saved while the agent was already talking gets no second reply.
+        if (spoke && results.every(({ name }) => name === "update_caller_profile")) { turns.push(current); nextCallerTurn(); return; }
         send({ type: "response.create" });
       }
     });

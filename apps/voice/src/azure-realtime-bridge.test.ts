@@ -31,6 +31,7 @@ const session: CallSession = {
   agent: { agentMd: "# Holistic", voiceGreeting: "Hello", languageMode: "english", languages: ["English"] },
   services: [{ name: "Consultation", durationMinutes: 30, price: "110.00" }],
   memories: [],
+  history: { upcomingBookings: [], pendingCallbacks: [], lastCallAt: null },
   startedAt: "2026-07-06T04:00:00.000Z"
 };
 
@@ -86,8 +87,13 @@ describe("session config", () => {
     assert.equal("transcription" in inputOf(buildSipAcceptConfig(session, "m", undefined, { transcribeModel: "off" })), false);
   });
 
-  it("offers only the booking, callback, transfer and hang-up tools", () => {
-    assert.deepEqual(REALTIME_TOOLS.map((tool) => tool.name), ["check_availability", "create_booking", "request_callback", "transfer_to_staff", "end_call"]);
+  it("offers only the booking, callback, save-details, transfer and hang-up tools", () => {
+    assert.deepEqual(REALTIME_TOOLS.map((tool) => tool.name), ["check_availability", "create_booking", "request_callback", "update_caller_profile", "transfer_to_staff", "end_call"]);
+  });
+
+  it("requires a fields object when saving caller details", () => {
+    const tool = REALTIME_TOOLS.find((entry) => entry.name === "update_caller_profile");
+    assert.deepEqual(tool?.parameters.required, ["fields", "callerLanguage"]);
   });
 });
 
@@ -151,6 +157,69 @@ describe("tool results", () => {
     handle({ type: "error", error: { code: "conversation_already_has_active_response" } });
     handle({ type: "response.done", response: { status: "completed", output: [] } });
     assert.equal(creates(), 2);
+  });
+
+  it("does not speak twice when a detail is saved during a reply that already spoke", async () => {
+    const { bridge, handle, callTool, creates } = bridgeWithFakeSocket();
+    bridge.onToolCall(() => ({ updated: ["name"], rejected: [] }));
+    handle({ type: "response.created" });
+    await callTool("update_caller_profile", { fields: { name: "Ravi" } });
+    handle({ type: "response.done", response: { status: "completed", output: [{ type: "message" }, { type: "function_call" }] } });
+    assert.equal(creates(), 0);
+  });
+
+  it("speaks after a save when the reply that saved it said nothing", async () => {
+    const { bridge, handle, callTool, creates } = bridgeWithFakeSocket();
+    bridge.onToolCall(() => ({ updated: ["name"], rejected: [] }));
+    handle({ type: "response.created" });
+    await callTool("update_caller_profile", { fields: { name: "Ravi" } });
+    handle({ type: "response.done", response: { status: "completed", output: [{ type: "function_call" }] } });
+    assert.equal(creates(), 1);
+  });
+
+  it("does not speak again when a save finishes after a spoken reply has ended", async () => {
+    const { bridge, handle, callTool, creates } = bridgeWithFakeSocket();
+    bridge.onToolCall(() => ({ updated: ["enquiry"], rejected: [] }));
+    handle({ type: "response.created" });
+    handle({ type: "response.done", response: { status: "completed", output: [{ type: "message" }] } });
+    await callTool("update_caller_profile", { fields: { enquiry: "partner visa" } });
+    assert.equal(creates(), 0);
+  });
+
+  it("asks for exactly one reply when a silent save and another tool share a reply", async () => {
+    const { bridge, handle, callTool, creates } = bridgeWithFakeSocket();
+    bridge.onToolCall((name) => (name === "update_caller_profile" ? { updated: ["name"], rejected: [] } : { slots: [] }));
+    handle({ type: "response.created" });
+    await callTool("update_caller_profile", { fields: { name: "Ravi" } }, "c1");
+    await callTool("check_availability", { date: "2026-10-20" }, "c2");
+    handle({ type: "response.done", response: { status: "completed", output: [{ type: "function_call" }, { type: "function_call" }] } });
+    assert.equal(creates(), 1);
+    handle({ type: "response.done", response: { status: "completed", output: [{ type: "message" }] } });
+    assert.equal(creates(), 1, "no extra reply after the follow-up");
+  });
+
+  it("only says goodbye when a silent save comes with end_call", async () => {
+    const { bridge, sent, handle, callTool, creates } = bridgeWithFakeSocket();
+    bridge.onToolCall(() => ({ updated: ["name"], rejected: [] }));
+    handle({ type: "response.created" });
+    await callTool("update_caller_profile", { fields: { name: "Ravi" } }, "c1");
+    await callTool("end_call", {}, "c2");
+    handle({ type: "response.done", response: { status: "completed", output: [{ type: "function_call" }, { type: "function_call" }] } });
+    assert.equal(creates(), 1);
+    assert.deepEqual(sent.filter((e) => e.type === "response.create").at(-1), { type: "response.create", response: { tool_choice: "none" } });
+  });
+
+  it("tells the model where the call has got to, once per step", async () => {
+    const { bridge, sent, callTool } = bridgeWithFakeSocket();
+    bridge.onToolCall((name) => (name === "update_caller_profile" ? { updated: ["name"], rejected: [] } : { slots: [] }));
+    const notes = () => sent.filter((e) => JSON.stringify(e).includes("Call progress")).length;
+    await callTool("update_caller_profile", { fields: { name: "Ravi" } }, "c1");
+    assert.equal(notes(), 1);
+    await callTool("update_caller_profile", { fields: { name: "Ravi" } }, "c2");
+    assert.equal(notes(), 1, "same step, no repeat");
+    await callTool("check_availability", { date: "2026-10-20" }, "c3");
+    assert.equal(notes(), 2);
+    assert.ok(sent.some((e) => JSON.stringify(e).includes("team confirms payment")));
   });
 
   it("returns a tool error to the model instead of failing the call", async () => {

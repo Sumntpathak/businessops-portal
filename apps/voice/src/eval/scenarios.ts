@@ -4,6 +4,7 @@
  * plays them one by one against the live model with canned tool results.
  */
 import { isRefusal } from "../caller-intent.js";
+import type { CallSession } from "../call-session.js";
 
 export interface TurnResult {
   caller: string;
@@ -24,6 +25,8 @@ export interface Scenario {
   name: string;
   caller: string[];
   checks: Check[];
+  /** Overrides for this scenario's call: a returning caller's name, history, memories. */
+  session?: Partial<Omit<CallSession, "caller">> & { caller?: Partial<CallSession["caller"]> };
 }
 
 const words = (text: string): number => text.split(/\s+/).filter(Boolean).length;
@@ -116,6 +119,60 @@ const toolOnlyOn = (name: string, turnIndex: number): Check => ({
     if (turn === -1) return `${name} never called`;
     return turn === turnIndex ? null : `${name} first called on turn ${turn + 1}`;
   }
+});
+
+type ToolCall = { name: string; args: Record<string, unknown>; turn: number };
+const toolCalls = (turns: TurnResult[]): ToolCall[] =>
+  turns.flatMap((t, turn) => t.tools.map((name, i) => ({ name, args: t.toolArgs?.[i] ?? {}, turn })));
+const fieldsOf = (call: ToolCall): Record<string, unknown> => (call.args.fields as Record<string, unknown> | undefined) ?? {};
+
+/** update_caller_profile saved `key` (matching `pattern`) no later than `byTurn`. */
+const savesField = (key: string, pattern: RegExp, byTurn: number): Check => ({
+  name: `saves ${key} by turn ${byTurn + 1}`,
+  run: (turns) => {
+    const saved = toolCalls(turns).find((c) => c.name === "update_caller_profile" && c.turn <= byTurn && pattern.test(String(fieldsOf(c)[key] ?? "")));
+    return saved ? null : `${key} matching ${pattern} not saved by turn ${byTurn + 1}`;
+  }
+});
+
+const noReplyMatches = (pattern: RegExp, label: string, fromTurn = 0): Check => ({
+  name: label,
+  run: (turns) => {
+    const index = turns.findIndex((t, i) => i >= fromTurn && pattern.test(said(t)));
+    return index === -1 ? null : `turn ${index + 1} reply matched ${pattern}: "${said(turns[index]!).slice(0, 80)}"`;
+  }
+});
+
+const someReplyMatches = (pattern: RegExp, label: string, fromTurn = 0, toTurn = Infinity): Check => ({
+  name: label,
+  run: (turns) => (turns.some((t, i) => i >= fromTurn && i <= toTurn && pattern.test(said(t))) ? null : `no reply in turns ${fromTurn + 1}-${Math.min(toTurn + 1, turns.length)} matched ${pattern}`)
+});
+
+const atMostReplies = (pattern: RegExp, max: number, label: string): Check => ({
+  name: label,
+  run: (turns) => {
+    const count = turns.filter((t) => pattern.test(said(t))).length;
+    return count <= max ? null : `${count} replies matched ${pattern} (max ${max})`;
+  }
+});
+
+const toolArgsMatch = (name: string, test: (args: Record<string, unknown>) => boolean, label: string): Check => ({
+  name: label,
+  run: (turns) => (toolCalls(turns).some((c) => c.name === name && test(c.args)) ? null : `no ${name} call matched`)
+});
+
+/** An ISO time `days` from now at `hourUtc`:00 UTC, so history stays "upcoming" whenever the eval runs. */
+const isoInDays = (days: number, hourUtc = 0): string => {
+  const date = new Date(Date.now() + days * 86_400_000);
+  date.setUTCHours(hourUtc, 30, 0, 0);
+  return date.toISOString();
+};
+
+/** A known caller: name confirmed by the greeting's "Am I speaking with ...?". */
+const returning = (name: string, extra: Scenario["session"] = {}): Scenario["session"] => ({
+  ...extra,
+  caller: { displayName: name, stage: "interested", ...extra.caller },
+  history: { upcomingBookings: [], pendingCallbacks: [], lastCallAt: isoInDays(-5), ...extra.history }
 });
 
 const base = [brief, noFiller, oneVoicePerTurn, neverAsksLanguage];
@@ -467,6 +524,195 @@ export const SCENARIOS: Scenario[] = [
       replyAvoids(0, /^(i don.t have|i don.t know|not sure|no information)/i, "does not open with a flat 'I don't have/know' refusal"),
       replyAvoids(0, /\b(?!15\b)\d{2,}\b/, "does not invent a specific client count"),
       replyMatches(0, /15\+? ?years|years of experience|many (clients|people)/i, "answers confidently from the real 15+ years fact")
+    ]
+  },
+
+  // ── The 5-step call ladder ──────────────────────────────────────────────
+  {
+    name: "ladder: new caller goes name → reason → questions → booking → team offer → close",
+    caller: [
+      "Hi, I'm Ravi Kumar.",
+      "I'm calling about a partner visa. I'm in Melbourne on a student visa at the moment.",
+      "Can consultations be done over video?",
+      "No, that's all my questions.",
+      "Yes, let's book one.",
+      "The first time works.",
+      "Yes, book it.",
+      "No thanks, that's fine.",
+      "No, that's everything. Bye."
+    ],
+    checks: [
+      ...base,
+      savesField("name", /ravi/i, 0),
+      replyMatches(0, /help|calling about|what can i/i, "turn 1: after the name, asks what they're calling about"),
+      savesField("enquiry", /partner/i, 1),
+      replyMatches(3, /consultation/i, "turn 4: offers a consultation once questions are done"),
+      someReplyMatches(/payment/i, "mentions that the team confirms payment", 4, 6),
+      atMostReplies(/\b110\b/, 1, "says the price at most once"),
+      toolCalledOn("create_booking", 6),
+      someReplyMatches(/speak (with|to) (someone|gundeep|a member|the team|one of)|connect you/i, "offers a team member before closing", 6, 7),
+      neverConnected,
+      toolCalledOn("end_call", 8)
+    ]
+  },
+  {
+    name: "ladder: a no to the consultation is respected, then the call closes",
+    caller: [
+      "Hello, this is Priya.",
+      "I just wanted to know what kind of visas you help with.",
+      "Do you have an office in Adelaide?",
+      "No, that's all I wanted to know.",
+      "No thanks, maybe later.",
+      "No, that's it. Bye."
+    ],
+    checks: [
+      ...base,
+      savesField("name", /priya/i, 0),
+      replyMatches(3, /consultation/i, "turn 4: offers a consultation once"),
+      noReplyMatches(/consultation|book/i, "never offers the consultation again after a no", 4),
+      toolNeverCalled("check_availability"),
+      toolNeverCalled("create_booking"),
+      toolCalledOn("end_call", 5)
+    ]
+  },
+  {
+    name: "ladder: a caller who asks for a person first is transferred, no intake questions",
+    caller: ["Can I talk to someone from your team right now please?"],
+    checks: [
+      ...base,
+      toolCalledOn("transfer_to_staff", 0),
+      replyAvoids(0, /your name|who am i speaking|what.*calling about/i, "does not ask for the name or reason before transferring")
+    ]
+  },
+  {
+    name: "ladder: a caller who jumps straight to booking gets slots, and their name before the booking",
+    caller: [
+      "I want to book a student services consultation for tomorrow.",
+      "It's Arjun. Tomorrow morning is best.",
+      "The 10:30 one.",
+      "Yes, book it.",
+      "Yes, please go ahead."
+    ],
+    checks: [
+      ...base,
+      {
+        name: "checks availability within the first two turns (no stalling on the name)",
+        run: (turns) => {
+          const first = toolCalls(turns).find((c) => c.name === "check_availability");
+          return first && first.turn <= 1 ? null : `check_availability first on turn ${first ? first.turn + 1 : "never"}`;
+        }
+      },
+      toolArgsMatch("create_booking", (args) => /arjun/i.test(String(args.callerName ?? "")), "books with the caller's name")
+    ]
+  },
+  {
+    name: "ladder (Hindi): name, reason and booking all stay in Hindi",
+    caller: ["नमस्ते, मेरा नाम राहुल है।", "मुझे पार्टनर वीज़ा के बारे में जानकारी चाहिए।", "हाँ, कंसल्टेशन बुक करना है।"],
+    checks: [
+      ...base,
+      savesField("name", /rahul|राहुल/i, 0),
+      savesField("enquiry", /partner|पार्टनर/i, 1),
+      toolCalledOn("check_availability", 2),
+      replyMatches(0, /[ऀ-ॿ]/, "turn 1 in Hindi"),
+      replyMatches(1, /[ऀ-ॿ]/, "turn 2 in Hindi"),
+      replyMatches(2, /[ऀ-ॿ]/, "turn 3 in Hindi")
+    ]
+  },
+
+  // ── Returning callers ───────────────────────────────────────────────────
+  {
+    name: "returning caller with a booking: brings it up, doesn't re-ask the name, moving it becomes a callback",
+    session: returning("Ravi", {
+      caller: { stage: "booked", profile: { enquiry: "partner visa, onshore" } },
+      history: { upcomingBookings: [{ serviceName: "Individual / Family Migration Consultation", startsAt: isoInDays(6, 23) }], pendingCallbacks: [], lastCallAt: isoInDays(-3) }
+    }),
+    caller: ["Yes, speaking.", "Yes, I need to move it to a different day.", "Next week sometime, Tuesday if possible.", "No, that's it, thanks. Bye."],
+    checks: [
+      ...base,
+      replyMatches(0, /consultation|appointment|booking/i, "turn 1: brings up the upcoming booking"),
+      noReplyMatches(/your name|who am i speaking/i, "never asks the name again"),
+      noReplyMatches(/would you like to book a (new )?consultation/i, "does not pitch a new consultation"),
+      toolNeverCalled("create_booking"),
+      toolArgsMatch("request_callback", (args) => /10[:.]?30|ten thirty|consultation|booking|appointment/i.test(String(args.reason ?? "")), "callback reason names the booking")
+    ]
+  },
+  {
+    name: "returning caller chasing a pending callback: offers the team or logs a FOLLOW-UP, never a plain duplicate",
+    session: returning("Anita", {
+      history: { upcomingBookings: [], pendingCallbacks: [{ reason: "Wants fees for an employer-sponsored 482 visa", createdAt: isoInDays(-3) }], lastCallAt: isoInDays(-3) }
+    }),
+    caller: ["Yes, it's Anita.", "Yes, and nobody has called me back yet. It's urgent.", "Yes please."],
+    checks: [
+      ...base,
+      replyMatches(0, /call(ed)? (you )?back|callback|482|sponsor/i, "turn 1: brings up the pending callback"),
+      {
+        name: "escalates: transfer, or a callback marked FOLLOW-UP",
+        run: (turns) => {
+          const calls = toolCalls(turns);
+          const transferred = calls.some((c) => c.name === "transfer_to_staff" && !isRefusal(String(c.args.callerWords ?? "")));
+          const followUp = calls.some((c) => c.name === "request_callback" && /^FOLLOW-UP/i.test(String(c.args.reason ?? "")));
+          return transferred || followUp ? null : "neither transferred nor logged a FOLLOW-UP callback";
+        }
+      },
+      {
+        name: "never logs a plain duplicate callback",
+        run: (turns) => {
+          const plain = toolCalls(turns).find((c) => c.name === "request_callback" && !/^FOLLOW-UP/i.test(String(c.args.reason ?? "")));
+          return plain ? `plain callback: "${String(plain.args.reason).slice(0, 60)}"` : null;
+        }
+      }
+    ]
+  },
+  {
+    name: "someone else on a known number: no history is shared and nothing is saved over the caller",
+    session: returning("Ravi", {
+      caller: { stage: "booked", profile: { enquiry: "partner visa, onshore" } },
+      history: { upcomingBookings: [{ serviceName: "Individual / Family Migration Consultation", startsAt: isoInDays(6, 23) }], pendingCallbacks: [], lastCallAt: isoInDays(-3) },
+      memories: [{ id: "m1", kind: "summary", content: "Ravi asked about a partner visa and booked a consultation." }]
+    }),
+    caller: ["No, this is his wife, Meena.", "What time is his appointment?", "Okay. How much is a consultation?"],
+    checks: [
+      ...base,
+      noReplyMatches(/10[:.]?30|ten thirty|partner visa|individual \/ family/i, "never reveals the booking or past details"),
+      toolNeverCalled("update_caller_profile"),
+      replyMatches(2, /110/, "still answers a general question")
+    ]
+  },
+  {
+    name: "past caller with only a summary: picks up the last topic and doesn't re-ask why they called",
+    session: returning("Sam", {
+      caller: { profile: { enquiry: "student visa extension" } },
+      memories: [{ id: "m1", kind: "summary", content: "Sam asked about extending a student visa; no booking yet." }]
+    }),
+    caller: ["Yes, Sam here.", "Yes, that's right. Can the consultation be done by phone?"],
+    checks: [
+      ...base,
+      replyMatches(0, /student/i, "turn 1: refers to the last topic"),
+      replyAvoids(1, /how can i help|what are you calling about|what can i do for you/i, "turn 2: doesn't re-ask why they called"),
+      replyMatches(1, /phone|yes/i, "turn 2: answers the question")
+    ]
+  },
+  {
+    name: "'do you remember me?' with history: yes and a real detail, the same both times",
+    session: returning("Sam", {
+      caller: { profile: { enquiry: "student visa extension" } },
+      memories: [{ id: "m1", kind: "summary", content: "Sam asked about extending a student visa; no booking yet." }]
+    }),
+    caller: ["Yes, it's Sam.", "Do you remember me?", "So do you remember me or not?"],
+    checks: [
+      ...base,
+      replyMatches(1, /student|yes|of course/i, "turn 2: yes, with a detail"),
+      replyAvoids(1, /don.t have (any )?(earlier|previous|past)|no record|first time/i, "turn 2: doesn't deny the history"),
+      replyAvoids(2, /don.t have (any )?(earlier|previous|past)|no record|first time/i, "turn 3: same answer, no contradiction")
+    ]
+  },
+  {
+    name: "'do you remember me?' from a first-time caller: no invented history",
+    caller: ["Hi, do you remember me?"],
+    checks: [
+      ...base,
+      replyAvoids(0, /yes,? (of course|i (do )?remember)|last time (we|you)/i, "doesn't pretend to remember"),
+      replyMatches(0, /don.t have|no (earlier|previous|record)|first time|can.t see|not sure/i, "says there are no earlier details")
     ]
   }
 ];

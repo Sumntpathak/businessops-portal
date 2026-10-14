@@ -38,6 +38,9 @@ export function deriveCallerGeo(phoneE164: string): { country: string | null; ti
   return match ? { country: match[1], timezone: match[2] } : { country: null, timezone: null };
 }
 
+/** Profile key for the reason the caller is calling; accepted without an intake-field definition. */
+export const ENQUIRY_KEY = "enquiry";
+
 function isText(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0 && value.trim().length <= 500;
 }
@@ -52,6 +55,12 @@ export function validateProfileFields(values: Record<string, unknown>, definitio
   for (const [key, rawValue] of Object.entries(values).slice(0, 25)) {
     if (key === "name" || key === "displayName") {
       if (isText(rawValue) && rawValue.trim().length <= 120) accepted.name = rawValue.trim();
+      else rejected.push({ key, code: "wrong_type" });
+      continue;
+    }
+    // Built in for every tenant: what the caller is calling about, in one line.
+    if (key === ENQUIRY_KEY) {
+      if (isText(rawValue)) accepted[ENQUIRY_KEY] = rawValue.trim();
       else rejected.push({ key, code: "wrong_type" });
       continue;
     }
