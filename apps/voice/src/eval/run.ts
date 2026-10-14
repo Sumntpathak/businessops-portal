@@ -102,12 +102,8 @@ const SLOT = (start: string, local: string) => ({ startsAt: start, endsAt: start
 const TOOL_RESULTS: Record<string, unknown> = {
   check_availability: { serviceId: "svc-student", serviceName: "Student Services Consultation", price: "110.00", staffId: null, callerTimezone: "Australia/Melbourne", slots: [SLOT("2026-10-02T00:30:00.000+00:00", "Oct 2, 2026, 10:30 AM"), SLOT("2026-10-02T01:15:00.000+00:00", "Oct 2, 2026, 11:15 AM")] },
   create_booking: { bookingId: "b-1", startsAt: "2026-10-02T00:30:00.000+00:00", callerLocalTime: "Oct 2, 2026, 10:30 AM", businessLocalTime: "Oct 2, 2026, 10:30 AM", serviceName: "Student Services Consultation", price: "110.00", staffId: null },
-  list_staff: { staff: [{ id: "s1", name: "Gundeep Malhotra", isRegisteredAgent: false, credentialLabel: "" }, { id: "s2", name: "Lara", isRegisteredAgent: false, credentialLabel: "" }] },
   request_callback: { callbackRequestId: "cb-1", recorded: true },
   update_caller_profile: { updated: ["name"], rejected: [], profile: {} },
-  get_caller_context: { name: null, memories: [], bookings: [] },
-  save_memory: { saved: true },
-  cancel_booking: { cancelled: true },
   end_call: { ended: true }
 };
 

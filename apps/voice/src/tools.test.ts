@@ -58,7 +58,6 @@ function harness() {
     repository: {
       findService: async (...args: any[]) => { calls.push({ name: "findService", args }); return service; },
       findStaff: async (...args: any[]) => { calls.push({ name: "findStaff", args }); return staffMember; },
-      listStaff: async (...args: any[]) => { calls.push({ name: "listStaff", args }); return [staffMember]; },
       findStaffPhoneForTransfer: async (...args: any[]) => {
         calls.push({ name: "findStaffPhoneForTransfer", args });
         return { id: staffMember.id, name: staffMember.name, phoneE164: "+15558675309" };
@@ -66,11 +65,7 @@ function harness() {
       updateCallerName: async (...args: any[]) => { calls.push({ name: "updateCallerName", args }); },
       updateCallerProfile: async (...args: any[]) => { calls.push({ name: "updateCallerProfile", args }); return { updated: ["name"], rejected: [], name: "Asha", profile: {} }; },
       createBooking: async (...args: any[]) => { calls.push({ name: "createBooking", args }); return { id: "booking-1" }; },
-      findConfirmedBooking: async (...args: any[]) => { calls.push({ name: "findConfirmedBooking", args }); return { id: "booking-1", gcalEventId: "gcal-1" }; },
-      cancelBooking: async (...args: any[]) => { calls.push({ name: "cancelBooking", args }); },
-      saveMemory: async (...args: any[]) => { calls.push({ name: "saveMemory", args }); return { id: "memory-1" }; },
-      createCallbackRequest: async (...args: any[]) => { calls.push({ name: "createCallbackRequest", args }); return { id: "callback-1" }; },
-      getCallerContext: async (...args: any[]) => { calls.push({ name: "getCallerContext", args }); return { caller: session.caller, memories: [], upcomingBookings: [], intakeFields: [] }; }
+      createCallbackRequest: async (...args: any[]) => { calls.push({ name: "createCallbackRequest", args }); return { id: "callback-1" }; }
     }
   };
   return { executor: new ToolExecutor(session, dependencies), calls, service, staffMember, dependencies };
@@ -95,13 +90,6 @@ describe("ToolExecutor", () => {
     assert.equal(result.staffId, staffMember.id);
     assert.deepEqual(calls.find((call) => call.name === "findStaff")?.args, [session.tenantId, { staffName: "Gagandeep" }]);
     assert.deepEqual(calls.find((call) => call.name === "getSlots")?.args, [session.tenantId, service.id, "2027-01-07", staffMember.id]);
-  });
-
-  it("lists active staff for the tenant", async () => {
-    const { executor, calls, staffMember } = harness();
-    const result = await executor.execute("list_staff", {});
-    assert.deepEqual(result, { staff: [staffMember] });
-    assert.deepEqual(calls.find((call) => call.name === "listStaff")?.args, [session.tenantId]);
   });
 
   it("filters adjacent business dates into the caller's local date", async () => {
@@ -149,20 +137,6 @@ describe("ToolExecutor", () => {
     assert.deepEqual(calls.find((call) => call.name === "findStaff")?.args, [session.tenantId, { staffId: staffMember.id }]);
   });
 
-  it("only cancels a confirmed booking belonging to the session caller", async () => {
-    const { executor, calls } = harness();
-    await executor.execute("cancel_booking", { bookingId: "018f5f86-9cf1-7f4d-81d2-6f11a3e841f7" });
-    assert.deepEqual(calls.find((call) => call.name === "findConfirmedBooking")?.args, [session.tenantId, session.caller.id, "018f5f86-9cf1-7f4d-81d2-6f11a3e841f7"]);
-    assert.deepEqual(calls.find((call) => call.name === "cancelBooking")?.args, [session.tenantId, session.caller.id, "booking-1"]);
-  });
-
-  it("validates and saves durable memory with the current call as source", async () => {
-    const { executor, calls } = harness();
-    await executor.execute("save_memory", { kind: "preference", content: "Prefers morning appointments" });
-    assert.deepEqual(calls.find((call) => call.name === "saveMemory")?.args, [session.tenantId, session.caller.id, session.callId, { kind: "preference", content: "Prefers morning appointments" }]);
-    await assert.rejects(() => executor.execute("save_memory", { kind: "secret", content: "x" }));
-  });
-
   it("records a callback request with the current call as source", async () => {
     const { executor, calls } = harness();
     const result = await executor.execute("request_callback", {
@@ -197,12 +171,6 @@ describe("ToolExecutor", () => {
       session.caller.id,
       { name: "Sumant" }
     ]);
-  });
-
-  it("loads caller context using tenant and caller IDs from the session", async () => {
-    const { executor, calls } = harness();
-    await executor.execute("get_caller_context", {});
-    assert.deepEqual(calls.find((call) => call.name === "getCallerContext")?.args, [session.tenantId, session.caller.id]);
   });
 
   it("rejects unknown tools and missing services", async () => {
@@ -246,6 +214,3 @@ describe("ToolExecutor", () => {
     );
   });
 });
-
-
-

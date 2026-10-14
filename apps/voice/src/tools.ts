@@ -1,14 +1,4 @@
-import {
-  and,
-  asc,
-  desc,
-  eq,
-  gte,
-  ilike,
-  isNotNull,
-  isNull,
-  sql
-} from "drizzle-orm";
+import { asc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { explainNoSlots } from "./office-hours.js";
 import { addDaysIso, isWithinCallerDay, localHour, officeHoursForCaller, pickAcrossDays, spreadPick } from "./slot-selection.js";
@@ -57,7 +47,6 @@ export interface ToolRepository {
     tenantId: string,
     selector: { staffId?: string; staffName?: string }
   ): Promise<ToolStaff | null>;
-  listStaff(tenantId: string): Promise<ToolStaff[]>;
   /**
    * Resolves a staff member's phone number for call transfer. Deliberately
    * separate from findStaff/ToolStaff, which are model-facing and must never
@@ -93,42 +82,12 @@ export interface ToolRepository {
       gcalEventId: string | null;
     }
   ): Promise<{ id: string }>;
-  findConfirmedBooking(
-    tenantId: string,
-    callerId: string,
-    bookingId: string
-  ): Promise<{ id: string; gcalEventId: string | null } | null>;
-  cancelBooking(
-    tenantId: string,
-    callerId: string,
-    bookingId: string
-  ): Promise<void>;
-  saveMemory(
-    tenantId: string,
-    callerId: string,
-    sourceCallId: string,
-    memory: { kind: "fact" | "preference" | "summary"; content: string }
-  ): Promise<{ id: string }>;
   createCallbackRequest(
     tenantId: string,
     callerId: string,
     sourceCallId: string,
     values: { reason: string; preferredTime: string }
   ): Promise<{ id: string }>;
-  getCallerContext(
-    tenantId: string,
-    callerId: string
-  ): Promise<{
-    caller: CallSession["caller"];
-    memories: Array<{ id: string; kind: "fact" | "preference" | "summary"; content: string }>;
-    upcomingBookings: Array<{
-      id: string;
-      serviceName: string;
-      startsAt: Date;
-      endsAt: Date;
-    }>;
-    intakeFields: CallSession["intakeFields"];
-  }>;
 }
 
 export interface ToolExecutorDependencies {
@@ -181,30 +140,6 @@ const createBookingInput = z
     callerName: val.callerName ?? val.name ?? undefined
   }));
 
-const cancelBookingInput = z
-  .object({
-    bookingId: z.string().nullable().optional(),
-    id: z.string().nullable().optional()
-  })
-  .transform((val) => ({
-    bookingId: val.bookingId ?? val.id ?? "booking-123"
-  }));
-
-const saveMemoryInput = z
-  .object({
-    kind: z.enum(["fact", "preference", "summary"]).nullable().optional(),
-    content: z.string().trim().min(1).max(2_000).nullable().optional(),
-    text: z.string().trim().min(1).max(2_000).nullable().optional(),
-    memory: z.string().trim().min(1).max(2_000).nullable().optional(),
-    note: z.string().trim().min(1).max(2_000).nullable().optional(),
-    preference: z.string().trim().min(1).max(2_000).nullable().optional(),
-    fact: z.string().trim().min(1).max(2_000).nullable().optional()
-  })
-  .transform((val) => ({
-    kind: (val.kind ?? (val.preference ? "preference" : "fact")) as "fact" | "preference" | "summary",
-    content: val.content ?? val.text ?? val.memory ?? val.note ?? val.preference ?? val.fact ?? "Note saved"
-  }));
-
 const updateCallerProfileInput = z
   .union([
     z.object({
@@ -235,8 +170,6 @@ const requestCallbackInput = z
     preferredTime: val.preferredTime ?? val.time ?? ""
   }));
 
-const emptyInput = z.object({}).strict();
-
 const TOOL_TIMEOUT_MS = 3_500;
 
 /** Most days one check_availability call may search ("any day this week"). */
@@ -265,18 +198,10 @@ export class ToolExecutor {
         return this.checkAvailability(availabilityInput.parse(rawInput));
       case "create_booking":
         return this.createBooking(createBookingInput.parse(rawInput));
-      case "cancel_booking":
-        return this.cancelBooking(cancelBookingInput.parse(rawInput));
-      case "save_memory":
-        return this.saveMemory(saveMemoryInput.parse(rawInput));
       case "request_callback":
         return this.requestCallback(requestCallbackInput.parse(rawInput));
       case "update_caller_profile":
         return this.updateCallerProfile(updateCallerProfileInput.parse(rawInput));
-      case "get_caller_context":
-        return this.getCallerContext();
-      case "list_staff":
-        return this.listStaff();
       default:
         throw new Error("Unknown tool: " + name);
     }
@@ -384,11 +309,6 @@ export class ToolExecutor {
     };
   }
 
-  private async listStaff() {
-    const staff = await this.dependencies.repository.listStaff(this.session.tenantId);
-    return { staff };
-  }
-
   private async createBooking(input: z.infer<typeof createBookingInput>) {
     const selector = input.serviceId
       ? { serviceId: input.serviceId }
@@ -494,50 +414,12 @@ export class ToolExecutor {
     }
   }
 
-  private async cancelBooking(input: z.infer<typeof cancelBookingInput>) {
-    const booking = await this.dependencies.repository.findConfirmedBooking(
-      this.session.tenantId,
-      this.session.caller.id,
-      input.bookingId
-    );
-    if (!booking) throw new Error("Confirmed booking not found");
-
-    if (booking.gcalEventId) {
-      try {
-        await this.dependencies.calendar.deleteEvent(
-          this.session.tenantId,
-          booking.gcalEventId
-        );
-      } catch (error) {
-        // A calendar disconnected after the booking was made must not block
-        // the local cancellation.
-        if (!(error instanceof CalendarConnectionRevokedError)) throw error;
-      }
-    }
-    await this.dependencies.repository.cancelBooking(
-      this.session.tenantId,
-      this.session.caller.id,
-      booking.id
-    );
-    return { bookingId: booking.id, cancelled: true };
-  }
-
   private async updateCallerProfile(input: z.infer<typeof updateCallerProfileInput>) {
     return this.dependencies.repository.updateCallerProfile(
       this.session.tenantId,
       this.session.caller.id,
       input.fields
     );
-  }
-
-  private async saveMemory(input: z.infer<typeof saveMemoryInput>) {
-    const memory = await this.dependencies.repository.saveMemory(
-      this.session.tenantId,
-      this.session.caller.id,
-      this.session.callId,
-      input
-    );
-    return { memoryId: memory.id, saved: true };
   }
 
   private async requestCallback(input: z.infer<typeof requestCallbackInput>) {
@@ -548,25 +430,6 @@ export class ToolExecutor {
       input
     );
     return { callbackRequestId: request.id, recorded: true };
-  }
-
-  private async getCallerContext() {
-    const context = await this.dependencies.repository.getCallerContext(
-      this.session.tenantId,
-      this.session.caller.id
-    );
-    const callerTimezone = context.caller.timezone ?? this.session.timezone;
-    return {
-      ...context,
-      callerTimezone,
-      upcomingBookings: context.upcomingBookings.map((booking) => ({
-        ...booking,
-        startsAt: booking.startsAt.toISOString(),
-        endsAt: booking.endsAt.toISOString(),
-        callerLocalTime: formatCallerLocalTime(booking.startsAt, callerTimezone),
-        businessLocalTime: formatCallerLocalTime(booking.startsAt, this.session.timezone)
-      }))
-    };
   }
 }
 
@@ -741,7 +604,7 @@ export class DrizzleToolRepository implements ToolRepository {
     return match ?? null;
   }
 
-  async listStaff(tenantId: string): Promise<ToolStaff[]> {
+  private async listStaff(tenantId: string): Promise<ToolStaff[]> {
     const cached = this.getCached(this.staffCache, tenantId);
     if (cached) return cached;
 
@@ -864,80 +727,6 @@ export class DrizzleToolRepository implements ToolRepository {
     return booking;
   }
 
-  async findConfirmedBooking(
-    tenantId: string,
-    callerId: string,
-    bookingId: string
-  ): Promise<{ id: string; gcalEventId: string | null } | null> {
-    const scoped = withTenant(this.db, tenantId);
-    const [booking] = await this.db
-      .select({
-        id: schema.bookings.id,
-        gcalEventId: schema.bookings.gcalEventId
-      })
-      .from(schema.bookings)
-      .where(
-        scoped.where(
-          schema.bookings,
-          and(
-            eq(schema.bookings.id, bookingId),
-            eq(schema.bookings.callerId, callerId),
-            eq(schema.bookings.status, "confirmed"),
-            isNull(schema.bookings.deletedAt)
-          )
-        )
-      )
-      .limit(1);
-    return booking ?? null;
-  }
-
-  async cancelBooking(
-    tenantId: string,
-    callerId: string,
-    bookingId: string
-  ): Promise<void> {
-    const scoped = withTenant(this.db, tenantId);
-    await this.db
-      .update(schema.bookings)
-      .set({
-        status: "cancelled",
-        deletedAt: new Date(),
-        updatedAt: new Date()
-      })
-      .where(
-        scoped.where(
-          schema.bookings,
-          and(
-            eq(schema.bookings.id, bookingId),
-            eq(schema.bookings.callerId, callerId),
-            isNull(schema.bookings.deletedAt)
-          )
-        )
-      );
-  }
-
-  async saveMemory(
-    tenantId: string,
-    callerId: string,
-    sourceCallId: string,
-    memory: { kind: "fact" | "preference" | "summary"; content: string }
-  ): Promise<{ id: string }> {
-    const scoped = withTenant(this.db, tenantId);
-    const [saved] = await this.db
-      .insert(schema.callerMemories)
-      .values(
-        scoped.values({
-          callerId,
-          sourceCallId,
-          kind: memory.kind,
-          content: memory.content
-        })
-      )
-      .returning({ id: schema.callerMemories.id });
-    if (!saved) throw new Error("Memory insert returned no row");
-    return saved;
-  }
-
   async createCallbackRequest(
     tenantId: string,
     callerId: string,
@@ -958,92 +747,5 @@ export class DrizzleToolRepository implements ToolRepository {
       .returning({ id: schema.callbackRequests.id });
     if (!saved) throw new Error("Callback request insert returned no row");
     return saved;
-  }
-
-  async getCallerContext(tenantId: string, callerId: string) {
-    const scoped = withTenant(this.db, tenantId);
-    const [callerRows, memories, upcomingBookings, intakeFields] = await Promise.all([
-      this.db
-        .select({
-          id: schema.callers.id,
-          phoneE164: schema.callers.phoneE164,
-          displayName: schema.callers.displayName,
-          country: schema.callers.country,
-          timezone: schema.callers.timezone,
-          profile: schema.callers.profile,
-          stage: schema.callers.stage
-        })
-        .from(schema.callers)
-        .where(scoped.where(schema.callers, eq(schema.callers.id, callerId)))
-        .limit(1),
-      this.db
-        .select({
-          id: schema.callerMemories.id,
-          kind: schema.callerMemories.kind,
-          content: schema.callerMemories.content
-        })
-        .from(schema.callerMemories)
-        .where(
-          scoped.where(
-            schema.callerMemories,
-            eq(schema.callerMemories.callerId, callerId)
-          )
-        )
-        .orderBy(desc(schema.callerMemories.createdAt))
-        .limit(5),
-      this.db
-        .select({
-          id: schema.bookings.id,
-          serviceName: schema.services.name,
-          startsAt: schema.bookings.startsAt,
-          endsAt: schema.bookings.endsAt
-        })
-        .from(schema.bookings)
-        .innerJoin(
-          schema.services,
-          and(
-            eq(schema.services.id, schema.bookings.serviceId),
-            eq(schema.services.tenantId, tenantId)
-          )
-        )
-        .where(
-          scoped.where(
-            schema.bookings,
-            and(
-              eq(schema.bookings.callerId, callerId),
-              eq(schema.bookings.status, "confirmed"),
-              gte(schema.bookings.startsAt, new Date()),
-              isNull(schema.bookings.deletedAt)
-            )
-          )
-        )
-        .orderBy(asc(schema.bookings.startsAt))
-        .limit(10),
-      this.db
-        .select({
-          id: schema.intakeFields.id,
-          key: schema.intakeFields.key,
-          label: schema.intakeFields.label,
-          type: schema.intakeFields.type,
-          options: schema.intakeFields.options,
-          priority: schema.intakeFields.priority,
-          sort: schema.intakeFields.sort,
-          active: schema.intakeFields.active
-        })
-        .from(schema.intakeFields)
-        .where(scoped.where(schema.intakeFields, eq(schema.intakeFields.active, true)))
-        .orderBy(asc(schema.intakeFields.sort))
-    ]);
-
-    const caller = callerRows[0] ?? {
-      id: callerId,
-      phoneE164: "+919876543210",
-      displayName: "Caller",
-      country: "IN",
-      timezone: "Asia/Kolkata",
-      profile: {},
-      stage: "new" as const
-    };
-    return { caller, memories: memories ?? [], upcomingBookings: upcomingBookings ?? [], intakeFields: intakeFields ?? [] };
   }
 }

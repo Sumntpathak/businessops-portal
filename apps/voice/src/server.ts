@@ -12,15 +12,13 @@ import {
 import { createDatabase, decryptTwilioAuthToken, schema, withTenant } from "@recepto/db";
 import { validateEnv } from "@recepto/shared/env";
 import { parseBusinessInfo, type BusinessInfo } from "@recepto/shared";
-import type { AIBridge, StaffSelector, TranscriptEvent } from "./ai-bridge.js";
+import type { StaffSelector, TranscriptEvent } from "./ai-bridge.js";
 import {
   AzureRealtimeBridge,
-  buildSessionConfig,
   buildSipAcceptConfig,
   type RealtimeTuning,
   type TransferCheck
 } from "./azure-realtime-bridge.js";
-import { GeminiLiveBridge } from "./gemini-live-bridge.js";
 import type { BusinessHour, CallSession, TeamMember } from "./call-session.js";
 import { deriveCallerGeo } from "./caller-profile.js";
 import { createCallSummarizer } from "./call-summary-worker.js";
@@ -50,28 +48,12 @@ const realtimeTuning: RealtimeTuning = {
   transcribeModel: env.AZURE_TRANSCRIBE_MODEL
 };
 
-function requireEnv(value: string | undefined, name: string): string {
-  if (!value) {
-    throw new Error(`${name} is required when VOICE_PROVIDER=gemini-live`);
-  }
-  return value;
+// Azure realtime is the only voice provider: fail at startup, not on the first call.
+if (!env.AZURE_REALTIME_URL || !env.AZURE_REALTIME_KEY) {
+  throw new Error("AZURE_REALTIME_URL and AZURE_REALTIME_KEY are required");
 }
-
-/**
- * Parses GOOGLE_APPLICATION_CREDENTIALS_JSON for hosts (e.g. Render without
- * Secret Files) that can't mount a credentials file for
- * GOOGLE_APPLICATION_CREDENTIALS to point at. Returns undefined when unset so
- * the caller falls back to standard file-path ADC.
- */
-function parseInlineGoogleCredentials(): Record<string, unknown> | undefined {
-  const raw = env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
-  if (!raw) return undefined;
-  try {
-    return JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    throw new Error("GOOGLE_APPLICATION_CREDENTIALS_JSON is not valid JSON");
-  }
-}
+const azureRealtimeUrl = env.AZURE_REALTIME_URL;
+const azureRealtimeKey = env.AZURE_REALTIME_KEY;
 
 const db = createDatabase(env.DATABASE_URL);
 // Redis is now optional: it backs only best-effort webhook dedupe, so a failed
@@ -124,6 +106,24 @@ function makeTransferResolver(getSession: () => CallSession | undefined) {
     }
     return { ok: true };
   };
+}
+
+/** One Azure realtime bridge per call; `attachCallId` joins a SIP call Azure already accepted. */
+function createRealtimeBridge(
+  voice: string | undefined,
+  getSession: () => CallSession | undefined,
+  attachCallId?: string
+): AzureRealtimeBridge {
+  return new AzureRealtimeBridge({
+    url: azureRealtimeUrl,
+    apiKey: azureRealtimeKey,
+    model: env.AZURE_REALTIME_MODEL,
+    voice,
+    tuning: realtimeTuning,
+    resolveTransfer: makeTransferResolver(getSession),
+    ...(attachCallId ? { attachCallId } : {}),
+    logger: app.log
+  });
 }
 
 const app = Fastify({
@@ -991,16 +991,7 @@ async function handleAzureSipCall(
     buildSipAcceptConfig(session, env.AZURE_REALTIME_MODEL, env.AZURE_REALTIME_VOICE, realtimeTuning)
   );
 
-  const bridge = new AzureRealtimeBridge({
-    url: env.AZURE_REALTIME_URL ?? "",
-    apiKey: env.AZURE_REALTIME_KEY ?? "",
-    model: env.AZURE_REALTIME_MODEL,
-    voice: env.AZURE_REALTIME_VOICE,
-    tuning: realtimeTuning,
-    resolveTransfer: makeTransferResolver(() => session),
-    attachCallId: providerCallId,
-    logger: app.log
-  });
+  const bridge = createRealtimeBridge(env.AZURE_REALTIME_VOICE, () => session, providerCallId);
 
   const latencyTracker = new VoiceLatencyTracker(session.callId, app.log);
   let transcriptSeq = 0;
@@ -1297,29 +1288,7 @@ mediaStreams.on("connection", (socket, request) => {
     accountSid: env.TWILIO_ACCOUNT_SID,
     authToken: env.TWILIO_AUTH_TOKEN
   });
-  const bridge: AIBridge =
-    env.VOICE_PROVIDER === "gemini-live" || !env.AZURE_REALTIME_URL
-      ? new GeminiLiveBridge({
-          project: env.GOOGLE_CLOUD_PROJECT || "savr-457c4",
-          location: env.GOOGLE_CLOUD_LOCATION,
-          model: env.GEMINI_LIVE_MODEL,
-          voice: env.GEMINI_LIVE_VOICE,
-          apiKey: env.GEMINI_API_KEY,
-          vadSensitivity: env.GEMINI_VAD_END_SENSITIVITY,
-          bargeInEnabled: env.GEMINI_BARGE_IN_ENABLED,
-          bargeInRms: env.GEMINI_BARGE_IN_RMS,
-          credentials: parseInlineGoogleCredentials(),
-          logger: app.log
-        })
-      : new AzureRealtimeBridge({
-          url: env.AZURE_REALTIME_URL,
-          apiKey: env.AZURE_REALTIME_KEY ?? "",
-          model: env.AZURE_REALTIME_MODEL,
-          voice: env.AZURE_REALTIME_VOICE,
-          tuning: realtimeTuning,
-          resolveTransfer: makeTransferResolver(() => session),
-          logger: app.log
-        });
+  const bridge = createRealtimeBridge(env.AZURE_REALTIME_VOICE, () => session);
   let session: CallSession | undefined;
   let transcriptSeq = 0;
   let frameCount = 0;
@@ -1377,7 +1346,7 @@ mediaStreams.on("connection", (socket, request) => {
   };
 
   app.log.info(
-    { callId, voiceProvider: env.VOICE_PROVIDER, model: env.VOICE_PROVIDER === "gemini-live" ? env.GEMINI_LIVE_MODEL : env.AZURE_REALTIME_MODEL },
+    { callId, model: env.AZURE_REALTIME_MODEL },
     "Initializing AI voice bridge"
   );
   let audioOutFrames = 0;
@@ -1552,8 +1521,6 @@ app.server.on("upgrade", (request, socket, head) => {
   });
 });
 
-const browserTestVoiceSchema = z.string().regex(/^[a-z-]{1,32}$/).optional();
-
 function isValidTimezone(timezone: string): boolean {
   try {
     Intl.DateTimeFormat(undefined, { timeZone: timezone });
@@ -1568,40 +1535,12 @@ browserTestStreams.on("connection", (socket, request) => {
     const url = new URL(request.url ?? "/", "http://localhost");
     const rawTimezone = url.searchParams.get("timezone")?.trim() ?? "";
     const callerTestTimezone = rawTimezone && isValidTimezone(rawTimezone) ? rawTimezone : null;
-    const VALID_GEMINI_VOICES = ["Kore", "Aoede", "Charon", "Fenrir", "Puck"];
     const rawVoice = url.searchParams.get("voice")?.trim() ?? "";
-    const matchedGeminiVoice = VALID_GEMINI_VOICES.find(
-      (v) => v.toLowerCase() === rawVoice.toLowerCase()
-    );
-    const geminiVoice = matchedGeminiVoice ?? env.GEMINI_LIVE_VOICE ?? "Kore";
-
     const AZURE_VOICES = ["alloy", "echo", "shimmer", "verse", "ballad", "coral", "sage", "ash"];
     const matchedAzureVoice = AZURE_VOICES.find((v) => v.toLowerCase() === rawVoice.toLowerCase());
     const azureVoice = matchedAzureVoice ?? env.AZURE_REALTIME_VOICE ?? "shimmer";
 
-    const bridge: AIBridge =
-      env.VOICE_PROVIDER === "gemini-live" || !env.AZURE_REALTIME_URL
-        ? new GeminiLiveBridge({
-            project: env.GOOGLE_CLOUD_PROJECT || "savr-457c4",
-            location: env.GOOGLE_CLOUD_LOCATION,
-            model: env.GEMINI_LIVE_MODEL,
-            voice: geminiVoice,
-            apiKey: env.GEMINI_API_KEY,
-            vadSensitivity: env.GEMINI_VAD_END_SENSITIVITY,
-            bargeInEnabled: env.GEMINI_BARGE_IN_ENABLED,
-            bargeInRms: env.GEMINI_BARGE_IN_RMS,
-            credentials: parseInlineGoogleCredentials(),
-            logger: app.log
-          })
-        : new AzureRealtimeBridge({
-            url: env.AZURE_REALTIME_URL,
-            apiKey: env.AZURE_REALTIME_KEY ?? "",
-            model: env.AZURE_REALTIME_MODEL,
-            voice: azureVoice,
-            tuning: realtimeTuning,
-            resolveTransfer: makeTransferResolver(() => session),
-            logger: app.log
-          });
+    const bridge = createRealtimeBridge(azureVoice, () => session);
     let session: CallSession | undefined;
     let transcriptSeq = 0;
     let finalized = false;
