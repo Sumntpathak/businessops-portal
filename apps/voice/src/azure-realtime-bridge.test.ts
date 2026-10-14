@@ -209,6 +209,18 @@ describe("tool results", () => {
     assert.deepEqual(sent.filter((e) => e.type === "response.create").at(-1), { type: "response.create", response: { tool_choice: "none" } });
   });
 
+  it("stops the agent pitching after its first consultation or callback offer", () => {
+    const { sent, handle } = bridgeWithFakeSocket();
+    const notes = () => sent.filter((e) => JSON.stringify(e).includes("Don't offer one again")).length;
+    handle({ type: "response.output_audio_transcript.done", transcript: "We have 15 years of experience. What else would you like to know?" });
+    assert.equal(notes(), 0, "an ordinary question is not an offer");
+    handle({ type: "response.output_audio_transcript.done", transcript: "A consultant can guide you. Would you like to book a consultation?" });
+    assert.equal(notes(), 1);
+    handle({ type: "response.output_audio_transcript.done", transcript: "Shall I arrange a callback?" });
+    assert.equal(notes(), 1, "the first note is sent once");
+    assert.ok(sent.some((e) => JSON.stringify(e).includes("AGAIN")), "a repeat offer gets a firmer note");
+  });
+
   it("tells the model where the call has got to, once per step", async () => {
     const { bridge, sent, callTool } = bridgeWithFakeSocket();
     bridge.onToolCall((name) => (name === "update_caller_profile" ? { updated: ["name"], rejected: [] } : { slots: [] }));

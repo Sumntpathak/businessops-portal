@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { ladderNote, ladderStepAfterTool } from "./call-ladder.js";
+import { isServiceOffer, ladderNote, ladderStepAfterTool } from "./call-ladder.js";
 
 describe("call ladder", () => {
   it("moves to step 2 when the name is saved and step 3 when the enquiry is saved", () => {
@@ -21,6 +21,15 @@ describe("call ladder", () => {
     assert.equal(ladderStepAfterTool(3, "check_availability", { error: "timeout" }), 3);
     assert.equal(ladderStepAfterTool(1, "update_caller_profile", { updated: ["visa_type"] }), 1);
     assert.equal(ladderStepAfterTool(2, "transfer_to_staff", { transferring: true }), 2);
+  });
+
+  it("recognises an offer only when the agent asks a booking or callback question", () => {
+    assert.equal(isServiceOffer("I can offer general information. Would you like to book a consultation?"), true);
+    assert.equal(isServiceOffer("The office is closed. Shall I arrange a callback for tomorrow?"), true);
+    assert.equal(isServiceOffer("क्या मैं आपके लिए परामर्श बुक कर दूँ?"), true);
+    assert.equal(isServiceOffer("Your consultation is booked. Is there anything else?"), false);
+    assert.equal(isServiceOffer("A consultant would need to confirm that for your case."), false);
+    assert.equal(isServiceOffer("We have over 15 years of experience. What else would you like to know?"), false);
   });
 
   it("offers a team member at the close only when someone can take the call", () => {

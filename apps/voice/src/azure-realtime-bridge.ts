@@ -4,7 +4,7 @@ import type { AIBridge, StaffSelector, TranscriptEvent } from "./ai-bridge.js";
 import type { CallSession } from "./call-session.js";
 import { isRefusal } from "./caller-intent.js";
 import { buildInstructions } from "./realtime-instructions.js";
-import { ladderNote, ladderStepAfterTool, type LadderStep } from "./call-ladder.js";
+import { isServiceOffer, ladderNote, ladderStepAfterTool, NO_MORE_OFFERS_NOTE, STOP_OFFERING_NOTE, type LadderStep } from "./call-ladder.js";
 
 export { buildInstructions };
 
@@ -344,6 +344,8 @@ export class AzureRealtimeBridge implements AIBridge {
   private followUpIfSilent = false;
   /** Whether the last finished reply said anything out loud. */
   private lastResponseSpoke = false;
+  /** The agent has offered a consultation or callback: it must not keep pitching. */
+  private offerMade = false;
 
   constructor(private readonly options: AzureRealtimeBridgeOptions) {}
 
@@ -506,6 +508,10 @@ export class AzureRealtimeBridge implements AIBridge {
       case "response.audio_transcript.done": {
         const text = typeof event.transcript === "string" ? event.transcript.trim() : "";
         if (text) this.transcript?.({ role: "agent", content: text, at: new Date() });
+        if (text && isServiceOffer(text)) {
+          this.addSystemNote(this.offerMade ? STOP_OFFERING_NOTE : NO_MORE_OFFERS_NOTE);
+          this.offerMade = true;
+        }
         return;
       }
       case "error":
@@ -729,6 +735,8 @@ export class AzureRealtimeBridge implements AIBridge {
     const next = ladderStepAfterTool(this.ladderStep, name, output);
     if (next === this.ladderStep) return;
     this.ladderStep = next;
+    // Step 3's note says "offer a consultation once"; after an offer that would restart the pitching.
+    if (next === 3 && this.offerMade) return;
     const note = ladderNote(next, (this.session?.transferRoster?.length ?? 0) > 0 && this.session?.transferAvailable !== false);
     if (note) this.addSystemNote(note);
   }

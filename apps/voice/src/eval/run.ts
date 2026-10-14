@@ -12,7 +12,7 @@ import { parseBusinessInfo } from "@recepto/shared";
 import { buildInstructions, greetingInstruction, REALTIME_TOOLS, toolLanguageNote } from "../azure-realtime-bridge.js";
 import type { CallSession } from "../call-session.js";
 import { isRefusal } from "../caller-intent.js";
-import { ladderNote, ladderStepAfterTool, type LadderStep } from "../call-ladder.js";
+import { isServiceOffer, ladderNote, ladderStepAfterTool, NO_MORE_OFFERS_NOTE, STOP_OFFERING_NOTE, type LadderStep } from "../call-ladder.js";
 import { SCENARIOS, type Scenario, type TurnResult } from "./scenarios.js";
 
 function loadEnvFile(file: string | undefined): void {
@@ -45,9 +45,8 @@ if (!process.env.AZURE_REALTIME_URL || !apiKey) throw new Error("AZURE_REALTIME_
 
 const agentMd = process.env.EVAL_AGENT_MD
   ? fs.readFileSync(process.env.EVAL_AGENT_MD, "utf8")
-  : fs.existsSync(new URL("../agent.md", import.meta.url))
-    ? fs.readFileSync(new URL("../agent.md", import.meta.url), "utf8")
-    : "# Holistic Migration Solutions\n- You are Riya, the receptionist. The business gives general migration information; only registered agents give personal advice.\n- Each consultation is 110 dollars.";
+  // The same text the tenant pastes into the dashboard's "More about the business".
+  : fs.readFileSync(new URL("../../knowledge/holistic-migration.md", import.meta.url), "utf8");
 
 const defaultHolisticInfo = parseBusinessInfo({
   receptionistName: "Riya",
@@ -147,6 +146,7 @@ function runScenario(scenario: Scenario): Promise<TurnResult[]> {
   const session = sessionFor(scenario);
   const canTransfer = (session.transferRoster?.length ?? 0) > 0 && session.transferAvailable !== false;
   let ladderStep: LadderStep = 1;
+  let offerMade = false;
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(url.toString(), { headers: { "api-key": apiKey, authorization: `Bearer ${apiKey}` } });
     const turns: TurnResult[] = [];
@@ -196,6 +196,11 @@ function runScenario(scenario: Scenario): Promise<TurnResult[]> {
           if (item.type === "message") {
             const text = ((item.content as Item[]) ?? []).map((c) => String(c.text ?? c.transcript ?? "")).join("").trim();
             if (text) current.messages.push(text);
+            // Mirrors the bridge: after the first consultation/callback offer, no more pitching.
+            if (text && isServiceOffer(text)) {
+              send({ type: "conversation.item.create", item: { type: "message", role: "system", content: [{ type: "input_text", text: offerMade ? STOP_OFFERING_NOTE : NO_MORE_OFFERS_NOTE }] } });
+              offerMade = true;
+            }
           }
         }
         if (goodbyeThenEnd) { turns.push(current); clearTimeout(timer); ws.close(); resolve(turns); return; }
@@ -224,7 +229,7 @@ function runScenario(scenario: Scenario): Promise<TurnResult[]> {
           send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: call.call_id, output: JSON.stringify(result) } });
           // Mirrors the bridge: a one-line "Call progress" note each time the call reaches a new step.
           const next = ladderStepAfterTool(ladderStep, name, result);
-          const note = next === ladderStep ? null : ladderNote(next, canTransfer);
+          const note = next === ladderStep || (next === 3 && offerMade) ? null : ladderNote(next, canTransfer);
           ladderStep = next;
           if (note) send({ type: "conversation.item.create", item: { type: "message", role: "system", content: [{ type: "input_text", text: note }] } });
         }

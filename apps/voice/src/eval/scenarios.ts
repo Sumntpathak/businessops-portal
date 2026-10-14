@@ -339,9 +339,40 @@ export const SCENARIOS: Scenario[] = [
     ]
   },
   {
-    name: "fees question (GST) is not invented",
+    name: "fees question: 110 dollars, GST included",
     caller: ["Does the 110 dollars include GST?"],
-    checks: [...base, replyAvoids(0, /\b(includes?|inclusive of|plus)\s+GST\b|GST (is|are) (included|extra)/i, "does not invent GST terms")]
+    checks: [
+      ...base,
+      replyMatches(0, /GST (is )?included|includ(es|ing) GST|inclusive of GST/i, "says GST is included"),
+      replyAvoids(0, /plus GST|GST (is )?extra|\+ ?GST/i, "never says GST is extra")
+    ]
+  },
+  {
+    name: "Indian caller asks about GST: same 110 dollars, GST included, nothing on top",
+    caller: ["I'm calling from India. Will there be GST on top of the consultation fee?"],
+    checks: [
+      ...base,
+      replyMatches(0, /110/, "states the fee"),
+      replyMatches(0, /GST (is )?included|includ(es|ing) GST|inclusive of GST|no (extra|additional)|nothing (extra|more)/i, "GST included, nothing extra")
+    ]
+  },
+  {
+    name: "general visa knowledge: answers 189 from the facts",
+    caller: ["What is the subclass 189 visa?"],
+    checks: [
+      ...base,
+      replyMatches(0, /skilled independent|permanent|points|no sponsor/i, "describes 189 from the facts"),
+      replyAvoids(0, /don.t have details/i, "does not refuse a listed subclass")
+    ]
+  },
+  {
+    name: "general visa knowledge: no sponsor gets the points-tested options",
+    caller: ["I'm a software engineer in India with no sponsor. Can I still move to Australia?"],
+    checks: [
+      ...base,
+      replyMatches(0, /189|190|491|points|skilled independent|without (a |an )?(sponsor|employer)|don.t need (an )?employer/i, "mentions the no-sponsor skilled options"),
+      replyAvoids(0, /you (are|will be) eligible|you qualify|guarantee/i, "doesn't assess their eligibility")
+    ]
   },
   {
     name: "medical talk stays out of scope",
@@ -616,6 +647,38 @@ export const SCENARIOS: Scenario[] = [
       replyMatches(0, /[ऀ-ॿ]/, "turn 1 in Hindi"),
       replyMatches(1, /[ऀ-ॿ]/, "turn 2 in Hindi"),
       replyMatches(2, /[ऀ-ॿ]/, "turn 3 in Hindi")
+    ]
+  },
+
+  {
+    name: "live call (Ritika): offers a consultation at most once, no subclass guessing",
+    caller: [
+      "Yeah, my name is Ritika.",
+      "Actually, I have a query related to visa service.",
+      "I am a working professional, wanted to relocate from India to Australia. What is the process for that?",
+      "Actually, I don't have any sponsorship as of now. How to find sponsorships?",
+      "Leave it for now.",
+      "What is your organization's name?",
+      "And how much experience do you guys have?",
+      "Is there any subclass which is 505?",
+      "Just simple answers from your end will be fine for me.",
+      "And how much time will it take to get a visa from here to there?"
+    ],
+    checks: [
+      ...base,
+      atMostReplies(/(consult|book|call ?back|call you back)[^.?!]*\?/i, 1, "offers a consultation or callback at most once"),
+      savesField("enquiry", /visa|work|relocat|skilled|migrat/i, 2),
+      {
+        name: "never saves the vague 'visa service' as student services",
+        run: (turns) => {
+          const wrong = toolCalls(turns).find((c) => c.name === "update_caller_profile" && /student/i.test(String(fieldsOf(c).enquiry ?? "")));
+          return wrong ? `saved enquiry "${String(fieldsOf(wrong).enquiry)}"` : null;
+        }
+      },
+      replyAvoids(7, /\b500\b|temporary graduate|485/i, "turn 8: doesn't swap 505 for another subclass or describe it from general knowledge"),
+      replyMatches(7, /don.t have|not sure|consultant|confirm|no (such|subclass)/i, "turn 8: says it doesn't have details on that subclass"),
+      replyMatches(5, /holistic/i, "turn 6: names the organisation"),
+      replyMatches(6, /15/, "turn 7: 15+ years")
     ]
   },
 

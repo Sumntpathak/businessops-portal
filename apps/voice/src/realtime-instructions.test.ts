@@ -50,7 +50,8 @@ describe("realtime instructions", () => {
     assert.match(text, /# THE ONE RULE/);
     assert.match(text, /Never give advice \(visa, migration, legal, medical, financial or any other\)/);
     assert.match(text, /never answer from your own general knowledge\. Never discuss visa eligibility\./);
-    assert.match(text, /offer a callback from the team/);
+    assert.match(text, /the team can follow up if they'd like/);
+    assert.match(text, /never swap the number they said for a different one/);
   });
 
   it("follows the caller's language", () => {
