@@ -11,27 +11,14 @@ import {
 } from "@recepto/calendar";
 import { createDatabase, decryptTwilioAuthToken, schema, withTenant } from "@recepto/db";
 import { validateEnv } from "@recepto/shared/env";
+import { resolveRealtimeConfig } from "./realtime-config.js";
 import { parseBusinessInfo, type BusinessInfo } from "@recepto/shared";
 import type { StaffSelector, TranscriptEvent } from "./ai-bridge.js";
-import {
-  AzureRealtimeBridge,
-  buildSipAcceptConfig,
-  type RealtimeTuning,
-  type TransferCheck
-} from "./azure-realtime-bridge.js";
+import { AzureRealtimeBridge, type TransferCheck } from "./azure-realtime-bridge.js";
 import type { BusinessHour, CallSession, TeamMember } from "./call-session.js";
 import { deriveCallerGeo } from "./caller-profile.js";
 import { EMPTY_HISTORY, loadCallerContext } from "./caller-history.js";
 import { createCallSummarizer } from "./call-summary-worker.js";
-import { VoiceLatencyTracker } from "./latency-tracker.js";
-import {
-  AzureSipClient,
-  hostFromSipHeader,
-  incomingCallEventSchema,
-  phoneFromSipHeader,
-  sipHeader,
-  verifyWebhookSignature
-} from "./channels/azure-sip.js";
 import { buildRingbackWav } from "./audio/ringback.js";
 import { TwilioAdapter } from "./channels/twilio.js";
 import { startOnboardingWorker } from "./onboarding/worker.js";
@@ -42,19 +29,8 @@ import {
 
 const env = validateEnv(process.env);
 
-// gpt-realtime-2.x reasoning effort and the input-transcription deployment; both
-// are omitted from the session when unset so older deployments are unaffected.
-const realtimeTuning: RealtimeTuning = {
-  reasoningEffort: env.AZURE_REALTIME_REASONING_EFFORT,
-  transcribeModel: env.AZURE_TRANSCRIBE_MODEL
-};
-
-// Azure realtime is the only voice provider: fail at startup, not on the first call.
-if (!env.AZURE_REALTIME_URL || !env.AZURE_REALTIME_KEY) {
-  throw new Error("AZURE_REALTIME_URL and AZURE_REALTIME_KEY are required");
-}
-const azureRealtimeUrl = env.AZURE_REALTIME_URL;
-const azureRealtimeKey = env.AZURE_REALTIME_KEY;
+// The voice model, on OpenAI or Azure; throws at startup (not on the first call) when unset.
+const realtime = resolveRealtimeConfig(env);
 
 const db = createDatabase(env.DATABASE_URL);
 // Redis is now optional: it backs only best-effort webhook dedupe, so a failed
@@ -109,20 +85,15 @@ function makeTransferResolver(getSession: () => CallSession | undefined) {
   };
 }
 
-/** One Azure realtime bridge per call; `attachCallId` joins a SIP call Azure already accepted. */
-function createRealtimeBridge(
-  voice: string | undefined,
-  getSession: () => CallSession | undefined,
-  attachCallId?: string
-): AzureRealtimeBridge {
+/** One realtime bridge per call. */
+function createRealtimeBridge(voice: string | undefined, getSession: () => CallSession | undefined): AzureRealtimeBridge {
   return new AzureRealtimeBridge({
-    url: azureRealtimeUrl,
-    apiKey: azureRealtimeKey,
-    model: env.AZURE_REALTIME_MODEL,
+    url: realtime.url,
+    apiKey: realtime.apiKey,
+    model: realtime.model,
     voice,
-    tuning: realtimeTuning,
+    tuning: realtime.tuning,
     resolveTransfer: makeTransferResolver(getSession),
-    ...(attachCallId ? { attachCallId } : {}),
     logger: app.log
   });
 }
@@ -789,348 +760,6 @@ app.post("/twilio/recording-status/:callId", async (request, reply) => {
   }
 });
 
-const azureSip =
-  env.AZURE_SIP_ENABLED && env.AZURE_WEBHOOK_SECRET && env.AZURE_REALTIME_URL && env.AZURE_REALTIME_KEY
-    ? new AzureSipClient({
-        realtimeUrl: env.AZURE_REALTIME_URL,
-        apiKey: env.AZURE_REALTIME_KEY
-      })
-    : undefined;
-
-app.post("/azure/incoming", async (request, reply) => {
-  if (!azureSip || !env.AZURE_WEBHOOK_SECRET) {
-    return reply.code(404).send({
-      error: { code: "NOT_ENABLED", message: "Azure SIP is not configured." }
-    });
-  }
-
-  const rawBody = (request as { rawBody?: Buffer }).rawBody;
-  if (
-    !rawBody ||
-    !verifyWebhookSignature(rawBody, request.headers, env.AZURE_WEBHOOK_SECRET)
-  ) {
-    request.log.warn("Rejected Azure webhook with invalid signature");
-    return reply.code(400).send({
-      error: { code: "INVALID_SIGNATURE", message: "Webhook signature is invalid." }
-    });
-  }
-
-  const parsed = incomingCallEventSchema.safeParse(request.body);
-  if (!parsed.success) {
-    return reply.code(400).send({
-      error: { code: "INVALID_INPUT", message: "Invalid webhook payload." }
-    });
-  }
-  const event = parsed.data;
-  if (event.type !== "realtime.call.incoming" || !event.data) {
-    return reply.code(200).send({ ok: true });
-  }
-
-  // Webhook retries must not double-handle a call. Redis is only an optimization
-  // here: if it is down or rate-limited we fail OPEN and let the call through,
-  // since the calls table has a unique index on provider_call_sid that makes the
-  // insert below idempotent anyway. Dropping a real call is far worse than a
-  // duplicate delivery attempt.
-  const firstDelivery = await redis
-    .set("azure-wh:" + event.id, "1", "EX", 300, "NX")
-    .catch((error: unknown) => {
-      request.log.warn({ err: error, eventId: event.id }, "Webhook dedupe unavailable; continuing");
-      return "OK";
-    });
-  if (firstDelivery !== "OK") return reply.code(200).send({ ok: true });
-
-  const providerCallId = event.data.call_id;
-  request.log.info(
-    { providerCallId, sipHeaders: event.data.sip_headers },
-    "Received Azure SIP incoming call event"
-  );
-  const from = phoneFromSipHeader(sipHeader(event, "From"));
-  const to =
-    phoneFromSipHeader(sipHeader(event, "To")) ??
-    phoneFromSipHeader(sipHeader(event, "X-Twilio-Original-Called-Number")) ??
-    phoneFromSipHeader(sipHeader(event, "P-Called-Party-ID")) ??
-    phoneFromSipHeader(sipHeader(event, "Diversion")) ??
-    phoneFromSipHeader(sipHeader(event, "X-Called")) ??
-    env.TWILIO_NUMBER;
-
-  const contactHost = hostFromSipHeader(sipHeader(event, "Contact"));
-
-  // Acknowledge within the webhook timeout; accept/attach continues in background.
-  setImmediate(() => {
-    void handleAzureSipCall(providerCallId, from, to, contactHost).catch((error) => {
-      app.log.error({ err: error, providerCallId }, "Azure SIP call handling failed");
-      void azureSip?.reject(providerCallId, 480).catch(() => undefined);
-    });
-  });
-  return reply.code(200).send({ ok: true });
-});
-
-async function handleAzureSipCall(
-  providerCallId: string,
-  from: string | null,
-  to: string | null,
-  contactHost?: string | null
-): Promise<void> {
-  if (!azureSip) return;
-  if (!from || !to) {
-    app.log.warn({ providerCallId, from, to }, "Azure SIP call missing phone numbers");
-    await azureSip.reject(providerCallId, 400);
-    return;
-  }
-
-  const destination = await getCachedDestination(to);
-
-  if (!destination) {
-    await azureSip.reject(providerCallId, 604);
-    return;
-  }
-  if (destination.tenantStatus !== "live") {
-    await azureSip.reject(providerCallId, 480);
-    return;
-  }
-
-  const scoped = withTenant(db, destination.tenantId);
-  const callerGeo = deriveCallerGeo(from);
-
-  // In parallel: fetch cached tenant meta and upsert caller
-  const [tenantMeta, callerResult] = await Promise.all([
-    getCachedTenantMeta(destination.tenantId),
-    db
-      .insert(schema.callers)
-      .values(
-        scoped.values({
-          phoneE164: from,
-          displayName: null,
-          country: callerGeo.country,
-          timezone: callerGeo.timezone
-        })
-      )
-      .onConflictDoUpdate({
-        target: [schema.callers.tenantId, schema.callers.phoneE164],
-        set: {
-          ...(callerGeo.country ? { country: callerGeo.country } : {}),
-          ...(callerGeo.timezone ? { timezone: callerGeo.timezone } : {}),
-          updatedAt: new Date()
-        }
-      })
-      .returning({
-        id: schema.callers.id,
-        phoneE164: schema.callers.phoneE164,
-        displayName: schema.callers.displayName,
-        country: schema.callers.country,
-        timezone: schema.callers.timezone,
-        profile: schema.callers.profile,
-        stage: schema.callers.stage
-      })
-  ]);
-
-  const caller = callerResult[0];
-  if (!caller) throw new Error("Caller upsert returned no row");
-
-  // In parallel: insert call record and load what we already know about the caller
-  const [callResult, callerContext] = await Promise.all([
-    db
-      .insert(schema.calls)
-      .values(
-        scoped.values({
-          callerId: caller.id,
-          channel: "twilio",
-          direction: "inbound",
-          providerCallSid: providerCallId,
-          status: "in_progress"
-        })
-      )
-      .onConflictDoNothing({ target: schema.calls.providerCallSid })
-      .returning({ id: schema.calls.id, startedAt: schema.calls.startedAt }),
-    loadCallerContext(db, destination.tenantId, caller.id, providerCallId)
-  ]);
-
-  let call = callResult[0];
-  if (!call) {
-    // Duplicate webhook delivery already created the call
-    const [existing] = await db
-      .select({ id: schema.calls.id, startedAt: schema.calls.startedAt })
-      .from(schema.calls)
-      .where(scoped.where(schema.calls, eq(schema.calls.providerCallSid, providerCallId)))
-      .limit(1);
-    if (!existing) return;
-    call = existing;
-  }
-
-  const session: CallSession = {
-    callId: call.id,
-    providerCallSid: providerCallId,
-    tenantId: destination.tenantId,
-    timezone: tenantMeta.timezone,
-    caller,
-    intakeFields: tenantMeta.intakeFields,
-    agent: tenantMeta.agent,
-    services: tenantMeta.services,
-    businessHours: tenantMeta.businessHours,
-    transferAvailable: tenantMeta.transferAvailable,
-    transferRoster: tenantMeta.transferRoster,
-    memories: callerContext.memories,
-    history: callerContext.history,
-    startedAt: (call.startedAt ?? new Date()).toISOString()
-  };
-
-  await azureSip.accept(
-    providerCallId,
-    buildSipAcceptConfig(session, env.AZURE_REALTIME_MODEL, env.AZURE_REALTIME_VOICE, realtimeTuning)
-  );
-
-  const bridge = createRealtimeBridge(env.AZURE_REALTIME_VOICE, () => session, providerCallId);
-
-  const latencyTracker = new VoiceLatencyTracker(session.callId, app.log);
-  let transcriptSeq = 0;
-  let finalized = false;
-  const finalize = async (status: "completed" | "failed") => {
-    if (finalized) return;
-    finalized = true;
-    await bridge.stop();
-    try {
-      const endedAt = new Date();
-      const durationSeconds = Math.max(
-        0,
-        Math.round((endedAt.getTime() - new Date(session.startedAt).getTime()) / 1000)
-      );
-      await db
-        .update(schema.calls)
-        .set({ status, endedAt, durationSeconds, updatedAt: endedAt })
-        .where(scoped.where(schema.calls, eq(schema.calls.id, session.callId)));
-      scheduleCallSummary({
-        callId: session.callId,
-        tenantId: session.tenantId,
-        callerId: session.caller.id
-      });
-      app.log.info(
-        { callId: session.callId, tenantId: session.tenantId, durationSeconds },
-        "Azure SIP call finalized"
-      );
-    } catch (error) {
-      app.log.error({ err: error, callId: session.callId }, "Azure SIP finalization failed");
-    }
-  };
-
-  bridge.onTranscript((transcriptEvent) => {
-    if (transcriptEvent.role === "caller") {
-      latencyTracker.onCallerTranscriptReceived();
-    }
-    transcriptSeq += 1;
-    const seq = transcriptSeq;
-    void db
-      .insert(schema.callTranscripts)
-      .values(
-        scoped.values({
-          callId: session.callId,
-          seq,
-          role: transcriptEvent.role,
-          content: transcriptEvent.content,
-          at: transcriptEvent.at
-        })
-      )
-      .catch((error) => {
-        app.log.error({ err: error, callId: session.callId }, "Transcript persistence failed");
-      });
-  });
-
-  let firstAudioChunkOfTurn = true;
-  bridge.onSpeechStarted(() => {
-    firstAudioChunkOfTurn = true;
-    latencyTracker.onUserSpeechStarted();
-  });
-  bridge.onSpeechStopped(() => latencyTracker.onUserSpeechEnded());
-  bridge.onAudioOut(() => {
-    if (firstAudioChunkOfTurn) {
-      firstAudioChunkOfTurn = false;
-      latencyTracker.onFirstAudioChunk();
-    }
-  });
-
-  const executor = new ToolExecutor(session, {
-    availability: availabilityService,
-    calendar: calendarService,
-    repository: toolRepository
-  });
-  bridge.onToolCall(async (name, input) => {
-    latencyTracker.onToolStart();
-    try {
-      return await executor.execute(name, input);
-    } finally {
-      latencyTracker.onToolEnd();
-    }
-  });
-  bridge.onClose(() => void finalize("completed"));
-  bridge.onEndCall(() => {
-    void (async () => {
-      await finalize("completed");
-      try {
-        await azureSip?.hangup(providerCallId);
-      } catch (error) {
-        app.log.error({ err: error, providerCallId }, "Azure SIP hangup after end_call failed");
-      }
-    })();
-  });
-  bridge.onTransferRequested((selector) => {
-    void (async () => {
-      try {
-        const staffMember = await toolRepository.findStaffPhoneForTransfer(
-          session.tenantId,
-          selector
-        );
-        if (!staffMember?.phoneE164) {
-          app.log.info(
-            { callId: session.callId, tenantId: session.tenantId, selector },
-            "Azure SIP transfer requested but no matching staff phone number on file"
-          );
-          bridge.notifyTransferFailed("no matching staff member with a phone number on file");
-          return;
-        }
-
-        const relayHost = contactHost ?? "72.62.6.249:5062";
-        const targetUri = `sip:${staffMember.phoneE164}@${relayHost}`;
-
-        app.log.info(
-          { callId: session.callId, tenantId: session.tenantId, targetPhone: staffMember.phoneE164, targetUri },
-          "Executing Azure SIP refer for call transfer"
-        );
-        try {
-          await azureSip?.refer(providerCallId, targetUri);
-        } catch (referErr) {
-          const bareHost = relayHost.replace(/:\d+$/, "");
-          if (bareHost !== relayHost) {
-            const fallbackUri = `sip:${staffMember.phoneE164}@${bareHost}`;
-            app.log.warn({ err: referErr, fallbackUri }, "Retrying Azure SIP refer with bare host");
-            await azureSip?.refer(providerCallId, fallbackUri);
-          } else {
-            throw referErr;
-          }
-        }
-
-        await db
-          .update(schema.calls)
-          .set({
-            status: "transferred",
-            transferredToStaffId: staffMember.id,
-            updatedAt: new Date()
-          })
-          .where(scoped.where(schema.calls, eq(schema.calls.id, session.callId)));
-
-        await bridge.stop();
-      } catch (error) {
-        app.log.error({ err: error, callId: session.callId }, "Azure SIP call transfer failed");
-        bridge.notifyTransferFailed("a technical issue on our end");
-      }
-    })();
-  });
-
-  await bridge.start(session);
-  app.log.info(
-    { callId: session.callId, tenantId: session.tenantId, providerCallId },
-    "Azure SIP call accepted and attached"
-  );
-}
-
 const mediaPathSchema = z.string().uuid();
 
 app.server.on("upgrade", (request, socket, head) => {
@@ -1265,7 +894,7 @@ mediaStreams.on("connection", (socket, request) => {
     accountSid: env.TWILIO_ACCOUNT_SID,
     authToken: env.TWILIO_AUTH_TOKEN
   });
-  const bridge = createRealtimeBridge(env.AZURE_REALTIME_VOICE, () => session);
+  const bridge = createRealtimeBridge(realtime.voice, () => session);
   let session: CallSession | undefined;
   let transcriptSeq = 0;
   let frameCount = 0;
@@ -1323,7 +952,7 @@ mediaStreams.on("connection", (socket, request) => {
   };
 
   app.log.info(
-    { callId, model: env.AZURE_REALTIME_MODEL },
+    { callId, model: realtime.model },
     "Initializing AI voice bridge"
   );
   let audioOutFrames = 0;
@@ -1513,9 +1142,8 @@ browserTestStreams.on("connection", (socket, request) => {
     const rawTimezone = url.searchParams.get("timezone")?.trim() ?? "";
     const callerTestTimezone = rawTimezone && isValidTimezone(rawTimezone) ? rawTimezone : null;
     const rawVoice = url.searchParams.get("voice")?.trim() ?? "";
-    const AZURE_VOICES = ["alloy", "echo", "shimmer", "verse", "ballad", "coral", "sage", "ash"];
-    const matchedAzureVoice = AZURE_VOICES.find((v) => v.toLowerCase() === rawVoice.toLowerCase());
-    const azureVoice = matchedAzureVoice ?? env.AZURE_REALTIME_VOICE ?? "shimmer";
+    const REALTIME_VOICES = ["alloy", "echo", "shimmer", "verse", "ballad", "coral", "sage", "ash", "marin", "cedar"];
+    const azureVoice = REALTIME_VOICES.find((v) => v.toLowerCase() === rawVoice.toLowerCase()) ?? realtime.voice;
 
     const bridge = createRealtimeBridge(azureVoice, () => session);
     let session: CallSession | undefined;
