@@ -1,7 +1,9 @@
+# Upstreams use container names, not service names: caddy is also attached to other
+# projects' networks, where another "web" service made web:3000 resolve to the wrong host (502s).
 {$WEB_DOMAIN} {
-	reverse_proxy web:3000
+	reverse_proxy recepto-web-1:3000
 }
 
 {$VOICE_DOMAIN} {
-	reverse_proxy voice:3001
+	reverse_proxy recepto-voice-1:3001
 }
