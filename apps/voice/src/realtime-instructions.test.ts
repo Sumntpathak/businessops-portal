@@ -114,48 +114,52 @@ describe("CALLER section", () => {
     assert.match(buildInstructions(base), /First-time caller: no history/);
   });
 
-  it("shows what we know about a returning caller, in the caller's own time", () => {
-    const text = buildInstructions({
-      ...session,
-      caller: { ...session.caller, profile: { enquiry: "partner visa, onshore" } },
-      memories: [{ id: "m1", kind: "summary", content: "Asked about a partner visa; booked a consultation." }],
-      history: {
-        upcomingBookings: [{ serviceName: "Consultation", startsAt: "2026-10-20T04:30:00.000Z" }],
-        pendingCallbacks: [{ reason: "Wants fees for a 482 visa", createdAt: "2026-10-12T00:00:00.000Z" }],
-        lastCallAt: "2026-10-12T00:00:00.000Z"
-      }
-    });
-    assert.doesNotMatch(text, /First-time caller/);
-    assert.match(text, /- Name: Sumant/);
-    assert.match(text, /- Last enquiry: partner visa, onshore/);
-    // 04:30 UTC is 10:00 AM in Kolkata.
-    assert.match(text, /- Upcoming booking: Consultation, Tuesday, Oct 20, 10:00 AM \(their time\)/);
-    assert.match(text, /- Pending callback request \(\d+ days ago\): Wants fees for a 482 visa/);
-    assert.match(text, /- From past calls: Asked about a partner visa/);
-    assert.match(text, /only after they confirm who they are/);
+  const returning = {
+    ...session,
+    caller: { ...session.caller, profile: { enquiry: "partner visa, onshore", visa_type: "Partner" } },
+    intakeFields: [{ id: "f2", key: "visa_type", label: "Visa type", type: "select" as const, options: ["Student", "Partner"], priority: "key" as const, sort: 2, active: true }],
+    memories: [{ id: "m1", kind: "summary" as const, content: "Asked about a partner visa; booked a consultation." }],
+    history: {
+      upcomingBookings: [{ serviceName: "Consultation", startsAt: "2026-10-20T04:30:00.000Z" }],
+      pendingCallbacks: [{ reason: "Wants fees for a 482 visa", createdAt: "2026-10-12T17:30:00.000Z" }],
+      lastCallAt: "2026-10-12T00:00:00.000Z"
+    }
+  };
+
+  it("keeps a returning caller's history out of the prompt: only the name and that history exists", () => {
+    const text = buildInstructions(returning);
+    assert.match(text, /This number belongs to Sumant\. Anything else we know about them is private/);
+    assert.doesNotMatch(text, /history with us/, "doesn't even hint that history exists");
+    assert.match(text, /call confirm_caller with their exact words/);
+    assert.doesNotMatch(text, /Upcoming booking|Oct 20|482 visa|Asked about a partner visa|Last enquiry|\[visa_type\]: Partner/);
   });
 
-  it("lists intake fields with key ones first and marks what is still unknown", () => {
+  it("lists intake fields to collect, key ones first, without their values", () => {
     const text = buildInstructions({
-      ...base,
-      caller: { ...base.caller, profile: { visa_type: "Student" } },
+      ...returning,
       intakeFields: [
         { id: "f1", key: "location", label: "Current location", type: "text", options: [], priority: "optional", sort: 1, active: true },
-        { id: "f2", key: "visa_type", label: "Visa type", type: "select", options: ["Student", "Partner"], priority: "key", sort: 2, active: true }
+        ...returning.intakeFields
       ]
     });
-    assert.match(text, /- Visa type \[visa_type\], key: Student \(one of: Student, Partner\)\n- Current location \[location\]: not known yet/);
+    assert.match(text, /- Visa type \[visa_type\], key \(one of: Student, Partner\)\n- Current location \[location\]/);
   });
 
-  it("counts calendar days in the caller's timezone", async () => {
-    const { callerLines } = await import("./call-flow-prompt.js");
-    // 23:00 on the 12th in Kolkata, read at 05:30 on the 14th: two calendar days, not one.
-    const lines = callerLines(
-      { ...session, history: { upcomingBookings: [], pendingCallbacks: [{ reason: "x", createdAt: "2026-10-12T17:30:00.000Z" }], lastCallAt: null } },
-      "Asia/Kolkata",
-      now
-    );
-    assert.ok(lines.includes("- Pending callback request (2 days ago): x"), lines.join("\n"));
+  it("confirm_caller hands over the history, in the caller's own time, only to the caller on file", async () => {
+    const { confirmCaller } = await import("./caller-identity.js");
+    const yes = confirmCaller(returning, "Yes, speaking.", "Asia/Kolkata", now);
+    assert.equal(yes.confirmed, true);
+    const history = yes.confirmed ? yes.history.join("\n") : "";
+    // 04:30 UTC is 10:00 AM in Kolkata; 23:00 on the 12th in Kolkata is 2 calendar days before the 14th.
+    assert.match(history, /Upcoming booking: Consultation, Tuesday, Oct 20, 10:00 AM \(their time\)/);
+    assert.match(history, /Pending callback request \(2 days ago\): Wants fees for a 482 visa/);
+    assert.match(history, /Last enquiry: partner visa, onshore/);
+    assert.match(history, /Visa type \[visa_type\]: Partner/);
+    assert.match(history, /From past calls: Asked about a partner visa/);
+    for (const words of ["No, this is his wife, Meena.", "This is his wife, Meena.", "I'm calling on behalf of my son", "no", "", "नहीं, मैं उनकी पत्नी हूँ"]) {
+      assert.equal(confirmCaller(returning, words, "Asia/Kolkata", now).confirmed, false, words);
+    }
+    assert.equal(confirmCaller(base, "Yes", "Asia/Kolkata", now).confirmed, false, "no name on file");
   });
 
   it("withholds all history when there is no name on file to confirm", () => {

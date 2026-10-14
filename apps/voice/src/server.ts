@@ -1231,7 +1231,8 @@ async function loadCallSession(callId: string): Promise<CallSession> {
       caller: {
         id: "fallback-caller",
         phoneE164: "+15551234567",
-        displayName: "Caller",
+        // Not a placeholder name: the greeting would ask "Am I speaking with Caller?".
+        displayName: null,
         country: "IN",
         timezone: "Asia/Kolkata",
         profile: {},

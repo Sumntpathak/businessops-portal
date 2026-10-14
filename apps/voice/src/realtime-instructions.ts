@@ -139,6 +139,6 @@ export function buildInstructions(session: CallSession): string {
     `- Caller's time now: ${formatNow(callerTimezone)} (${callerTimezone}). Business time now: ${formatNow(session.timezone)} (${session.timezone}).`,
     "",
     "# CALLER",
-    ...callerLines(session, callerTimezone)
+    ...callerLines(session)
   ].join("\n");
 }

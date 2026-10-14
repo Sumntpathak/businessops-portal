@@ -12,6 +12,7 @@ import { parseBusinessInfo } from "@recepto/shared";
 import { buildInstructions, greetingInstruction, REALTIME_TOOLS, toolLanguageNote } from "../azure-realtime-bridge.js";
 import type { CallSession } from "../call-session.js";
 import { isRefusal } from "../caller-intent.js";
+import { confirmCaller } from "../caller-identity.js";
 import { isServiceOffer, ladderNote, ladderStepAfterTool, NO_MORE_OFFERS_NOTE, STOP_OFFERING_NOTE, type LadderStep } from "../call-ladder.js";
 import { SCENARIOS, type Scenario, type TurnResult } from "./scenarios.js";
 
@@ -101,8 +102,8 @@ const session: CallSession = {
 
 const SLOT = (start: string, local: string) => ({ startsAt: start, endsAt: start, callerLocalTime: local, businessLocalTime: local });
 const TOOL_RESULTS: Record<string, unknown> = {
-  check_availability: { serviceId: "svc-student", serviceName: "Student Services Consultation", price: "110.00", staffId: null, callerTimezone: "Australia/Melbourne", slots: [SLOT("2026-10-02T00:30:00.000+00:00", "Oct 2, 2026, 10:30 AM"), SLOT("2026-10-02T01:15:00.000+00:00", "Oct 2, 2026, 11:15 AM")] },
-  create_booking: { bookingId: "b-1", startsAt: "2026-10-02T00:30:00.000+00:00", callerLocalTime: "Oct 2, 2026, 10:30 AM", businessLocalTime: "Oct 2, 2026, 10:30 AM", serviceName: "Student Services Consultation", price: "110.00", staffId: null },
+  check_availability: { serviceId: "svc-student", serviceName: "Student Services Consultation", staffId: null, callerTimezone: "Australia/Melbourne", slots: [SLOT("2026-10-02T00:30:00.000+00:00", "Oct 2, 2026, 10:30 AM"), SLOT("2026-10-02T01:15:00.000+00:00", "Oct 2, 2026, 11:15 AM")] },
+  create_booking: { bookingId: "b-1", startsAt: "2026-10-02T00:30:00.000+00:00", callerLocalTime: "Oct 2, 2026, 10:30 AM", businessLocalTime: "Oct 2, 2026, 10:30 AM", serviceName: "Student Services Consultation", staffId: null, tellCaller: "Our team will be in touch to confirm the booking and payment." },
   request_callback: { callbackRequestId: "cb-1", recorded: true },
   end_call: { ended: true }
 };
@@ -119,6 +120,16 @@ function toolResult(name: string, rawArgs: string): unknown {
       return { transferring: false, reason: `there is no team member matching "${staffName}" who can take a call`, teamMembersYouCanOffer: ["Gundeep Malhotra"], instruction: "Do not say you are connecting anyone. In one short sentence say you cannot connect them to that person, then offer one of teamMembersYouCanOffer by name, or a message for the team." };
     }
     return { transferring: true };
+  }
+  if (name === "check_availability") {
+    // Mirrors the tool: slots for the service the agent asked about, not a fixed one.
+    const args = (() => { try { return JSON.parse(rawArgs) as { serviceName?: string }; } catch { return {}; } })();
+    const canned = TOOL_RESULTS.check_availability as Record<string, unknown>;
+    return {
+      ...canned,
+      serviceName: args.serviceName || canned.serviceName,
+      tellCaller: "Offer one or two of these times in callerLocalTime. Don't mention the price now; it goes in the read-back."
+    };
   }
   if (name === "update_caller_profile") {
     // Mirrors the repository: every key the model sends comes back as saved.
@@ -147,6 +158,27 @@ function runScenario(scenario: Scenario): Promise<TurnResult[]> {
   const canTransfer = (session.transferRoster?.length ?? 0) > 0 && session.transferAvailable !== false;
   let ladderStep: LadderStep = 1;
   let offerMade = false;
+  let identity: "unknown" | "confirmed" | "someone-else" = "unknown";
+  /** Mirrors the bridge: confirm_caller and the save gate on a number with a name on file. */
+  const scenarioToolResult = (name: string, rawArgs: string): unknown => {
+    const args = (() => { try { return JSON.parse(rawArgs) as Record<string, unknown>; } catch { return {}; } })();
+    if (name === "confirm_caller") {
+      const result = identity === "confirmed"
+        ? { confirmed: true, instruction: "Already confirmed earlier in this call; use what you were given then." }
+        : identity === "someone-else"
+          ? { confirmed: false, reason: "earlier in this call they said they are someone else", instruction: "Keep treating them as a new caller." }
+          : confirmCaller(session, String(args.callerWords ?? ""), session.caller.timezone ?? session.timezone);
+      if (identity === "unknown") {
+        if (result.confirmed) identity = "confirmed";
+        else if ("answer" in result && result.answer === "someone-else") identity = "someone-else";
+      }
+      return result;
+    }
+    if (name === "update_caller_profile" && session.caller.displayName && identity !== "confirmed") {
+      return { saved: false, reason: "caller identity not confirmed", instruction: identity === "someone-else" ? "Don't save anything for this caller." : "If they confirmed who they are, call confirm_caller first." };
+    }
+    return toolResult(name, rawArgs);
+  };
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(url.toString(), { headers: { "api-key": apiKey, authorization: `Bearer ${apiKey}` } });
     const turns: TurnResult[] = [];
@@ -207,7 +239,7 @@ function runScenario(scenario: Scenario): Promise<TurnResult[]> {
         const calls = output.filter((i) => i.type === "function_call");
         if (calls.length === 0 || ++rounds > 6) { turns.push(current); nextCallerTurn(); return; }
         // The live bridge sends no follow-up response after a transfer or end_call, so the call is over here too.
-        const results = calls.map((call) => ({ call, name: String(call.name), result: toolResult(String(call.name), String(call.arguments ?? "{}")) }));
+        const results = calls.map((call) => ({ call, name: String(call.name), result: scenarioToolResult(String(call.name), String(call.arguments ?? "{}")) }));
         for (const { name, call } of results) {
           current.tools.push(name);
           current.toolArgs?.push((() => { try { return JSON.parse(String(call.arguments ?? "{}")) as Record<string, unknown>; } catch { return {}; } })());

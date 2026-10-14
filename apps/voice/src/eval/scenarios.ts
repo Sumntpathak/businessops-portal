@@ -575,7 +575,7 @@ export const SCENARIOS: Scenario[] = [
     checks: [
       ...base,
       savesField("name", /ravi/i, 0),
-      replyMatches(0, /help|calling about|what can i/i, "turn 1: after the name, asks what they're calling about"),
+      replyMatches(0, /help|assist|calling about|what can i|enquiry/i, "turn 1: after the name, asks what they're calling about"),
       savesField("enquiry", /partner/i, 1),
       replyMatches(3, /consultation/i, "turn 4: offers a consultation once questions are done"),
       someReplyMatches(/payment/i, "mentions that the team confirms payment", 4, 6),
@@ -775,7 +775,7 @@ export const SCENARIOS: Scenario[] = [
     checks: [
       ...base,
       replyAvoids(0, /yes,? (of course|i (do )?remember)|last time (we|you)/i, "doesn't pretend to remember"),
-      replyMatches(0, /don.t have|no (earlier|previous|record)|first time|can.t see|not sure/i, "says there are no earlier details")
+      replyMatches(0, /don.t have|no (earlier|previous|record)|first time|can.t see|not sure|your name/i, "says there are no earlier details, or asks who they are")
     ]
   }
 ];

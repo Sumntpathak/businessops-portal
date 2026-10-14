@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { AIBridge, StaffSelector, TranscriptEvent } from "./ai-bridge.js";
 import type { CallSession } from "./call-session.js";
 import { isRefusal } from "./caller-intent.js";
+import { confirmCaller } from "./caller-identity.js";
 import { buildInstructions } from "./realtime-instructions.js";
 import { isServiceOffer, ladderNote, ladderStepAfterTool, NO_MORE_OFFERS_NOTE, STOP_OFFERING_NOTE, type LadderStep } from "./call-ladder.js";
 
@@ -114,6 +115,20 @@ export const REALTIME_TOOLS = [
         }
       },
       required: ["fields", "callerLanguage"]
+    }
+  },
+  {
+    type: "function",
+    name: "confirm_caller",
+    description:
+      "Call as soon as the person confirms they are the caller named in CALLER (e.g. 'yes, speaking'). Returns that caller's private history. Never call it if they say they are someone else.",
+    parameters: {
+      type: "object",
+      properties: {
+        callerLanguage: { type: "string", description: "The language of the caller's latest sentence: English, Hindi or Punjabi." },
+        callerWords: { type: "string", description: "The caller's latest words, exactly as they said them, in their language." }
+      },
+      required: ["callerWords", "callerLanguage"]
     }
   },
   {
@@ -346,6 +361,8 @@ export class AzureRealtimeBridge implements AIBridge {
   private lastResponseSpoke = false;
   /** The agent has offered a consultation or callback: it must not keep pitching. */
   private offerMade = false;
+  /** Whether the person on the line is the caller on file (see caller-identity.ts). */
+  private callerIdentity: "unknown" | "confirmed" | "someone-else" = "unknown";
 
   constructor(private readonly options: AzureRealtimeBridgeOptions) {}
 
@@ -694,6 +711,27 @@ export class AzureRealtimeBridge implements AIBridge {
       return;
     }
 
+    if (name === "confirm_caller") {
+      this.handleConfirmCaller(callId, input);
+      return;
+    }
+
+    // On a number with a name on file, nothing is saved until we know who is speaking:
+    // "this is his wife, Meena" must not rename the record or add to it.
+    if (name === "update_caller_profile" && this.session?.caller.displayName && this.callerIdentity !== "confirmed") {
+      const owner = this.session.caller.displayName;
+      this.sendToolOutput(callId, {
+        saved: false,
+        reason: this.callerIdentity === "someone-else" ? `the person on the line is not ${owner}` : `they have not confirmed they are ${owner}`,
+        instruction: this.callerIdentity === "someone-else"
+          ? "Don't save anything for this caller. Keep helping them as a new caller."
+          : `If they confirmed they are ${owner}, call confirm_caller first. If they are someone else, don't save anything.`
+      });
+      this.transcript?.({ role: "tool", content: "update_caller_profile -> blocked: caller identity not confirmed", at: new Date() });
+      this.followUpAfterSilentSave();
+      return;
+    }
+
     if (name === "create_booking" && this.confirmedBookingId) {
       this.sendToolOutput(callId, {
         alreadyBooked: true,
@@ -728,6 +766,33 @@ export class AzureRealtimeBridge implements AIBridge {
       this.followUpAfterSilentSave();
       return;
     }
+    this.requestResponse();
+  }
+
+  /** confirm_caller runs here, not in the tool executor: the history is already in the session. */
+  private handleConfirmCaller(callId: string, input: Record<string, unknown>): void {
+    const session = this.session;
+    if (!session) {
+      this.sendToolOutput(callId, { confirmed: false, reason: "the call is still starting", instruction: "Treat them as a new caller for now." });
+      this.requestResponse();
+      return;
+    }
+    const callerWords = typeof input.callerWords === "string" ? input.callerWords : "";
+    // Settled once per call: after "this is his wife", a later "yes" must not unlock the history.
+    const result =
+      this.callerIdentity === "confirmed"
+        ? { confirmed: true, instruction: "Already confirmed earlier in this call; use what you were given then." }
+        : this.callerIdentity === "someone-else"
+          ? { confirmed: false, reason: "earlier in this call they said they are someone else", instruction: "Keep treating them as a new caller." }
+          : confirmCaller(session, callerWords, session.caller.timezone ?? session.timezone);
+    // Only a clear "someone else" locks; an unclear answer leaves room to ask again.
+    if (this.callerIdentity === "unknown") {
+      if (result.confirmed) this.callerIdentity = "confirmed";
+      else if ("answer" in result && result.answer === "someone-else") this.callerIdentity = "someone-else";
+    }
+    this.sendToolOutput(callId, result);
+    this.transcript?.({ role: "tool", content: `confirm_caller -> ${result.confirmed ? "confirmed" : "not confirmed"} ("${callerWords}")`, at: new Date() });
+    if ((session.agent.languages.length ?? 0) > 1) this.addSystemNote(toolLanguageNote(input.callerLanguage));
     this.requestResponse();
   }
 

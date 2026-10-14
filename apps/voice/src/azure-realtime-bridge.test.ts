@@ -87,8 +87,8 @@ describe("session config", () => {
     assert.equal("transcription" in inputOf(buildSipAcceptConfig(session, "m", undefined, { transcribeModel: "off" })), false);
   });
 
-  it("offers only the booking, callback, save-details, transfer and hang-up tools", () => {
-    assert.deepEqual(REALTIME_TOOLS.map((tool) => tool.name), ["check_availability", "create_booking", "request_callback", "update_caller_profile", "transfer_to_staff", "end_call"]);
+  it("offers only the booking, callback, save-details, confirm-caller, transfer and hang-up tools", () => {
+    assert.deepEqual(REALTIME_TOOLS.map((tool) => tool.name), ["check_availability", "create_booking", "request_callback", "update_caller_profile", "confirm_caller", "transfer_to_staff", "end_call"]);
   });
 
   it("requires a fields object when saving caller details", () => {
@@ -221,10 +221,39 @@ describe("tool results", () => {
     assert.ok(sent.some((e) => JSON.stringify(e).includes("AGAIN")), "a repeat offer gets a firmer note");
   });
 
+  it("hands over a known caller's history only after they confirm, and saves nothing before", async () => {
+    const { bridge, sent, callTool } = bridgeWithFakeSocket();
+    const saves: unknown[] = [];
+    bridge.onToolCall((name, input) => { saves.push(input); return { updated: ["enquiry"], rejected: [] }; });
+    const lastOutput = () => JSON.parse(String((sent.filter((e) => (e.item as { type?: string } | undefined)?.type === "function_call_output").at(-1)?.item as { output: string }).output));
+    await callTool("update_caller_profile", { fields: { enquiry: "partner visa" } }, "c1");
+    assert.equal(saves.length, 0, "no save before the caller is confirmed");
+    assert.equal(lastOutput().saved, false);
+    await callTool("confirm_caller", { callerWords: "Yes, speaking." }, "c2");
+    assert.equal(lastOutput().confirmed, true);
+    await callTool("update_caller_profile", { fields: { enquiry: "partner visa" } }, "c3");
+    assert.equal(saves.length, 1, "saves once confirmed");
+  });
+
+  it("gives someone else on the number nothing, and saves nothing for them", async () => {
+    const { bridge, sent, callTool } = bridgeWithFakeSocket();
+    const saves: unknown[] = [];
+    bridge.onToolCall((name, input) => { saves.push(input); return { updated: ["name"], rejected: [] }; });
+    await callTool("confirm_caller", { callerWords: "No, this is his wife, Meena." }, "c1");
+    const output = JSON.stringify(sent.filter((e) => (e.item as { type?: string } | undefined)?.type === "function_call_output").at(-1));
+    assert.match(output, /\\"confirmed\\":false/);
+    assert.doesNotMatch(output, /history/);
+    await callTool("confirm_caller", { callerWords: "Yes it's me" }, "c2");
+    assert.doesNotMatch(JSON.stringify(sent.filter((e) => (e.item as { type?: string } | undefined)?.type === "function_call_output").at(-1)), /\\"confirmed\\":true/, "a later yes doesn't override someone-else");
+    await callTool("update_caller_profile", { fields: { name: "Meena" } }, "c3");
+    assert.equal(saves.length, 0, "Meena is never saved over Sumant");
+  });
+
   it("tells the model where the call has got to, once per step", async () => {
     const { bridge, sent, callTool } = bridgeWithFakeSocket();
     bridge.onToolCall((name) => (name === "update_caller_profile" ? { updated: ["name"], rejected: [] } : { slots: [] }));
     const notes = () => sent.filter((e) => JSON.stringify(e).includes("Call progress")).length;
+    await callTool("confirm_caller", { callerWords: "Yes, speaking." }, "c0");
     await callTool("update_caller_profile", { fields: { name: "Ravi" } }, "c1");
     assert.equal(notes(), 1);
     await callTool("update_caller_profile", { fields: { name: "Ravi" } }, "c2");

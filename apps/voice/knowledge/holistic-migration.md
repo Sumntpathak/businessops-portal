@@ -24,6 +24,7 @@ Use this to answer general questions in plain words. It is general information, 
 - Employer Nomination Scheme, subclass 186: permanent, the employer nominates the person.
 - Skilled Employer Sponsored Regional, subclass 494: provisional, with a regional employer.
 - No sponsor yet: the points-tested visas (189, 190, 491) don't need an employer. Employer visas need a job offer from an approved sponsor first. A consultant can say which fits the caller.
+- Finding a sponsor: it means getting a job offer from an Australian employer who is willing to sponsor the role and is an approved sponsor. Usually that starts with applying for jobs in the caller's field in Australia. Which occupations and visas fit their profile is what a consultation covers.
 
 ## Study
 - Student, subclass 500: needs enrolment in a registered course (a Confirmation of Enrolment), meeting the Genuine Student requirement, English, enough funds, and overseas student health cover.

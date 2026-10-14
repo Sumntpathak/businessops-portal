@@ -281,8 +281,10 @@ export class ToolExecutor {
     return {
       serviceId,
       serviceName: service.name,
-      price: service.price,
+      // No price here: the agent read it out with the times and again in the read-back.
+      // It takes the price from SERVICES for the read-back only.
       staffId: staffId ?? null,
+      tellCaller: "Offer one or two of these times in callerLocalTime. Don't mention the price now; it goes in the read-back.",
       callerTimezone,
       ...(input.days > 1 ? { searchedDays: input.days } : {}),
       ...(sameTimezone ? {} : { onlyOffering: "times between 9 AM and 6 PM in the caller's own timezone" }),
@@ -401,8 +403,9 @@ export class ToolExecutor {
         ),
         businessLocalTime: formatCallerLocalTime(startsAt, this.session.timezone),
         serviceName,
-        price: service.price,
-        staffId
+        staffId,
+        // Said at the moment of booking, where it lands; a prompt rule alone was often skipped.
+        tellCaller: "Our team will be in touch to confirm the booking and payment."
       };
     } catch (error) {
       if (eventId) {
@@ -415,11 +418,14 @@ export class ToolExecutor {
   }
 
   private async updateCallerProfile(input: z.infer<typeof updateCallerProfileInput>) {
-    return this.dependencies.repository.updateCallerProfile(
+    const { updated, rejected } = await this.dependencies.repository.updateCallerProfile(
       this.session.tenantId,
       this.session.caller.id,
       input.fields
     );
+    // Never echo the stored profile back to the model: it holds earlier, private answers
+    // that only confirm_caller may hand over.
+    return { updated, rejected };
   }
 
   private async requestCallback(input: z.infer<typeof requestCallbackInput>) {

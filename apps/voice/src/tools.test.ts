@@ -78,7 +78,7 @@ describe("ToolExecutor", () => {
     const result = await executor.execute("check_availability", {
       serviceName: "Consultation", date: "2027-01-07"
     });
-    assert.deepEqual(result, { serviceId: service.id, serviceName: service.name, price: service.price, staffId: null, callerTimezone: "Asia/Kolkata", slots: [{ startsAt: "2027-01-07T03:30:00.000Z", endsAt: "2027-01-07T04:00:00.000Z", callerLocalTime: "Jan 7, 2027, 9:00 AM", businessLocalTime: "Jan 7, 2027, 9:00 AM" }] });
+    assert.deepEqual(result, { serviceId: service.id, serviceName: service.name, staffId: null, tellCaller: "Offer one or two of these times in callerLocalTime. Don't mention the price now; it goes in the read-back.", callerTimezone: "Asia/Kolkata", slots: [{ startsAt: "2027-01-07T03:30:00.000Z", endsAt: "2027-01-07T04:00:00.000Z", callerLocalTime: "Jan 7, 2027, 9:00 AM", businessLocalTime: "Jan 7, 2027, 9:00 AM" }] });
     assert.deepEqual(calls.find((call) => call.name === "findService")?.args, [session.tenantId, { serviceName: "Consultation" }]);
     assert.deepEqual(calls.find((call) => call.name === "getSlots")?.args, [session.tenantId, service.id, "2027-01-07", undefined]);
   });
@@ -117,7 +117,7 @@ describe("ToolExecutor", () => {
       startsAt: "2027-01-07T03:30:00.000Z",
       callerName: "Asha Patel"
     });
-    assert.deepEqual(result, { bookingId: "booking-1", eventId: "gcal-1", calendarSynced: true, startsAt: "2027-01-07T03:30:00.000Z", endsAt: "2027-01-07T04:00:00.000Z", callerLocalTime: "Jan 7, 2027, 9:00 AM", businessLocalTime: "Jan 7, 2027, 9:00 AM", serviceName: "Consultation", price: service.price, staffId: null });
+    assert.deepEqual(result, { bookingId: "booking-1", eventId: "gcal-1", calendarSynced: true, startsAt: "2027-01-07T03:30:00.000Z", endsAt: "2027-01-07T04:00:00.000Z", callerLocalTime: "Jan 7, 2027, 9:00 AM", businessLocalTime: "Jan 7, 2027, 9:00 AM", serviceName: "Consultation", staffId: null, tellCaller: "Our team will be in touch to confirm the booking and payment." });
     const create = calls.find((call) => call.name === "createBooking");
     assert.equal(create?.args[0], session.tenantId);
     assert.equal(create?.args[1], session.caller.id);
