@@ -3,7 +3,7 @@ import { describe, it, mock } from "node:test";
 import {
   AzureRealtimeBridge,
   buildSessionConfig,
-  realtimeAuthHeaders,
+  buildSipAcceptConfig,
   greetingInstruction,
   isTranscriptionArtifact,
   REALTIME_TOOLS,
@@ -72,12 +72,19 @@ describe("session config", () => {
     assert.deepEqual(input.format, { type: "audio/pcmu" });
   });
 
+  it("uses the same session on the SIP path, plus the model", () => {
+    const sip = buildSipAcceptConfig(session, "gpt-realtime-mini");
+    assert.equal(sip.model, "gpt-realtime-mini");
+    assert.deepEqual(inputOf(sip), inputOf(buildSessionConfig(session)));
+  });
+
   it("adds reasoning effort only when set, and transcription unless switched off", () => {
     assert.equal("reasoning" in buildSessionConfig(session), false);
     assert.deepEqual(buildSessionConfig(session, undefined, { reasoningEffort: "low" }).reasoning, { effort: "low" });
     assert.equal(inputOf(buildSessionConfig(session)).transcription?.model, "whisper-1");
     assert.equal(inputOf(buildSessionConfig(session, undefined, { transcribeModel: "gpt-4o-mini-transcribe" })).transcription?.model, "gpt-4o-mini-transcribe");
     assert.equal("transcription" in inputOf(buildSessionConfig(session, undefined, { transcribeModel: "off" })), false);
+    assert.equal("transcription" in inputOf(buildSipAcceptConfig(session, "m", undefined, { transcribeModel: "off" })), false);
   });
 
   it("offers only the booking, callback, save-details, confirm-caller, transfer and hang-up tools", () => {
@@ -87,13 +94,6 @@ describe("session config", () => {
   it("requires a fields object when saving caller details", () => {
     const tool = REALTIME_TOOLS.find((entry) => entry.name === "update_caller_profile");
     assert.deepEqual(tool?.parameters.required, ["fields", "callerLanguage"]);
-  });
-});
-
-describe("provider", () => {
-  it("authenticates to Azure and to OpenAI the way each expects", () => {
-    assert.deepEqual(realtimeAuthHeaders(new URL("https://recepto.openai.azure.com/openai/v1/realtime"), "k"), { "api-key": "k", authorization: "Bearer k" });
-    assert.deepEqual(realtimeAuthHeaders(new URL("wss://api.openai.com/v1/realtime"), "sk-1"), { authorization: "Bearer sk-1" });
   });
 });
 

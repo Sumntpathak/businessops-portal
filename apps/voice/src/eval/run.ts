@@ -9,7 +9,7 @@
 import fs from "node:fs";
 import { WebSocket } from "ws";
 import { parseBusinessInfo } from "@recepto/shared";
-import { buildInstructions, greetingInstruction, realtimeAuthHeaders, REALTIME_TOOLS, toolLanguageNote } from "../azure-realtime-bridge.js";
+import { buildInstructions, greetingInstruction, REALTIME_TOOLS, toolLanguageNote } from "../azure-realtime-bridge.js";
 import type { CallSession } from "../call-session.js";
 import { isRefusal } from "../caller-intent.js";
 import { confirmCaller } from "../caller-identity.js";
@@ -38,11 +38,11 @@ const GREETING_RUNS = Number(arg("--greeting") ?? 0);
 // Caller on an Indian number (the bridge then sees an India-based English speaker).
 const INDIA = process.argv.includes("--india");
 
-const url = new URL(process.env.REALTIME_URL ?? process.env.AZURE_REALTIME_URL ?? "");
+const url = new URL(process.env.AZURE_REALTIME_URL ?? "");
 url.protocol = "wss:";
 url.searchParams.set("model", MODEL);
-const apiKey = process.env.REALTIME_API_KEY ?? process.env.AZURE_REALTIME_KEY ?? "";
-if (!url.hostname || !apiKey) throw new Error("REALTIME_URL / REALTIME_API_KEY (or the AZURE_ names) not set");
+const apiKey = process.env.AZURE_REALTIME_KEY ?? "";
+if (!process.env.AZURE_REALTIME_URL || !apiKey) throw new Error("AZURE_REALTIME_URL / AZURE_REALTIME_KEY not set");
 
 const agentMd = process.env.EVAL_AGENT_MD
   ? fs.readFileSync(process.env.EVAL_AGENT_MD, "utf8")
@@ -180,7 +180,7 @@ function runScenario(scenario: Scenario): Promise<TurnResult[]> {
     return toolResult(name, rawArgs);
   };
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(url.toString(), { headers: realtimeAuthHeaders(url, apiKey) });
+    const ws = new WebSocket(url.toString(), { headers: { "api-key": apiKey, authorization: `Bearer ${apiKey}` } });
     const turns: TurnResult[] = [];
     let turnIndex = 0;
     let current: TurnResult = { caller: "", messages: [], tools: [] };
@@ -291,7 +291,7 @@ function runScenario(scenario: Scenario): Promise<TurnResult[]> {
 /** Opens a session and asks for ONLY the greeting, to count how many messages the model speaks. */
 function runGreeting(): Promise<string[]> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(url.toString(), { headers: realtimeAuthHeaders(url, apiKey) });
+    const ws = new WebSocket(url.toString(), { headers: { "api-key": apiKey, authorization: `Bearer ${apiKey}` } });
     const timer = setTimeout(() => { ws.close(); reject(new Error("greeting timeout")); }, 120_000);
     let retries = 0;
     ws.on("error", (e) => { clearTimeout(timer); reject(e); });

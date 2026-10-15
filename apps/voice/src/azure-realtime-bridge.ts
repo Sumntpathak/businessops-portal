@@ -36,6 +36,8 @@ export interface AzureRealtimeBridgeOptions {
   tuning?: RealtimeTuning;
   /** Checks a transfer target before the call is redirected (unknown name, nobody available, own number). */
   resolveTransfer?: (selector: StaffSelector) => Promise<TransferCheck>;
+  /** SIP mode: attach to a call already accepted via the REST accept endpoint; audio flows carrier <-> Azure. */
+  attachCallId?: string;
   logger?: {
     info(values: Record<string, unknown>, message: string): void;
     error(values: Record<string, unknown>, message: string): void;
@@ -305,10 +307,14 @@ export function buildSessionConfig(session: CallSession, voice?: string, tuning?
   return sessionBase(session, voice, tuning);
 }
 
-/** Azure gets both headers (as it always has); OpenAI (api.openai.com) only the bearer token. */
-export function realtimeAuthHeaders(url: URL, apiKey: string): Record<string, string> {
-  const bearer = { authorization: `Bearer ${apiKey}` };
-  return url.hostname.endsWith(".azure.com") ? { "api-key": apiKey, ...bearer } : bearer;
+/** Payload for the SIP REST accept endpoint (POST /realtime/calls/<call_id>/accept). */
+export function buildSipAcceptConfig(
+  session: CallSession,
+  model: string,
+  voice?: string,
+  tuning?: RealtimeTuning
+): Record<string, unknown> {
+  return { ...sessionBase(session, voice, tuning), model };
 }
 
 type ResponseDone = {
@@ -366,11 +372,17 @@ export class AzureRealtimeBridge implements AIBridge {
     this.session = session;
     const url = new URL(this.options.url);
     url.protocol = url.protocol === "http:" ? "ws:" : "wss:";
-    // Azure resources need the /openai/v1/realtime path; api.openai.com URLs already carry /v1/realtime.
     if (!url.pathname || url.pathname === "/") url.pathname = "/openai/v1/realtime";
-    if (!url.searchParams.get("model")) url.searchParams.set("model", this.options.model);
+    if (this.options.attachCallId) {
+      url.searchParams.delete("model");
+      url.searchParams.set("call_id", this.options.attachCallId);
+    } else if (!url.searchParams.get("model")) {
+      url.searchParams.set("model", this.options.model);
+    }
 
-    const socket = new WebSocket(url.toString(), { headers: realtimeAuthHeaders(url, this.options.apiKey) });
+    const socket = new WebSocket(url.toString(), {
+      headers: { "api-key": this.options.apiKey, authorization: `Bearer ${this.options.apiKey}` }
+    });
     this.socket = socket;
 
     socket.on("message", (data) => {
@@ -396,7 +408,9 @@ export class AzureRealtimeBridge implements AIBridge {
       socket.once("error", (error) => { clearTimeout(timeout); reject(error); });
     });
 
-    this.send({ type: "session.update", session: buildSessionConfig(session, this.options.voice, this.options.tuning) });
+    if (!this.options.attachCallId) {
+      this.send({ type: "session.update", session: buildSessionConfig(session, this.options.voice, this.options.tuning) });
+    }
     this.send({
       type: "response.create",
       response: { instructions: greetingInstruction(session.agent.voiceGreeting, session.caller.displayName) }
@@ -421,7 +435,7 @@ export class AzureRealtimeBridge implements AIBridge {
   onBargeIn(callback: () => void): void { this.bargeIn = callback; }
   onSpeechStarted(callback: () => void): void { this.speechStarted = callback; }
   onSpeechStopped(callback: () => void): void { this.speechStopped = callback; }
-  /** The realtime WebSocket closed unexpectedly. */
+  /** The Azure WebSocket closed unexpectedly (SIP mode: the call ended). */
   onClose(callback: () => void): void { this.closed = callback; }
   onEndCall(callback: () => void): void { this.endCall = callback; }
   onTransferRequested(callback: (selector: StaffSelector) => void): void { this.transferRequested = callback; }
@@ -554,7 +568,7 @@ export class AzureRealtimeBridge implements AIBridge {
   private onCallerStartedSpeaking(): void {
     this.speechStarted?.();
     const item = this.playItem;
-    if (item && this.playbackEndsAt > Date.now()) {
+    if (!this.options.attachCallId && item && this.playbackEndsAt > Date.now()) {
       const heardMs = Math.round(Math.min(item.totalMs, Math.max(0, Date.now() - item.startedAt)));
       this.send({ type: "conversation.item.truncate", item_id: item.id, content_index: item.contentIndex, audio_end_ms: heardMs });
     }
