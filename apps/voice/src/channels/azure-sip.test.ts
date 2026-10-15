@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { hostFromSipHeader, phoneFromSipHeader, sipHeader } from "./azure-sip.js";
+import { hostFromSipHeader, phoneFromSipHeader, sipControlTarget, sipHeader } from "./azure-sip.js";
 
 describe("Azure SIP header utilities", () => {
   it("extracts phone number from various SIP headers", () => {
@@ -35,5 +35,21 @@ describe("Azure SIP header utilities", () => {
     assert.equal(sipHeader(event, "contact"), "<sip:asterisk@72.62.6.249:5062;transport=TLS>");
     assert.equal(sipHeader(event, "FROM"), "<sip:+916265846547@72.62.6.249>");
     assert.equal(sipHeader(event, "Missing"), undefined);
+  });
+});
+
+describe("SIP control API target", () => {
+  it("uses Azure's path and api-key header for an Azure resource", () => {
+    assert.deepEqual(sipControlTarget("https://recepto.openai.azure.com", "k"), {
+      baseUrl: "https://recepto.openai.azure.com/openai/v1/realtime/calls/",
+      headers: { "api-key": "k" }
+    });
+  });
+
+  it("uses OpenAI's path and a bearer token for api.openai.com", () => {
+    assert.deepEqual(sipControlTarget("https://api.openai.com/v1/realtime", "sk-1"), {
+      baseUrl: "https://api.openai.com/v1/realtime/calls/",
+      headers: { authorization: "Bearer sk-1" }
+    });
   });
 });

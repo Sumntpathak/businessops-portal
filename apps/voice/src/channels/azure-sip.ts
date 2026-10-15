@@ -107,13 +107,26 @@ export interface AzureSipClientOptions {
   apiKey: string;
 }
 
+/**
+ * Where the SIP control API lives and how to log in. Azure and OpenAI share the same API;
+ * only the path prefix and the auth header differ.
+ */
+export function sipControlTarget(realtimeUrl: string, apiKey: string): { baseUrl: string; headers: Record<string, string> } {
+  const url = new URL(realtimeUrl);
+  return url.hostname === "api.openai.com"
+    ? { baseUrl: url.origin + "/v1/realtime/calls/", headers: { authorization: `Bearer ${apiKey}` } }
+    : { baseUrl: url.origin + "/openai/v1/realtime/calls/", headers: { "api-key": apiKey } };
+}
+
 /** REST control plane for SIP calls: accept, reject, refer, hang up. */
 export class AzureSipClient {
   private readonly baseUrl: string;
+  private readonly authHeaders: Record<string, string>;
 
-  constructor(private readonly options: AzureSipClientOptions) {
-    const origin = new URL(options.realtimeUrl).origin;
-    this.baseUrl = origin + "/openai/v1/realtime/calls/";
+  constructor(options: AzureSipClientOptions) {
+    const target = sipControlTarget(options.realtimeUrl, options.apiKey);
+    this.baseUrl = target.baseUrl;
+    this.authHeaders = target.headers;
   }
 
   private async post(
@@ -125,17 +138,14 @@ export class AzureSipClient {
       this.baseUrl + encodeURIComponent(callId) + "/" + action,
       {
         method: "POST",
-        headers: {
-          "api-key": this.options.apiKey,
-          "Content-Type": "application/json"
-        },
+        headers: { ...this.authHeaders, "Content-Type": "application/json" },
         ...(body ? { body: JSON.stringify(body) } : {})
       }
     );
     if (!response.ok) {
       const detail = await response.text().catch(() => "");
       throw new Error(
-        `Azure SIP ${action} failed with HTTP ${response.status}: ${detail.slice(0, 300)}`
+        `SIP ${action} failed with HTTP ${response.status}: ${detail.slice(0, 300)}`
       );
     }
   }
